@@ -1,0 +1,32 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: messaging
+      POSTGRES_PASSWORD: messaging
+      POSTGRES_DB: messaging_prod
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U messaging -d messaging_prod"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    ports:
+      - "4000:4000"
+    environment:
+      DATABASE_URL: ecto://messaging:messaging@db/messaging_prod
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:-please-change-me-to-a-64-byte-secret-key-base-value-generated-by-mix-phx-gen-secret}
+      PHX_HOST: localhost
+      PORT: "4000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

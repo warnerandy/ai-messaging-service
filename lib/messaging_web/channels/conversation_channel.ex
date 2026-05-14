@@ -1,0 +1,43 @@
+defmodule MessagingWeb.ConversationChannel do
+  use MessagingWeb, :channel
+
+  alias Messaging.Chat
+
+  @impl true
+  def join("conversation:" <> id, _payload, socket) do
+    conversation_id = String.to_integer(id)
+    user = socket.assigns.current_user
+    conversation = Chat.get_conversation!(conversation_id)
+
+    if conversation.user_id == user.id do
+      topic = "conversation:#{conversation.id}"
+      Phoenix.PubSub.subscribe(Messaging.PubSub, topic)
+
+      {:ok, %{conversation_id: conversation.id},
+       assign(socket, :conversation_id, conversation.id)}
+    else
+      {:error, %{reason: "forbidden"}}
+    end
+  rescue
+    Ecto.NoResultsError ->
+      {:error, %{reason: "not_found"}}
+  end
+
+  @impl true
+  def handle_info({:new_message, message}, socket) do
+    push(socket, "new_message", %{
+      message: %{
+        id: message.id,
+        conversation_id: message.conversation_id,
+        role: message.role,
+        content_type: message.content_type,
+        body: message.body,
+        metadata: message.metadata,
+        model: message.model,
+        inserted_at: message.inserted_at
+      }
+    })
+
+    {:noreply, socket}
+  end
+end

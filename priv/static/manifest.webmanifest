@@ -1,0 +1,16 @@
+{
+  "name": "Messaging Bot Console",
+  "short_name": "Bot Console",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#0f766e",
+  "description": "Interact with your bots in real time.",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    }
+  ]
+}

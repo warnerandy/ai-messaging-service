@@ -1,0 +1,38 @@
+# Ignore version control
+.git
+
+# Ignore build artifacts
+_build
+deps
+
+# Ignore test directory
+test
+
+# Ignore assets (API-only, no frontend)
+assets
+priv/static
+
+# Ignore development/test configs
+.formatter.exs
+.credo.exs
+.dialyzer
+
+# Ignore Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Ignore documentation
+*.md
+LICENSE
+
+# Ignore editor configs
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
