@@ -585,6 +585,12 @@ body {
   display: flex;
   align-items: center;
   gap: 0.4rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.thinking-tone-picker {
+  min-width: 7rem;
 }
 
 .connection-dot {
@@ -678,14 +684,34 @@ body {
 .msg-bubble--bot {
   max-width: 88%;
   border-radius: 18px 18px 18px 4px;
-  background: linear-gradient(180deg, rgba(39, 39, 42, 0.92) 0%, rgba(31, 31, 35, 0.96) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  background: linear-gradient(160deg, rgba(26, 54, 93, 0.75) 0%, rgba(17, 38, 72, 0.85) 100%);
+  border: 1px solid rgba(36, 137, 255, 0.25);
+  box-shadow: inset 0 1px 0 rgba(36, 137, 255, 0.12), 0 2px 12px rgba(0, 0, 0, 0.3);
 }
 
 .msg-bubble--typing {
+  width: fit-content;
+  max-width: fit-content;
+  min-width: 4rem;
   padding-top: 0.5rem;
   padding-bottom: 0.5rem;
+}
+
+.msg-typing-row {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+}
+
+.msg-thinking-blurb {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+  max-width: min(100%, 26rem);
+  animation: thinking-blurb-fade 240ms ease;
 }
 
 .msg--pending .msg-bubble { opacity: 0.6; }
@@ -842,6 +868,8 @@ body {
   flex-wrap: wrap;
   gap: 0.45rem;
   margin-top: 0.5rem;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 .suggestion-chip {
@@ -857,7 +885,10 @@ body {
   font-family: inherit;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s;
-  white-space: nowrap;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
 }
 
 .suggestion-chip:hover:not(:disabled) {
@@ -931,6 +962,18 @@ body {
 @keyframes typing {
   0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
   30% { opacity: 1; transform: translateY(-4px); }
+}
+
+@keyframes thinking-blurb-fade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* ───────── Input area ───────── */

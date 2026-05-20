@@ -55,10 +55,25 @@ if config_env() == :prod do
 
   host = System.get_env("PHX_HOST") || "example.com"
 
+  check_origin =
+    case System.get_env("CHECK_ORIGIN") do
+      nil ->
+        ["https://#{host}", "//#{host}"]
+
+      "" ->
+        ["https://#{host}", "//#{host}"]
+
+      origins ->
+        origins
+        |> String.split(",", trim: true)
+        |> Enum.map(&String.trim/1)
+    end
+
   config :messaging, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
   config :messaging, MessagingWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
+    check_origin: check_origin,
     http: [
       # Enable IPv6 and bind on all interfaces.
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.

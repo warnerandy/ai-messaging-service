@@ -15,7 +15,15 @@ defmodule Messaging.Bots do
     |> Repo.all()
   end
 
-  def get_bot_token!(id), do: Repo.get!(BotToken, id)
+  def get_bot_token!(id, user_id) do
+    bot_token_id = normalize_bot_token_id!(id)
+    owner_id = normalize_bot_token_id!(user_id)
+
+    BotToken
+    |> where([b], b.id == ^bot_token_id and b.user_id == ^owner_id)
+    |> where([b], is_nil(b.revoked_at))
+    |> Repo.one!()
+  end
 
   def get_bot_token_by_hash(token_hash) do
     BotToken
@@ -122,5 +130,14 @@ defmodule Messaging.Bots do
   def request_all_models_refresh(user_id) do
     list_bot_tokens(user_id)
     |> Enum.each(&request_model_refresh/1)
+  end
+
+  defp normalize_bot_token_id!(id) when is_integer(id), do: id
+
+  defp normalize_bot_token_id!(id) when is_binary(id) do
+    case Integer.parse(id) do
+      {parsed, ""} -> parsed
+      _ -> raise Ecto.NoResultsError, queryable: BotToken
+    end
   end
 end

@@ -44,32 +44,29 @@ defmodule MessagingWeb.API.BotTokenController do
 
   def channel(conn, %{"bot_token_id" => id}) do
     user = conn.assigns.current_user
-    bot_token = Bots.get_bot_token!(id)
+    bot_token = Bots.get_bot_token!(id, user.id)
 
-    if bot_token.user_id == user.id do
-      json(conn, %{
-        bot_token_id: bot_token.id,
-        channel_code: bot_token.channel_code
-      })
-    else
+    json(conn, %{
+      bot_token_id: bot_token.id,
+      channel_code: bot_token.channel_code
+    })
+  rescue
+    Ecto.NoResultsError ->
       conn
-      |> put_status(:forbidden)
-      |> json(%{error: "Not your token"})
-    end
+      |> put_status(:not_found)
+      |> json(%{error: "Not found"})
   end
 
   def delete(conn, %{"id" => id}) do
     user = conn.assigns.current_user
-    bot_token = Bots.get_bot_token!(id)
-
-    if bot_token.user_id == user.id do
-      {:ok, _} = Bots.revoke_bot_token(bot_token)
-      json(conn, %{ok: true})
-    else
+    bot_token = Bots.get_bot_token!(id, user.id)
+    {:ok, _} = Bots.revoke_bot_token(bot_token)
+    json(conn, %{ok: true})
+  rescue
+    Ecto.NoResultsError ->
       conn
-      |> put_status(:forbidden)
-      |> json(%{error: "Not your token"})
-    end
+      |> put_status(:not_found)
+      |> json(%{error: "Not found"})
   end
 
   defp format_errors(changeset) do

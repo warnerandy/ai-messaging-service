@@ -6,27 +6,23 @@ defmodule MessagingWeb.API.BotModelController do
   # GET /api/bot-tokens/:bot_token_id/models - List models for a bot
   def index(conn, %{"bot_token_id" => bot_token_id}) do
     user = conn.assigns.current_user
-    bot_token = Bots.get_bot_token!(bot_token_id)
-
-    if bot_token.user_id != user.id do
+    bot_token = Bots.get_bot_token!(bot_token_id, user.id)
+    models = Bots.list_bot_models(bot_token.id)
+    json(conn, %{models: Enum.map(models, &model_json/1)})
+  rescue
+    Ecto.NoResultsError ->
       conn |> put_status(:not_found) |> json(%{error: "Not found"})
-    else
-      models = Bots.list_bot_models(bot_token.id)
-      json(conn, %{models: Enum.map(models, &model_json/1)})
-    end
   end
 
   # POST /api/bot-tokens/:bot_token_id/refresh-models - Request a specific bot to update models
   def refresh(conn, %{"bot_token_id" => bot_token_id}) do
     user = conn.assigns.current_user
-    bot_token = Bots.get_bot_token!(bot_token_id)
-
-    if bot_token.user_id != user.id do
+    bot_token = Bots.get_bot_token!(bot_token_id, user.id)
+    Bots.request_model_refresh(bot_token)
+    json(conn, %{status: "refresh_requested", bot_token_id: bot_token.id})
+  rescue
+    Ecto.NoResultsError ->
       conn |> put_status(:not_found) |> json(%{error: "Not found"})
-    else
-      Bots.request_model_refresh(bot_token)
-      json(conn, %{status: "refresh_requested", bot_token_id: bot_token.id})
-    end
   end
 
   # POST /api/bot-tokens/refresh-models - Request ALL user's bots to update models

@@ -15,34 +15,32 @@ defmodule MessagingWeb.BotAPI.MessageController do
       conversation_id: params["conversation_id"]
     }
 
-    # Verify the conversation belongs to this bot
-    conversation = Chat.get_conversation!(attrs.conversation_id)
+    conversation = Chat.get_conversation!(attrs.conversation_id, bot_token_id: bot_token.id)
 
-    if conversation.bot_token_id == bot_token.id do
-      case Chat.create_message(attrs) do
-        {:ok, message} ->
-          conn
-          |> put_status(:created)
-          |> json(%{
-            id: message.id,
-            conversation_id: message.conversation_id,
-            content_type: message.content_type,
-            body: message.body,
-            metadata: message.metadata,
-            model: message.model,
-            inserted_at: message.inserted_at
-          })
+    case Chat.create_message(%{attrs | conversation_id: conversation.id}) do
+      {:ok, message} ->
+        conn
+        |> put_status(:created)
+        |> json(%{
+          id: message.id,
+          conversation_id: message.conversation_id,
+          content_type: message.content_type,
+          body: message.body,
+          metadata: message.metadata,
+          model: message.model,
+          inserted_at: message.inserted_at
+        })
 
-        {:error, changeset} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{errors: format_errors(changeset)})
-      end
-    else
-      conn
-      |> put_status(:forbidden)
-      |> json(%{error: "Conversation does not belong to this bot"})
+      {:error, changeset} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{errors: format_errors(changeset)})
     end
+  rescue
+    Ecto.NoResultsError ->
+      conn
+      |> put_status(:not_found)
+      |> json(%{error: "Not found"})
   end
 
   # GET /api/bot/messages - Get pending user messages for the bot
@@ -80,18 +78,23 @@ defmodule MessagingWeb.BotAPI.MessageController do
   # PUT /api/bot/messages/:id/acknowledge - Bot acknowledges receipt of a message
   def acknowledge(conn, %{"id" => id, "conversation_id" => conversation_id}) do
     bot_token = conn.assigns.bot_token
-    message_id = String.to_integer(id)
-    conv_id = String.to_integer(conversation_id)
-    conversation = Chat.get_conversation!(conv_id)
 
-    if conversation.bot_token_id == bot_token.id do
+    with {:ok, message_id} <- parse_integer_param(id),
+         {:ok, conv_id} <- parse_integer_param(conversation_id) do
+      _conversation = Chat.get_conversation!(conv_id, bot_token_id: bot_token.id)
       Chat.acknowledge_message(message_id, conv_id)
       json(conn, %{acknowledged: true, message_id: message_id})
     else
-      conn
-      |> put_status(:forbidden)
-      |> json(%{error: "Conversation does not belong to this bot"})
+      :error ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "Invalid message or conversation id"})
     end
+  rescue
+    Ecto.NoResultsError ->
+      conn
+      |> put_status(:not_found)
+      |> json(%{error: "Not found"})
   end
 
   defp format_errors(changeset) do
@@ -101,4 +104,15 @@ defmodule MessagingWeb.BotAPI.MessageController do
       end)
     end)
   end
+
+  defp parse_integer_param(value) when is_integer(value), do: {:ok, value}
+
+  defp parse_integer_param(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {parsed, ""} -> {:ok, parsed}
+      _ -> :error
+    end
+  end
+
+  defp parse_integer_param(_value), do: :error
 end

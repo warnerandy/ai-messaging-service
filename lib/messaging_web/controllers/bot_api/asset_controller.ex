@@ -5,27 +5,26 @@ defmodule MessagingWeb.BotAPI.AssetController do
 
   def upload(conn, %{"file" => file, "conversation_id" => conversation_id}) do
     bot_token = conn.assigns.bot_token
-    conversation = Chat.get_conversation!(conversation_id)
+    conversation = Chat.get_conversation!(conversation_id, bot_token_id: bot_token.id)
 
-    if conversation.bot_token_id != bot_token.id do
-      conn |> put_status(:forbidden) |> json(%{error: "Conversation does not belong to this bot"})
-    else
-      case handle_file_upload(file, conversation_id) do
-        {:ok, url, content_type} ->
-          conn
-          |> put_status(:created)
-          |> json(%{
-            url: url,
-            content_type: content_type,
-            filename: file.filename
-          })
+    case handle_file_upload(file, conversation.id) do
+      {:ok, url, content_type} ->
+        conn
+        |> put_status(:created)
+        |> json(%{
+          url: url,
+          content_type: content_type,
+          filename: file.filename
+        })
 
-        {:error, reason} ->
-          conn
-          |> put_status(:bad_request)
-          |> json(%{error: reason})
-      end
+      {:error, reason} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: reason})
     end
+  rescue
+    Ecto.NoResultsError ->
+      conn |> put_status(:not_found) |> json(%{error: "Not found"})
   end
 
   defp handle_file_upload(file, conversation_id) do

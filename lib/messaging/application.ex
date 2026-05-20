@@ -12,6 +12,7 @@ defmodule Messaging.Application do
       Messaging.Repo,
       {DNSCluster, query: Application.get_env(:messaging, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Messaging.PubSub},
+      Messaging.RateLimiter,
       # Start a worker by calling: Messaging.Worker.start_link(arg)
       # {Messaging.Worker, arg},
       # Start to serve requests, typically the last entry

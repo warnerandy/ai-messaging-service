@@ -87,26 +87,20 @@ defmodule MessagingWeb.BotChannel do
       conversation_id: payload["conversation_id"]
     }
 
-    # Verify the conversation belongs to this bot
-    conversation = Chat.get_conversation!(attrs.conversation_id)
+    conversation = Chat.get_conversation!(attrs.conversation_id, bot_token_id: bot_token.id)
 
-    if conversation.bot_token_id == bot_token.id do
-      case Chat.create_message(attrs) do
-        {:ok, message} ->
-          Logger.info("[BotChannel] send_message saved message_id=#{message.id}")
-          {:reply, {:ok, %{id: message.id}}, socket}
+    case Chat.create_message(%{attrs | conversation_id: conversation.id}) do
+      {:ok, message} ->
+        Logger.info("[BotChannel] send_message saved message_id=#{message.id}")
+        {:reply, {:ok, %{id: message.id}}, socket}
 
-        {:error, changeset} ->
-          Logger.warning("[BotChannel] send_message failed errors=#{inspect(changeset.errors)}")
-          {:reply, {:error, %{errors: format_errors(changeset)}}, socket}
-      end
-    else
-      Logger.warning(
-        "[BotChannel] send_message unauthorized conversation_id=#{conversation.id} bot_token_id=#{bot_token.id}"
-      )
-
-      {:reply, {:error, %{reason: "unauthorized"}}, socket}
+      {:error, changeset} ->
+        Logger.warning("[BotChannel] send_message failed errors=#{inspect(changeset.errors)}")
+        {:reply, {:error, %{errors: format_errors(changeset)}}, socket}
     end
+  rescue
+    Ecto.NoResultsError ->
+      {:reply, {:error, %{reason: "not_found"}}, socket}
   end
 
   # Bot acknowledges receipt of a user message (shows thinking animation)
@@ -116,18 +110,17 @@ defmodule MessagingWeb.BotChannel do
         socket
       ) do
     bot_token = socket.assigns.bot_token
-    conversation = Chat.get_conversation!(conversation_id)
+    conversation = Chat.get_conversation!(conversation_id, bot_token_id: bot_token.id)
 
-    if conversation.bot_token_id == bot_token.id do
-      Logger.info(
-        "[BotChannel] acknowledge_message message_id=#{message_id} conversation_id=#{conversation_id} bot_token_id=#{bot_token.id}"
-      )
+    Logger.info(
+      "[BotChannel] acknowledge_message message_id=#{message_id} conversation_id=#{conversation.id} bot_token_id=#{bot_token.id}"
+    )
 
-      Chat.acknowledge_message(message_id, conversation_id)
-      {:reply, :ok, socket}
-    else
-      {:reply, {:error, %{reason: "unauthorized"}}, socket}
-    end
+    Chat.acknowledge_message(message_id, conversation.id)
+    {:reply, :ok, socket}
+  rescue
+    Ecto.NoResultsError ->
+      {:reply, {:error, %{reason: "not_found"}}, socket}
   end
 
   # Bot updates its working status

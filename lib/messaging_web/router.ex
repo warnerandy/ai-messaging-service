@@ -9,6 +9,11 @@ defmodule MessagingWeb.Router do
     plug :accepts, ["json"]
   end
 
+  pipeline :public_api do
+    plug :accepts, ["json"]
+    plug MessagingWeb.Plugs.RateLimit, scope: :public_auth, limit: 10, window_ms: 60_000
+  end
+
   pipeline :user_api do
     plug :accepts, ["json"]
     plug MessagingWeb.ApiAuth
@@ -16,12 +21,13 @@ defmodule MessagingWeb.Router do
 
   pipeline :bot_api do
     plug :accepts, ["json"]
+    plug MessagingWeb.Plugs.RateLimit, scope: :bot_auth, limit: 60, window_ms: 60_000
     plug MessagingWeb.BotAuth
   end
 
   # Public - registration & login
   scope "/api", MessagingWeb.API do
-    pipe_through :api
+    pipe_through :public_api
 
     post "/register", AuthController, :register
     post "/login", AuthController, :login

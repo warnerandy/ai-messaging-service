@@ -24,7 +24,17 @@ defmodule Messaging.Chat do
     |> Repo.all()
   end
 
-  def get_conversation!(id), do: Repo.get!(Conversation, id) |> Repo.preload(:bot_token)
+  def get_conversation!(id, opts) when is_list(opts) do
+    conversation_id = normalize_conversation_id!(id)
+
+    query =
+      Conversation
+      |> where([c], c.id == ^conversation_id)
+      |> maybe_scope_conversation(opts)
+      |> preload(:bot_token)
+
+    Repo.one!(query)
+  end
 
   def create_conversation(attrs) do
     %Conversation{}
@@ -76,7 +86,7 @@ defmodule Messaging.Chat do
         )
 
         # Also broadcast to the bot channel
-        conversation = get_conversation!(message.conversation_id)
+        conversation = get_conversation_with_bot!(message.conversation_id)
 
         Phoenix.PubSub.broadcast(
           Messaging.PubSub,
@@ -97,5 +107,34 @@ defmodule Messaging.Chat do
       "conversation:#{conversation_id}",
       {:message_acknowledged, message_id}
     )
+  end
+
+  defp get_conversation_with_bot!(id) do
+    id
+    |> normalize_conversation_id!()
+    |> then(&Repo.get!(Conversation, &1))
+    |> Repo.preload(:bot_token)
+  end
+
+  defp maybe_scope_conversation(query, opts) do
+    Enum.reduce(opts, query, fn
+      {:user_id, user_id}, acc_query ->
+        where(acc_query, [c], c.user_id == ^normalize_conversation_id!(user_id))
+
+      {:bot_token_id, bot_token_id}, acc_query ->
+        where(acc_query, [c], c.bot_token_id == ^normalize_conversation_id!(bot_token_id))
+
+      {key, _value}, _acc_query ->
+        raise ArgumentError, "unsupported conversation scope: #{inspect(key)}"
+    end)
+  end
+
+  defp normalize_conversation_id!(id) when is_integer(id), do: id
+
+  defp normalize_conversation_id!(id) when is_binary(id) do
+    case Integer.parse(id) do
+      {parsed, ""} -> parsed
+      _ -> raise Ecto.NoResultsError, queryable: Conversation
+    end
   end
 end

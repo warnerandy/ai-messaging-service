@@ -10,6 +10,7 @@ import json from "highlight.js/lib/languages/json"
 import bash from "highlight.js/lib/languages/bash"
 import xml from "highlight.js/lib/languages/xml"
 import markdown from "highlight.js/lib/languages/markdown"
+import { startThinkingTimer, stopThinkingTimer } from "./thinkingTimer.mjs"
 import "highlight.js/styles/github-dark.css"
 import "../css/app.css"
 import {
@@ -17,6 +18,95 @@ import {
 } from "@heroui/react"
 
 const STORAGE_KEY = "messaging.user.token"
+
+const THINKING_BLURBS = {
+  witty: [
+    "Consulting the tiny genius in the ceiling.",
+    "Translating sparks into sentences.",
+    "Pretending this was obvious all along.",
+    "Brewing a fresh pot of context.",
+    "Assembling words with suspicious confidence.",
+    "Checking whether that idea wears a tie.",
+    "Tuning the answer until it hums.",
+    "Negotiating with the punctuation department.",
+    "Dusting off the good verbs.",
+    "Searching for the least embarrassing brilliance.",
+    "Running a quick vibe check on reality.",
+    "Untangling the smart part from the loud part.",
+    "Feeding the hamster that powers the logic wheel.",
+    "Comparing clever options with a dramatic squint.",
+    "Double-knotting the reasoning.",
+    "Sharpening a response on the nearest fact.",
+    "Trying not to overthink the thinking.",
+    "Organizing electrons into a respectable opinion.",
+    "Letting the idea simmer for flavor.",
+    "Checking the answer for loose metaphors.",
+    "Borrowing a flashlight from common sense.",
+    "Polishing a likely correct sentence.",
+    "Asking the inner committee for one final vote.",
+    "Looking for the elegant route through the mess.",
+    "Rehearsing the useful part.",
+    "Measuring twice, phrasing once.",
+    "Converting intuition into indoor plumbing.",
+    "Folding nuance into a carry-on size.",
+    "Attempting to make this both smart and readable.",
+    "Checking whether the answer can survive daylight.",
+    "Aligning facts, style, and a mild sense of drama.",
+    "Sneaking up on the point.",
+    "Putting the right amount of clever on it.",
+    "Rescuing a thought from unnecessary complexity.",
+    "Letting the better answer elbow past the first one.",
+    "Calibrating for usefulness over theater.",
+    "Turning a pile of maybes into a decent yes.",
+    "Testing the sentence for structural integrity.",
+    "Sweeping for bugs in the logic attic.",
+    "Teaching the answer to arrive in order.",
+    "Replacing hand-wavy with actually helpful.",
+    "Doing the mental equivalent of rolling up sleeves.",
+    "Trying a bold idea, then adding guardrails.",
+    "Looking for a clean landing.",
+    "Crossing the t's and side-eyeing the i's.",
+    "Compressing ten thoughts into one useful one.",
+    "Giving the response a quick tune-up.",
+    "Making the answer less weird than the draft.",
+    "Checking for elegance, then settling for solid.",
+    "Preparing a response with at least one good angle.",
+  ],
+  dry: [
+    "Applying unnecessary restraint to several good ideas.",
+    "Reducing chaos to bullet points.",
+    "Verifying that confidence and accuracy remain acquainted.",
+    "Selecting the least regrettable phrasing.",
+    "Running the answer through a basic dignity filter.",
+    "Converting noise into something billable.",
+    "Checking whether the obvious answer is also correct.",
+    "Removing three clever parts and keeping the useful one.",
+    "Organizing facts into a format acceptable to adults.",
+    "Performing light maintenance on the conclusion.",
+    "Rearranging certainty into a safer shape.",
+    "Testing whether brevity can survive contact with nuance.",
+  ],
+  dramatic: [
+    "Summoning an answer from the storm above the stack.",
+    "Holding counsel with the thunder of possibility.",
+    "Forging a sentence in the furnace of context.",
+    "Waiting for the right idea to step from the fog.",
+    "Gathering the loose sparks before they become insight.",
+    "Charting a course through the ruins of bad drafts.",
+    "Listening for the one sentence that enters like a hero.",
+    "Bracing the reply against the winds of ambiguity.",
+    "Giving the truth a more cinematic entrance.",
+    "Pulling a clean answer from the mouth of the machine.",
+    "Sharpening the point until it glints.",
+    "Escorting the better idea onto the stage.",
+  ],
+}
+
+const THINKING_TONE_OPTIONS = [
+  { value: "witty", label: "Witty" },
+  { value: "dry", label: "Dry" },
+  { value: "dramatic", label: "Dramatic" },
+]
 
 hljs.registerLanguage("elixir", elixir)
 hljs.registerLanguage("javascript", javascript)
@@ -418,15 +508,34 @@ function Sidebar({ token, bots, selectedBotId, onSelectBot, onBotsChange, onDele
 }
 
 /* ───────── Typing Indicator ───────── */
-function TypingIndicator() {
+function TypingIndicator({ tone = "witty" }) {
+  const activeBlurbs = THINKING_BLURBS[tone] || THINKING_BLURBS.witty
+  const [blurbIndex, setBlurbIndex] = useState(
+    () => Math.floor(Math.random() * activeBlurbs.length)
+  )
+
+  useEffect(() => {
+    const startingIndex = Math.floor(Math.random() * activeBlurbs.length)
+    setBlurbIndex(startingIndex)
+
+    const intervalId = window.setInterval(() => {
+      setBlurbIndex((prev) => (prev + 1) % activeBlurbs.length)
+    }, 10_000)
+
+    return () => window.clearInterval(intervalId)
+  }, [activeBlurbs])
+
   return (
     <div className="msg msg--bot">
       <div className="msg-avatar">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2a7 7 0 00-7 7v1a2 2 0 00-2 2v2a2 2 0 002 2h1a7 7 0 0012 0h1a2 2 0 002-2v-2a2 2 0 00-2-2V9a7 7 0 00-7-7z" stroke="currentColor" strokeWidth="1.5"/><circle cx="9" cy="11" r="1.25" fill="currentColor"/><circle cx="15" cy="11" r="1.25" fill="currentColor"/></svg>
       </div>
       <div className="msg-content">
-        <div className="msg-bubble msg-bubble--bot msg-bubble--typing">
-          <div className="typing-dots"><span/><span/><span/></div>
+        <div className="msg-typing-row">
+          <div className="msg-bubble msg-bubble--bot msg-bubble--typing">
+            <div className="typing-dots"><span/><span/><span/></div>
+          </div>
+          <p key={`${tone}-${blurbIndex}`} className="msg-thinking-blurb" aria-live="polite">{activeBlurbs[blurbIndex]}</p>
         </div>
       </div>
     </div>
@@ -452,11 +561,6 @@ function MessageBubble({ message, onSuggestion, usedSuggestion }) {
             </span>
           )}
           <p className="msg-text">{message.body}</p>
-          {message.awaitingResponse && (
-            <div className="msg-thinking">
-              <div className="typing-dots"><span/><span/><span/></div>
-            </div>
-          )}
           {message.pending && <span className="msg-status">Sending…</span>}
           {message.failed && <span className="msg-status msg-status--error">Failed</span>}
           {!message.pending && !message.failed && message.acknowledged && !message.awaitingResponse && (
@@ -545,6 +649,7 @@ function ChatView({ token, bot, conversations, selectedConversationId, onSelectC
   const [messages, setMessages] = useState([])
   const [inputValue, setInputValue] = useState("")
   const [selectedModel, setSelectedModel] = useState("")
+  const [thinkingTone, setThinkingTone] = useState("witty")
   const [botIsTyping, setBotIsTyping] = useState(false)
   const [sending, setSending] = useState(false)
   const [selectedFile, setSelectedFile] = useState(null)
@@ -558,15 +663,12 @@ function ChatView({ token, bot, conversations, selectedConversationId, onSelectC
   const typingTimeoutRef = useRef(null)
   const inputRef = useRef(null)
 
-  function startBotThinking(timeoutMs = 20_000) {
-    setBotIsTyping(true)
-    clearTimeout(typingTimeoutRef.current)
-    typingTimeoutRef.current = setTimeout(() => setBotIsTyping(false), timeoutMs)
+  function startBotThinking(timeoutMs = null) {
+    startThinkingTimer(typingTimeoutRef, setBotIsTyping, timeoutMs)
   }
 
   function stopBotThinking() {
-    clearTimeout(typingTimeoutRef.current)
-    setBotIsTyping(false)
+    stopThinkingTimer(typingTimeoutRef, setBotIsTyping)
   }
 
   // Scroll to bottom
@@ -661,7 +763,7 @@ function ChatView({ token, bot, conversations, selectedConversationId, onSelectC
         ch.on("bot_status_changed", (payload) => {
           if (payload?.is_working !== undefined) {
             if (payload.is_working) {
-              startBotThinking(3000)
+              startBotThinking()
             } else {
               stopBotThinking()
             }
@@ -933,6 +1035,16 @@ function ChatView({ token, bot, conversations, selectedConversationId, onSelectC
         </button>
         <h2 className="chat-title">{selectedConv?.title || bot.name}</h2>
         <div className="chat-topbar-right">
+          <select
+            className="model-picker thinking-tone-picker"
+            value={thinkingTone}
+            onChange={(e) => setThinkingTone(e.target.value)}
+            aria-label="Thinking style"
+          >
+            {THINKING_TONE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
           <span className={`connection-dot ${bot.is_connected ? "connection-dot--on" : ""}`} />
           <span className="connection-label">{bot.is_connected ? "Online" : "Offline"}</span>
         </div>
@@ -953,7 +1065,7 @@ function ChatView({ token, bot, conversations, selectedConversationId, onSelectC
             usedSuggestion={usedSuggestions[msg.id]}
           />
         ))}
-        {botIsTyping && <TypingIndicator />}
+        {botIsTyping && <TypingIndicator tone={thinkingTone} />}
         <div ref={messagesEndRef} />
       </div>
 

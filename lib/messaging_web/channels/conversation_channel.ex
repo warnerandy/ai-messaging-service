@@ -5,18 +5,18 @@ defmodule MessagingWeb.ConversationChannel do
 
   @impl true
   def join("conversation:" <> id, _payload, socket) do
-    conversation_id = String.to_integer(id)
     user = socket.assigns.current_user
-    conversation = Chat.get_conversation!(conversation_id)
 
-    if conversation.user_id == user.id do
+    with {conversation_id, ""} <- Integer.parse(id) do
+      conversation = Chat.get_conversation!(conversation_id, user_id: user.id)
       topic = "conversation:#{conversation.id}"
       Phoenix.PubSub.subscribe(Messaging.PubSub, topic)
 
       {:ok, %{conversation_id: conversation.id},
        assign(socket, :conversation_id, conversation.id)}
     else
-      {:error, %{reason: "forbidden"}}
+      _ ->
+        {:error, %{reason: "invalid_conversation_id"}}
     end
   rescue
     Ecto.NoResultsError ->

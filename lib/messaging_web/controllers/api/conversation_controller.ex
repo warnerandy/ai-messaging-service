@@ -26,74 +26,68 @@ defmodule MessagingWeb.API.ConversationController do
   def create(conn, %{"bot_token_id" => bot_token_id} = params) do
     user = conn.assigns.current_user
 
-    # Verify the bot token belongs to this user
-    bot_token = Bots.get_bot_token!(bot_token_id)
+    bot_token = Bots.get_bot_token!(bot_token_id, user.id)
 
-    if bot_token.user_id != user.id do
-      conn |> put_status(:forbidden) |> json(%{error: "Not your bot token"})
-    else
-      case Chat.create_conversation(%{
-             user_id: user.id,
-             bot_token_id: bot_token_id,
-             title: params["title"] || "New conversation"
-           }) do
-        {:ok, conversation} ->
-          conn
-          |> put_status(:created)
-          |> json(%{
-            id: conversation.id,
-            title: conversation.title,
-            bot_token_id: conversation.bot_token_id
-          })
+    case Chat.create_conversation(%{
+           user_id: user.id,
+           bot_token_id: bot_token.id,
+           title: params["title"] || "New conversation"
+         }) do
+      {:ok, conversation} ->
+        conn
+        |> put_status(:created)
+        |> json(%{
+          id: conversation.id,
+          title: conversation.title,
+          bot_token_id: conversation.bot_token_id
+        })
 
-        {:error, changeset} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{errors: format_errors(changeset)})
-      end
+      {:error, changeset} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{errors: format_errors(changeset)})
     end
+  rescue
+    Ecto.NoResultsError ->
+      conn |> put_status(:not_found) |> json(%{error: "Not found"})
   end
 
   def show(conn, %{"id" => id}) do
     user = conn.assigns.current_user
-    conversation = Chat.get_conversation!(id)
+    conversation = Chat.get_conversation!(id, user_id: user.id)
+    messages = Chat.list_messages(conversation.id)
 
-    if conversation.user_id != user.id do
-      conn |> put_status(:forbidden) |> json(%{error: "Not your conversation"})
-    else
-      messages = Chat.list_messages(conversation.id)
-
-      json(conn, %{
-        conversation: %{
-          id: conversation.id,
-          title: conversation.title,
-          bot_token_id: conversation.bot_token_id
-        },
-        messages:
-          Enum.map(messages, fn m ->
-            %{
-              id: m.id,
-              role: m.role,
-              content_type: m.content_type,
-              body: m.body,
-              metadata: m.metadata,
-              model: m.model,
-              inserted_at: m.inserted_at
-            }
-          end)
-      })
-    end
+    json(conn, %{
+      conversation: %{
+        id: conversation.id,
+        title: conversation.title,
+        bot_token_id: conversation.bot_token_id
+      },
+      messages:
+        Enum.map(messages, fn m ->
+          %{
+            id: m.id,
+            role: m.role,
+            content_type: m.content_type,
+            body: m.body,
+            metadata: m.metadata,
+            model: m.model,
+            inserted_at: m.inserted_at
+          }
+        end)
+    })
+  rescue
+    Ecto.NoResultsError ->
+      conn |> put_status(:not_found) |> json(%{error: "Not found"})
   end
 
   def channel(conn, %{"id" => id}) do
     user = conn.assigns.current_user
-    conversation = Chat.get_conversation!(id)
-
-    if conversation.user_id != user.id do
-      conn |> put_status(:forbidden) |> json(%{error: "Not your conversation"})
-    else
-      json(conn, %{conversation_id: conversation.id, topic: "conversation:#{conversation.id}"})
-    end
+    conversation = Chat.get_conversation!(id, user_id: user.id)
+    json(conn, %{conversation_id: conversation.id, topic: "conversation:#{conversation.id}"})
+  rescue
+    Ecto.NoResultsError ->
+      conn |> put_status(:not_found) |> json(%{error: "Not found"})
   end
 
   defp format_errors(changeset) do
