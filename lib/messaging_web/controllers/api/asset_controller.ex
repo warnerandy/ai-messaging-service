@@ -31,8 +31,14 @@ defmodule MessagingWeb.API.AssetController do
   defp handle_file_upload(file, conversation_id) do
     # Validate file exists
     if file.path && File.exists?(file.path) do
-      # Determine content type
-      content_type = MIME.type(file.filename)
+      # Prefer the upload's reported content type; fall back to extension lookup.
+      content_type =
+        file.content_type
+        |> normalize_content_type()
+        |> case do
+          nil -> MIME.type(file.filename)
+          type -> type
+        end
 
       # Validate allowed types
       if is_allowed_type?(content_type) do
@@ -41,7 +47,6 @@ defmodule MessagingWeb.API.AssetController do
         base_name = Path.basename(file.filename, ext)
         timestamp = System.os_time(:millisecond)
         unique_name = "#{base_name}-#{timestamp}#{ext}"
-        filename = "#{conversation_id}/#{unique_name}"
         upload_dir = Application.app_dir(:messaging, "priv/static/uploads")
         conv_dir = Path.join(upload_dir, to_string(conversation_id))
 
@@ -53,7 +58,7 @@ defmodule MessagingWeb.API.AssetController do
         # Copy file to upload directory
         case File.cp(file.path, dest_path) do
           :ok ->
-            url = "/uploads/#{filename}"
+            url = MessagingWeb.UploadController.signed_url(conversation_id, unique_name)
             {:ok, url, content_type}
 
           {:error, reason} ->
@@ -81,5 +86,14 @@ defmodule MessagingWeb.API.AssetController do
     Enum.any?(allowed, fn allowed_type ->
       String.starts_with?(content_type, allowed_type)
     end)
+  end
+
+  defp normalize_content_type(nil), do: nil
+
+  defp normalize_content_type(content_type) when is_binary(content_type) do
+    content_type
+    |> String.split(";", parts: 2)
+    |> hd()
+    |> String.trim()
   end
 end

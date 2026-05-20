@@ -5,12 +5,6 @@ defmodule MessagingWeb.Endpoint do
 
   socket "/bot", MessagingWeb.BotSocket, websocket: true
 
-  # Serve uploaded files from /uploads
-  plug Plug.Static,
-    at: "/uploads",
-    from: :messaging,
-    gzip: false
-
   # Serve at "/" the static files from "priv/static" directory.
   #
   # When code reloading is disabled (e.g., in production),

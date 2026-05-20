@@ -55,6 +55,13 @@ defmodule MessagingWeb.Router do
     post "/conversations/:conversation_id/assets", AssetController, :upload
   end
 
+  # Authenticated file downloads (signed token via query param)
+  scope "/uploads", MessagingWeb do
+    pipe_through :api
+
+    get "/:conversation_id/*filename", UploadController, :show
+  end
+
   # PWA frontend shell
   scope "/", MessagingWeb do
     pipe_through :browser
