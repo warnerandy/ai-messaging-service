@@ -240,6 +240,66 @@ Content-Type: application/json
 }
 ```
 
+### Upload Asset (Image/File)
+
+Users can upload images or files to a conversation before sending them to the bot.
+
+```
+POST /api/conversations/:conversation_id/assets
+Authorization: Bearer <USER_TOKEN>
+Content-Type: multipart/form-data
+```
+
+**Request:**
+- `file`: The file to upload (required). Allowed types: JPEG, PNG, WebP, GIF, PDF, plain text, CSV
+
+**Response (201):**
+
+```json
+{
+  "url": "/uploads/:conversation_id/filename-timestamp.ext",
+  "content_type": "image/jpeg",
+  "filename": "screenshot.jpg"
+}
+```
+
+Then send a message with the asset:
+
+```
+POST /api/conversations/:conversation_id/messages
+Authorization: Bearer <USER_TOKEN>
+Content-Type: application/json
+```
+
+```json
+{
+  "asset_url": "/uploads/1/screenshot-1715427000000.jpg",
+  "asset_type": "image",
+  "asset_filename": "screenshot.jpg",
+  "model": "gpt-4o"
+}
+```
+
+The `asset_type` can be `"image"` for image files or `"file"` for other file types. Images will be displayed inline in the chat; files will be shown as downloadable links.
+
+**Response (201):**
+
+```json
+{
+  "id": 2,
+  "role": "user",
+  "content_type": "image",
+  "body": null,
+  "metadata": {
+    "url": "/uploads/1/screenshot-1715427000000.jpg",
+    "filename": "screenshot.jpg"
+  },
+  "model": "gpt-4o",
+  "inserted_at": "2026-05-11T18:30:00Z",
+  "conversation_id": 1
+}
+```
+
 ### List Bot Models
 
 Get the available LLM models and token costs for a specific bot.
@@ -400,6 +460,66 @@ Content-Type: application/json
   "content_type": "text",
   "body": "Here is my response.",
   "metadata": {},
+  "inserted_at": "2026-05-11T18:31:00Z"
+}
+```
+
+### Upload bot asset
+
+Bots can upload images or files to be shown in a conversation.
+
+```
+POST /api/bot/conversations/:conversation_id/assets
+Authorization: Bearer <BOT_TOKEN>
+Content-Type: multipart/form-data
+```
+
+**Request:**
+- `file`: The file to upload (required). Allowed types: JPEG, PNG, WebP, GIF, PDF, plain text, CSV
+
+**Response (201):**
+
+```json
+{
+  "url": "/uploads/:conversation_id/filename-timestamp.ext",
+  "content_type": "image/jpeg",
+  "filename": "screenshot.jpg"
+}
+```
+
+Then send a message with the asset:
+
+```
+POST /api/bot/messages
+Content-Type: application/json
+Authorization: Bearer <BOT_TOKEN>
+```
+
+```json
+{
+  "conversation_id": 5,
+  "content_type": "image",
+  "metadata": {
+    "url": "/uploads/5/screenshot-1715427000000.jpg",
+    "filename": "screenshot.jpg"
+  }
+}
+```
+
+The `content_type` can be `"image"` for image files or `"file"` for other file types. Images will be displayed inline in the chat; files will be shown as downloadable links.
+
+**Response (201):**
+
+```json
+{
+  "id": 3,
+  "conversation_id": 5,
+  "content_type": "image",
+  "body": null,
+  "metadata": {
+    "url": "/uploads/5/screenshot-1715427000000.jpg",
+    "filename": "screenshot.jpg"
+  },
   "inserted_at": "2026-05-11T18:31:00Z"
 }
 ```
@@ -612,7 +732,7 @@ The server pushes `new_message` events when a user sends a message:
 }
 ```
 
-### Send a message
+### Send a message (WebSocket)
 
 Push a `send_message` event to reply:
 
@@ -636,6 +756,32 @@ Reply on success:
   "event": "phx_reply",
   "payload": {"status": "ok", "response": {"id": 2}},
   "ref": "2"
+}
+```
+
+### Acknowledge a message (WebSocket)
+
+Push an `acknowledge_message` event to show the thinking animation in the user's chat before you send a response:
+
+```json
+{
+  "topic": "bot:<CHANNEL_CODE>",
+  "event": "acknowledge_message",
+  "payload": {
+    "message_id": 1,
+    "conversation_id": 5
+  },
+  "ref": "4"
+}
+```
+
+Reply on success:
+
+```json
+{
+  "event": "phx_reply",
+  "payload": {"status": "ok"},
+  "ref": "4"
 }
 ```
 
@@ -699,10 +845,11 @@ Phoenix requires a heartbeat every 30 seconds or the connection is dropped:
 3. Join channel "bot:<CHANNEL_CODE>"
 4. PUT /api/bot/models with available models
 5. On "new_message" event:
-   a. Push "update_status" {"is_working": true}
-   b. Process the message
-   c. Push "send_message" {response}
-   d. Push "update_status" {"is_working": false}
+   a. Push "acknowledge_message" {message_id, conversation_id}
+   b. Push "update_status" {"is_working": true}
+   c. Process the message
+   d. Push "send_message" {response}
+   e. Push "update_status" {"is_working": false}
 6. On "refresh_models" event:
    a. PUT /api/bot/models with current models
 7. Send heartbeat every 30s
@@ -749,15 +896,18 @@ Validation error shape:
 | Create conversation | `POST`   | `/api/conversations`                         | User token |
 | Show conversation   | `GET`    | `/api/conversations/:id`                     | User token |
 | Send message        | `POST`   | `/api/conversations/:conversation_id/messages` | User token |
+| Upload asset        | `POST`   | `/api/conversations/:conversation_id/assets` | User token |
 
 ### Bot Endpoints
 
-| Action             | REST                          | WebSocket event      | Auth       |
-|--------------------|-------------------------------|----------------------|------------|
-| Get user messages  | `GET /api/bot/messages`       | `new_message` push   | Bot token  |
-| Send a response    | `POST /api/bot/messages`      | `send_message`       | Bot token  |
-| Get channel code   | `GET /api/bot/channel`        | —                    | Bot token  |
-| Set working status | `PUT /api/bot/status`         | `update_status`      | Bot token  |
-| Set models         | `PUT /api/bot/models`         | —                    | Bot token  |
-| Model refresh req  | —                             | `refresh_models` push| Bot token  |
-| Connect (WS)       | —                             | `?token=TOKEN`       | Bot token  |
+| Action             | REST                                          | WebSocket event      | Auth       |
+|--------------------|-----------------------------------------------|----------------------|------------|
+| Get user messages  | `GET /api/bot/messages`                       | `new_message` push   | Bot token  |
+| Acknowledge message| `PUT /api/bot/messages/:id/acknowledge`       | `acknowledge_message`| Bot token  |
+| Send a response    | `POST /api/bot/messages`                      | `send_message`       | Bot token  |
+| Get channel code   | `GET /api/bot/channel`                        | —                    | Bot token  |
+| Set working status | `PUT /api/bot/status`                         | `update_status`      | Bot token  |
+| Set models         | `PUT /api/bot/models`                         | —                    | Bot token  |
+| Upload asset       | `POST /api/bot/conversations/:conversation_id/assets` | —            | Bot token  |
+| Model refresh req  | —                                             | `refresh_models` push| Bot token  |
+| Connect (WS)       | —                                             | `?token=TOKEN`       | Bot token  |

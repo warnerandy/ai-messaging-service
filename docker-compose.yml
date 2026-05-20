@@ -22,7 +22,7 @@ services:
     environment:
       DATABASE_URL: ecto://messaging:messaging@db/messaging_prod
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:-please-change-me-to-a-64-byte-secret-key-base-value-generated-by-mix-phx-gen-secret}
-      PHX_HOST: localhost
+      PHX_HOST: ${PHX_HOST:-localhost}
       PORT: "4000"
     depends_on:
       db:

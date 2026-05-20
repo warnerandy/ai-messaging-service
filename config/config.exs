@@ -41,7 +41,10 @@ config :esbuild,
     args:
       ~w(js/app.jsx --bundle --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/* --alias:@=. --jsx=automatic),
     cd: Path.expand("../assets", __DIR__),
-    env: %{"NODE_PATH" => Enum.join([Path.expand("../deps", __DIR__), Path.expand("../node_modules", __DIR__)], ":")}
+    env: %{
+      "NODE_PATH" =>
+        Enum.join([Path.expand("../deps", __DIR__), Path.expand("../node_modules", __DIR__)], ":")
+    }
   ]
 
 # Configure tailwind (the version is required)

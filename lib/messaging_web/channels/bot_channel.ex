@@ -109,6 +109,27 @@ defmodule MessagingWeb.BotChannel do
     end
   end
 
+  # Bot acknowledges receipt of a user message (shows thinking animation)
+  def handle_in(
+        "acknowledge_message",
+        %{"message_id" => message_id, "conversation_id" => conversation_id},
+        socket
+      ) do
+    bot_token = socket.assigns.bot_token
+    conversation = Chat.get_conversation!(conversation_id)
+
+    if conversation.bot_token_id == bot_token.id do
+      Logger.info(
+        "[BotChannel] acknowledge_message message_id=#{message_id} conversation_id=#{conversation_id} bot_token_id=#{bot_token.id}"
+      )
+
+      Chat.acknowledge_message(message_id, conversation_id)
+      {:reply, :ok, socket}
+    else
+      {:reply, {:error, %{reason: "unauthorized"}}, socket}
+    end
+  end
+
   # Bot updates its working status
   def handle_in("update_status", %{"is_working" => is_working}, socket) do
     bot_token = socket.assigns.bot_token

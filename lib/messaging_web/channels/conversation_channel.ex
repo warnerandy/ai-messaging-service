@@ -24,6 +24,12 @@ defmodule MessagingWeb.ConversationChannel do
   end
 
   @impl true
+  def handle_info({:message_acknowledged, message_id}, socket) do
+    push(socket, "message_acknowledged", %{message_id: message_id})
+    {:noreply, socket}
+  end
+
+  @impl true
   def handle_info({:new_message, message}, socket) do
     push(socket, "new_message", %{
       message: %{

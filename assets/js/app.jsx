@@ -1,12 +1,68 @@
-import React, { useState, useEffect, useRef, useCallback } from "react"
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { createRoot } from "react-dom/client"
 import { Socket } from "phoenix"
+import DOMPurify from "dompurify"
+import { marked } from "marked"
+import hljs from "highlight.js/lib/core"
+import elixir from "highlight.js/lib/languages/elixir"
+import javascript from "highlight.js/lib/languages/javascript"
+import json from "highlight.js/lib/languages/json"
+import bash from "highlight.js/lib/languages/bash"
+import xml from "highlight.js/lib/languages/xml"
+import markdown from "highlight.js/lib/languages/markdown"
+import "highlight.js/styles/github-dark.css"
 import "../css/app.css"
 import {
   Spinner,
 } from "@heroui/react"
 
 const STORAGE_KEY = "messaging.user.token"
+
+hljs.registerLanguage("elixir", elixir)
+hljs.registerLanguage("javascript", javascript)
+hljs.registerLanguage("js", javascript)
+hljs.registerLanguage("json", json)
+hljs.registerLanguage("bash", bash)
+hljs.registerLanguage("sh", bash)
+hljs.registerLanguage("html", xml)
+hljs.registerLanguage("xml", xml)
+hljs.registerLanguage("markdown", markdown)
+
+marked.setOptions({
+  gfm: true,
+  breaks: true,
+})
+
+function renderMarkdown(rawText) {
+  if (!rawText) return ""
+
+  const html = marked.parse(rawText)
+  const sanitizedHtml = DOMPurify.sanitize(html)
+
+  if (typeof document === "undefined") return sanitizedHtml
+
+  const template = document.createElement("template")
+  template.innerHTML = sanitizedHtml
+
+  template.content.querySelectorAll("pre code").forEach((codeBlock) => {
+    const className = codeBlock.className || ""
+    const langMatch = className.match(/language-([\w-]+)/)
+    const lang = langMatch?.[1]?.toLowerCase()
+    const code = codeBlock.textContent || ""
+
+    const highlighted = lang && hljs.getLanguage(lang)
+      ? hljs.highlight(code, { language: lang })
+      : hljs.highlightAuto(code)
+
+    codeBlock.innerHTML = highlighted.value
+    codeBlock.classList.add("hljs")
+    if (lang) {
+      codeBlock.classList.add(`language-${lang}`)
+    }
+  })
+
+  return template.innerHTML
+}
 
 /* ───────── API helper ───────── */
 async function apiRequest(path, { method = "GET", body, token } = {}) {
@@ -220,7 +276,7 @@ function Sidebar({ token, bots, selectedBotId, onSelectBot, onBotsChange, onDele
       if (created?.token) setCreatedToken(created.token)
       setNewBotName("")
       setShowBotForm(false)
-      onBotsChange()
+      await onBotsChange()
       if (created?.id) onSelectBot(created.id)
     } catch (err) {
       console.error("Failed to create bot:", err)
@@ -369,24 +425,41 @@ function TypingIndicator() {
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2a7 7 0 00-7 7v1a2 2 0 00-2 2v2a2 2 0 002 2h1a7 7 0 0012 0h1a2 2 0 002-2v-2a2 2 0 00-2-2V9a7 7 0 00-7-7z" stroke="currentColor" strokeWidth="1.5"/><circle cx="9" cy="11" r="1.25" fill="currentColor"/><circle cx="15" cy="11" r="1.25" fill="currentColor"/></svg>
       </div>
       <div className="msg-content">
-        <div className="typing-dots"><span/><span/><span/></div>
+        <div className="msg-bubble msg-bubble--bot msg-bubble--typing">
+          <div className="typing-dots"><span/><span/><span/></div>
+        </div>
       </div>
     </div>
   )
 }
 
 /* ───────── Message Bubble ───────── */
-function MessageBubble({ message }) {
+function MessageBubble({ message, onSuggestion, usedSuggestion }) {
   const isUser = message.role === "user"
+  const botBodyHtml = useMemo(
+    () => (!isUser && message.body ? renderMarkdown(message.body) : ""),
+    [isUser, message.body]
+  )
 
   if (isUser) {
     return (
       <div className={`msg msg--user ${message.pending ? "msg--pending" : ""} ${message.failed ? "msg--failed" : ""}`}>
         <div className="msg-bubble">
+          {message.fromSuggestion && (
+            <span className="msg-suggestion-origin">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              Suggestion
+            </span>
+          )}
           <p className="msg-text">{message.body}</p>
+          {message.awaitingResponse && (
+            <div className="msg-thinking">
+              <div className="typing-dots"><span/><span/><span/></div>
+            </div>
+          )}
           {message.pending && <span className="msg-status">Sending…</span>}
           {message.failed && <span className="msg-status msg-status--error">Failed</span>}
-          {!message.pending && !message.failed && message.acknowledged && (
+          {!message.pending && !message.failed && message.acknowledged && !message.awaitingResponse && (
             <span className="msg-status msg-status--delivered">Delivered</span>
           )}
           {!message.pending && !message.failed && !message.acknowledged && (
@@ -397,18 +470,75 @@ function MessageBubble({ message }) {
     )
   }
 
+  const actions = message.content_type === "actions" && Array.isArray(message.metadata?.actions)
+    ? message.metadata.actions
+    : []
+
+  const botAvatarSvg = (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2a7 7 0 00-7 7v1a2 2 0 00-2 2v2a2 2 0 002 2h1a7 7 0 0012 0h1a2 2 0 002-2v-2a2 2 0 00-2-2V9a7 7 0 00-7-7z" stroke="currentColor" strokeWidth="1.5"/><circle cx="9" cy="11" r="1.25" fill="currentColor"/><circle cx="15" cy="11" r="1.25" fill="currentColor"/></svg>
+  )
+
   return (
     <div className="msg msg--bot">
-      <div className="msg-avatar">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2a7 7 0 00-7 7v1a2 2 0 00-2 2v2a2 2 0 002 2h1a7 7 0 0012 0h1a2 2 0 002-2v-2a2 2 0 00-2-2V9a7 7 0 00-7-7z" stroke="currentColor" strokeWidth="1.5"/><circle cx="9" cy="11" r="1.25" fill="currentColor"/><circle cx="15" cy="11" r="1.25" fill="currentColor"/></svg>
-      </div>
+      <div className="msg-avatar">{botAvatarSvg}</div>
       <div className="msg-content">
-        <p className="msg-text">{message.body}</p>
-        {message.model && <span className="msg-model">{message.model}</span>}
+        {message.body && (
+          <div className="msg-bubble msg-bubble--bot">
+            <div className="msg-text msg-text--markdown" dangerouslySetInnerHTML={{ __html: botBodyHtml }} />
+            {message.model && <span className="msg-model">{message.model}</span>}
+          </div>
+        )}
+        {message.content_type === "image" && message.metadata?.url && (
+          <div className="msg-bubble msg-bubble--bot">
+            <img src={message.metadata.url} alt="Bot shared image" className="msg-image" />
+          </div>
+        )}
+        {message.content_type === "file" && message.metadata?.url && (
+          <div className="msg-bubble msg-bubble--bot">
+            <div className="msg-file">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M13 2v7h7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              <a href={message.metadata.url} download={message.metadata.filename} className="msg-file-link">
+                {message.metadata.filename || "File"}
+              </a>
+            </div>
+          </div>
+        )}
+        {actions.length > 0 && (
+          <div className="msg-suggestions">
+            {actions.map((action, i) => {
+              const label = typeof action === "string" ? action : action.label
+              const value = typeof action === "string" ? action : (action.value ?? action.label)
+              const isUsed = usedSuggestion === value
+              const isDisabled = usedSuggestion !== undefined
+
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  disabled={isDisabled}
+                  onClick={() => !isDisabled && onSuggestion && onSuggestion(value)}
+                  className={[
+                    "suggestion-chip",
+                    isUsed ? "suggestion-chip--used" : "",
+                    isDisabled && !isUsed ? "suggestion-chip--dismissed" : "",
+                  ].filter(Boolean).join(" ")}
+                  aria-pressed={isUsed}
+                >
+                  {isUsed && (
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  )}
+                  {label}
+                  {isUsed && <span className="suggestion-chip__sent">Sent</span>}
+                </button>
+              )
+            })}
+          </div>
+        )}
       </div>
     </div>
   )
 }
+
 
 /* ───────── Chat View ───────── */
 function ChatView({ token, bot, conversations, selectedConversationId, onSelectConversation, onCreateConversation, models, onRefreshModels, onBotStatusChange, onToggleSidebar }) {
@@ -417,12 +547,27 @@ function ChatView({ token, bot, conversations, selectedConversationId, onSelectC
   const [selectedModel, setSelectedModel] = useState("")
   const [botIsTyping, setBotIsTyping] = useState(false)
   const [sending, setSending] = useState(false)
+  const [selectedFile, setSelectedFile] = useState(null)
+  const [uploading, setUploading] = useState(false)
+  // Maps message id -> value of the suggestion the user clicked
+  const [usedSuggestions, setUsedSuggestions] = useState({})
   const messagesEndRef = useRef(null)
   const socketRef = useRef(null)
   const channelRef = useRef(null)
   const renderedIdsRef = useRef(new Set())
   const typingTimeoutRef = useRef(null)
   const inputRef = useRef(null)
+
+  function startBotThinking(timeoutMs = 20_000) {
+    setBotIsTyping(true)
+    clearTimeout(typingTimeoutRef.current)
+    typingTimeoutRef.current = setTimeout(() => setBotIsTyping(false), timeoutMs)
+  }
+
+  function stopBotThinking() {
+    clearTimeout(typingTimeoutRef.current)
+    setBotIsTyping(false)
+  }
 
   // Scroll to bottom
   useEffect(() => {
@@ -464,31 +609,61 @@ function ChatView({ token, bot, conversations, selectedConversationId, onSelectC
 
         ch.on("new_message", (payload) => {
           if (!payload?.message) return
+          const incoming = payload.message
+
           setMessages((prev) => {
-            if (renderedIdsRef.current.has(payload.message.id)) return prev
-            renderedIdsRef.current.add(payload.message.id)
-            return [...prev, payload.message]
+            if (renderedIdsRef.current.has(incoming.id)) return prev
+            renderedIdsRef.current.add(incoming.id)
+
+            // Reconcile optimistic user messages when the server echo arrives first.
+            const optimisticIndex = prev.findIndex(
+              (m) => m.pending && m.role === incoming.role && m.body === incoming.body
+            )
+
+            if (optimisticIndex !== -1) {
+              const next = [...prev]
+              next[optimisticIndex] = {
+                ...incoming,
+                pending: false,
+                failed: false,
+                acknowledged: next[optimisticIndex].acknowledged || incoming.acknowledged || false,
+              }
+              return next
+            }
+
+            return [...prev, incoming]
           })
+
+          if (incoming.role !== "user") {
+            stopBotThinking()
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.role === "user" && m.awaitingResponse ? { ...m, awaitingResponse: false } : m
+              )
+            )
+          }
+
           showNotificationIfBackgrounded(payload.message)
         })
 
         ch.on("message_acknowledged", (payload) => {
           if (!payload?.message_id) return
+
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === payload.message_id ? { ...m, acknowledged: true } : m
+              m.id === payload.message_id ? { ...m, acknowledged: true, awaitingResponse: true } : m
             )
           )
+
+          startBotThinking()
         })
 
         ch.on("bot_status_changed", (payload) => {
           if (payload?.is_working !== undefined) {
             if (payload.is_working) {
-              setBotIsTyping(true)
-              clearTimeout(typingTimeoutRef.current)
-              typingTimeoutRef.current = setTimeout(() => setBotIsTyping(false), 3000)
+              startBotThinking(3000)
             } else {
-              setBotIsTyping(false)
+              stopBotThinking()
             }
           }
           if (payload?.is_connected !== undefined && onBotStatusChange) {
@@ -522,6 +697,8 @@ function ChatView({ token, bot, conversations, selectedConversationId, onSelectC
   useEffect(() => {
     if (!selectedConversationId || !token) return
     renderedIdsRef.current.clear()
+    stopBotThinking()
+    setUsedSuggestions({})
 
     async function loadMessages() {
       try {
@@ -536,12 +713,64 @@ function ChatView({ token, bot, conversations, selectedConversationId, onSelectC
     loadMessages()
   }, [selectedConversationId, token])
 
-  async function handleSend(e) {
-    e.preventDefault()
-    const body = inputValue.trim()
+  useEffect(() => {
+    if (models.length === 0) {
+      setSelectedModel("")
+      return
+    }
+
+    const exists = models.some((m) => m.name === selectedModel)
+    if (!exists) {
+      setSelectedModel(models[0].name)
+    }
+  }, [models, selectedModel])
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(typingTimeoutRef.current)
+    }
+  }, [])
+
+  async function handleSuggestion(messageId, value) {
+    if (!value || !selectedConversationId) return
+    setUsedSuggestions((prev) => ({ ...prev, [messageId]: value }))
+    await sendMessage(value, { fromSuggestion: true })
+  }
+
+  async function uploadFile(file) {
+    if (!file || !selectedConversationId) return null
+
+    const formData = new FormData()
+    formData.append("file", file)
+
+    try {
+      const response = await fetch(
+        `/api/conversations/${selectedConversationId}/assets`,
+        {
+          method: "POST",
+          body: formData,
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      )
+
+      if (!response.ok) {
+        throw new Error(`Upload failed: ${response.statusText}`)
+      }
+
+      const data = await response.json()
+      return data
+    } catch (err) {
+      console.error("File upload failed:", err)
+      return null
+    }
+  }
+
+  async function sendMessage(body, opts = {}) {
     if (!body || !selectedConversationId) return
 
-    const model = selectedModel || null
+    const model = selectedModel || models[0]?.name || null
     const optimisticId = `optimistic-${Date.now()}`
     const optimistic = {
       id: optimisticId,
@@ -550,11 +779,11 @@ function ChatView({ token, bot, conversations, selectedConversationId, onSelectC
       role: "user",
       content_type: "text",
       pending: true,
+      fromSuggestion: opts.fromSuggestion || false,
       inserted_at: new Date().toISOString(),
     }
 
     setMessages((prev) => [...prev, optimistic])
-    setInputValue("")
     setSending(true)
 
     try {
@@ -566,13 +795,17 @@ function ChatView({ token, bot, conversations, selectedConversationId, onSelectC
         { method: "POST", body: payload, token }
       )
 
-      setMessages((prev) =>
-        prev.map((m) =>
+      setMessages((prev) => {
+        const deliveredAlreadyPresent = prev.some((m) => m.id === res.id && !m.pending)
+        if (deliveredAlreadyPresent) {
+          return prev.filter((m) => m.id !== optimisticId)
+        }
+        return prev.map((m) =>
           m.id === optimisticId
-            ? { ...m, id: res.id, pending: false }
+            ? { ...res, pending: false, failed: false, acknowledged: m.acknowledged || false, fromSuggestion: m.fromSuggestion }
             : m
         )
-      )
+      })
       renderedIdsRef.current.add(res.id)
     } catch {
       setMessages((prev) =>
@@ -582,6 +815,86 @@ function ChatView({ token, bot, conversations, selectedConversationId, onSelectC
       )
     } finally {
       setSending(false)
+    }
+  }
+
+  async function sendAsset(file) {
+    if (!file || !selectedConversationId) return
+
+    const model = selectedModel || models[0]?.name || null
+    const optimisticId = `optimistic-${Date.now()}`
+    const assetType = file.type.startsWith("image/") ? "image" : "file"
+    const optimistic = {
+      id: optimisticId,
+      body: null,
+      metadata: { url: URL.createObjectURL(file), filename: file.name },
+      model,
+      role: "user",
+      content_type: assetType,
+      pending: true,
+      inserted_at: new Date().toISOString(),
+    }
+
+    setMessages((prev) => [...prev, optimistic])
+    setUploading(true)
+
+    try {
+      const uploadResult = await uploadFile(file)
+      if (!uploadResult) {
+        throw new Error("Upload failed")
+      }
+
+      const payload = {
+        asset_url: uploadResult.url,
+        asset_type: assetType,
+        asset_filename: file.name,
+      }
+      if (model) payload.model = model
+
+      const res = await apiRequest(
+        `/api/conversations/${selectedConversationId}/messages`,
+        { method: "POST", body: payload, token }
+      )
+
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === optimisticId
+            ? { ...res, pending: false, failed: false, acknowledged: m.acknowledged || false }
+            : m
+        )
+      )
+      renderedIdsRef.current.add(res.id)
+      setSelectedFile(null)
+    } catch {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === optimisticId ? { ...m, pending: false, failed: true } : m
+        )
+      )
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function handleSend(e) {
+    e.preventDefault()
+    const body = inputValue.trim()
+    if (!body || !selectedConversationId) return
+
+    setInputValue("")
+    await sendMessage(body)
+  }
+
+  async function handleFileSelect(e) {
+    const file = e.target.files?.[0]
+    if (file) {
+      setSelectedFile(file)
+    }
+  }
+
+  async function handleSendAsset() {
+    if (selectedFile) {
+      await sendAsset(selectedFile)
     }
   }
 
@@ -633,7 +946,12 @@ function ChatView({ token, bot, conversations, selectedConversationId, onSelectC
           </div>
         )}
         {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
+          <MessageBubble
+            key={msg.id}
+            message={msg}
+            onSuggestion={(value) => handleSuggestion(msg.id, value)}
+            usedSuggestion={usedSuggestions[msg.id]}
+          />
         ))}
         {botIsTyping && <TypingIndicator />}
         <div ref={messagesEndRef} />
@@ -641,6 +959,22 @@ function ChatView({ token, bot, conversations, selectedConversationId, onSelectC
 
       {/* Input area */}
       <div className="chat-input-area">
+        {/* File preview when selected */}
+        {selectedFile && (
+          <div className="file-preview">
+            <div className="file-preview-item">
+              <span className="file-preview-name">{selectedFile.name}</span>
+              <button
+                type="button"
+                className="file-preview-remove"
+                onClick={() => setSelectedFile(null)}
+                aria-label="Remove file"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </button>
+            </div>
+          </div>
+        )}
         <form onSubmit={handleSend} className="chat-input-form">
           <textarea
             ref={inputRef}
@@ -662,28 +996,56 @@ function ChatView({ token, bot, conversations, selectedConversationId, onSelectC
           />
           <div className="chat-input-actions">
             <div className="chat-input-left">
+              <input
+                type="file"
+                id="file-input"
+                className="file-input"
+                onChange={handleFileSelect}
+                accept="image/*,.pdf"
+                aria-label="Upload file"
+              />
+              <label htmlFor="file-input" className="file-input-btn" title="Attach file">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </label>
               <select
                 className="model-picker"
                 value={selectedModel}
                 onChange={(e) => setSelectedModel(e.target.value)}
                 aria-label="Model"
               >
-                <option value="">Auto</option>
                 {models.map((m) => (
                   <option key={m.name} value={m.name}>{m.name}</option>
                 ))}
               </select>
             </div>
-            <button
-              type="submit"
-              className={`send-btn ${inputValue.trim() ? "send-btn--active" : ""}`}
-              disabled={sending || !inputValue.trim()}
-              aria-label="Send message"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                <path d="M12 19V5M5 12l7-7 7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </button>
+            {selectedFile ? (
+              <button
+                type="button"
+                className={`send-btn send-btn--active`}
+                onClick={handleSendAsset}
+                disabled={uploading}
+                aria-label="Send file"
+              >
+                {uploading ? (
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="1" fill="currentColor" opacity="0.3"/><circle cx="12" cy="12" r="1" fill="currentColor"/></svg>
+                ) : (
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                    <path d="M12 19V5M5 12l7-7 7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                )}
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className={`send-btn ${inputValue.trim() ? "send-btn--active" : ""}`}
+                disabled={sending || !inputValue.trim()}
+                aria-label="Send message"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 19V5M5 12l7-7 7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            )}
           </div>
         </form>
       </div>

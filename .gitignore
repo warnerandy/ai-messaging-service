@@ -27,6 +27,7 @@ messaging-*.tar
 
 # Ignore assets that are produced by build tools.
 /priv/static/assets/
+/priv/static/uploads/
 
 # Ignore Node.js dependencies and Playwright artifacts
 /node_modules/

@@ -77,6 +77,23 @@ defmodule MessagingWeb.BotAPI.MessageController do
     })
   end
 
+  # PUT /api/bot/messages/:id/acknowledge - Bot acknowledges receipt of a message
+  def acknowledge(conn, %{"id" => id, "conversation_id" => conversation_id}) do
+    bot_token = conn.assigns.bot_token
+    message_id = String.to_integer(id)
+    conv_id = String.to_integer(conversation_id)
+    conversation = Chat.get_conversation!(conv_id)
+
+    if conversation.bot_token_id == bot_token.id do
+      Chat.acknowledge_message(message_id, conv_id)
+      json(conn, %{acknowledged: true, message_id: message_id})
+    else
+      conn
+      |> put_status(:forbidden)
+      |> json(%{error: "Conversation does not belong to this bot"})
+    end
+  end
+
   defp format_errors(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
       Regex.replace(~r"%{(\w+)}", msg, fn _, key ->

@@ -17,13 +17,14 @@ repo_config =
   end
 
 # Configure your database
-config :messaging, Messaging.Repo,
-  repo_config ++
-    [
-      stacktrace: true,
-      show_sensitive_data_on_connection_error: true,
-      pool_size: String.to_integer(System.get_env("POOL_SIZE", "10"))
-    ]
+config :messaging,
+       Messaging.Repo,
+       repo_config ++
+         [
+           stacktrace: true,
+           show_sensitive_data_on_connection_error: true,
+           pool_size: String.to_integer(System.get_env("POOL_SIZE", "10"))
+         ]
 
 # For development, we disable any cache and enable
 # debugging and code reloading.

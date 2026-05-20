@@ -81,9 +81,9 @@ defmodule Messaging.MixProject do
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
       "assets.setup": ["cmd npm install --prefix assets/../"],
-      "assets.build": ["cmd npx --prefix assets/.. vite build --outDir ../priv/static/assets"],
+      "assets.build": ["cmd npx --prefix assets/.. vite build --config assets/vite.config.js"],
       "assets.deploy": [
-        "cmd npx --prefix assets/.. vite build --outDir ../priv/static/assets --mode production",
+        "cmd npx --prefix assets/.. vite build --config assets/vite.config.js --mode production",
         "phx.digest"
       ],
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]

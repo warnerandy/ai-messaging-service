@@ -10,10 +10,28 @@ defmodule MessagingWeb.API.MessageController do
     if conversation.user_id != user.id do
       conn |> put_status(:forbidden) |> json(%{error: "Not your conversation"})
     else
+      # Determine content type and body/metadata
+      {content_type, body, metadata} =
+        cond do
+          params["asset_url"] ->
+            # User is sending an asset
+            content_type = params["asset_type"] || "image"
+            metadata = %{"url" => params["asset_url"], "filename" => params["asset_filename"]}
+            {content_type, nil, metadata}
+
+          params["body"] ->
+            # User is sending text
+            {"text", params["body"], %{}}
+
+          true ->
+            {"text", nil, %{}}
+        end
+
       case Chat.create_message(%{
              role: "user",
-             content_type: "text",
-             body: params["body"],
+             content_type: content_type,
+             body: body,
+             metadata: metadata,
              model: params["model"],
              conversation_id: conversation_id
            }) do
@@ -26,6 +44,7 @@ defmodule MessagingWeb.API.MessageController do
             role: message.role,
             content_type: message.content_type,
             body: message.body,
+            metadata: message.metadata,
             model: message.model,
             inserted_at: message.inserted_at
           })

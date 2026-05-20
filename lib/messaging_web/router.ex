@@ -39,6 +39,7 @@ defmodule MessagingWeb.Router do
     resources "/conversations", ConversationController, only: [:index, :create, :show]
     get "/conversations/:id/channel", ConversationController, :channel
     post "/conversations/:conversation_id/messages", MessageController, :create
+    post "/conversations/:conversation_id/assets", AssetController, :upload
   end
 
   # Bot API - requires bot token
@@ -47,9 +48,11 @@ defmodule MessagingWeb.Router do
 
     post "/messages", MessageController, :create
     get "/messages", MessageController, :index
+    put "/messages/:id/acknowledge", MessageController, :acknowledge
     put "/status", StatusController, :update
     put "/models", ModelController, :update
     get "/channel", ChannelController, :show
+    post "/conversations/:conversation_id/assets", AssetController, :upload
   end
 
   # PWA frontend shell

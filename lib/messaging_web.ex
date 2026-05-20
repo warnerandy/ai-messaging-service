@@ -4,7 +4,9 @@ defmodule MessagingWeb do
   as controllers, channels, and so on.
   """
 
-  def static_paths, do: ~w(assets fonts images favicon.ico robots.txt manifest.webmanifest sw.js index.html)
+  def static_paths,
+    do:
+      ~w(assets fonts images favicon.ico robots.txt manifest.webmanifest sw.js index.html suggestion-preview.html botamus-prime-192.svg botamus-prime-512.svg botamus-prime-192.png botamus-prime-512.png botamus-prime-1024.png)
 
   def router do
     quote do

@@ -88,4 +88,14 @@ defmodule Messaging.Chat do
         :ok
     end)
   end
+
+  def get_message!(id), do: Repo.get!(Message, id)
+
+  def acknowledge_message(message_id, conversation_id) do
+    Phoenix.PubSub.broadcast(
+      Messaging.PubSub,
+      "conversation:#{conversation_id}",
+      {:message_acknowledged, message_id}
+    )
+  end
 end

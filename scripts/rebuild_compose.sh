@@ -16,9 +16,17 @@ if [[ ! -f "$COMPOSE_FILE" ]]; then
   exit 1
 fi
 
+if ! command -v mix >/dev/null 2>&1; then
+  echo "Error: mix is not installed or not on PATH." >&2
+  exit 1
+fi
+
 echo "==> Rebuilding and reloading services with compose file: $COMPOSE_FILE"
 
 cd "$PROJECT_ROOT"
+
+echo "==> Building and digesting frontend assets locally"
+mix assets.deploy
 
 docker compose -f "$COMPOSE_FILE" up -d --build --force-recreate --remove-orphans
 

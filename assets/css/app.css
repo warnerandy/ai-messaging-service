@@ -219,15 +219,16 @@ body {
 /* ───────── Sidebar ───────── */
 
 .sidebar {
-  width: 260px;
+  width: 280px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  padding: 0.75rem;
+  padding: max(0.75rem, env(safe-area-inset-top)) max(0.75rem, env(safe-area-inset-right)) 0.75rem max(0.75rem, env(safe-area-inset-left));
   background: var(--bg-sidebar);
   height: 100dvh;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .sidebar-user {
@@ -568,7 +569,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.75rem 1.5rem;
+  padding: max(1.25rem, env(safe-area-inset-top)) max(1.5rem, env(safe-area-inset-right)) 1.25rem max(1.5rem, env(safe-area-inset-left));
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -674,8 +675,58 @@ body {
   color: var(--text-primary);
 }
 
+.msg-bubble--bot {
+  max-width: 88%;
+  border-radius: 18px 18px 18px 4px;
+  background: linear-gradient(180deg, rgba(39, 39, 42, 0.92) 0%, rgba(31, 31, 35, 0.96) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.msg-bubble--typing {
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
 .msg--pending .msg-bubble { opacity: 0.6; }
 .msg--failed .msg-bubble { border: 1px solid rgba(239, 68, 68, 0.3); }
+
+/* Images in messages */
+.msg-image {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  border-radius: 12px;
+  margin: 0;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+/* Files in messages */
+.msg-file {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem;
+  color: var(--accent);
+}
+
+.msg-file svg {
+  flex-shrink: 0;
+  color: inherit;
+}
+
+.msg-file-link {
+  color: inherit;
+  text-decoration: none;
+  font-size: 0.9rem;
+  word-break: break-word;
+  transition: color 0.15s;
+}
+
+.msg-file-link:hover {
+  text-decoration: underline;
+  color: #bae6fd;
+}
 
 .msg-content {
   flex: 1;
@@ -688,6 +739,81 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 0.92rem;
+}
+
+.msg-text--markdown {
+  white-space: normal;
+}
+
+.msg-text--markdown > :first-child {
+  margin-top: 0;
+}
+
+.msg-text--markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.msg-text--markdown p,
+.msg-text--markdown ul,
+.msg-text--markdown ol,
+.msg-text--markdown pre,
+.msg-text--markdown blockquote,
+.msg-text--markdown table,
+.msg-text--markdown h1,
+.msg-text--markdown h2,
+.msg-text--markdown h3,
+.msg-text--markdown h4,
+.msg-text--markdown h5,
+.msg-text--markdown h6 {
+  margin: 0.6rem 0;
+}
+
+.msg-text--markdown ul,
+.msg-text--markdown ol {
+  padding-left: 1.25rem;
+}
+
+.msg-text--markdown li + li {
+  margin-top: 0.2rem;
+}
+
+.msg-text--markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.83rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.35rem;
+  background: rgba(15, 23, 42, 0.52);
+}
+
+.msg-text--markdown pre {
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.7rem;
+  background: rgba(2, 6, 23, 0.72);
+  padding: 0.7rem 0.8rem;
+}
+
+.msg-text--markdown pre code {
+  display: block;
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+}
+
+.msg-text--markdown .hljs {
+  background: transparent;
+  padding: 0;
+}
+
+.msg-text--markdown a {
+  color: #7dd3fc;
+  text-decoration: underline;
+  text-decoration-color: rgba(125, 211, 252, 0.55);
+  text-underline-offset: 0.12rem;
+}
+
+.msg-text--markdown a:hover {
+  color: #bae6fd;
 }
 
 .msg-status {
@@ -706,6 +832,81 @@ body {
   font-size: 0.7rem;
   color: var(--text-muted);
   margin-top: 0.35rem;
+}
+
+/* Typing dots */
+/* ───────── Suggestion chips ───────── */
+
+.msg-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.5rem;
+}
+
+.suggestion-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.38rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid rgba(36, 137, 255, 0.45);
+  background: rgba(36, 137, 255, 0.07);
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s;
+  white-space: nowrap;
+}
+
+.suggestion-chip:hover:not(:disabled) {
+  background: rgba(36, 137, 255, 0.18);
+  border-color: rgba(36, 137, 255, 0.7);
+}
+
+.suggestion-chip:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+/* Chip that was clicked — filled solid to signal it's the action taken */
+.suggestion-chip--used {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  cursor: default;
+  font-weight: 500;
+}
+
+/* Other chips after one has been chosen — greyed out */
+.suggestion-chip--dismissed {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.suggestion-chip__sent {
+  font-size: 0.7rem;
+  opacity: 0.8;
+  margin-left: 0.15rem;
+}
+
+/* Hint label on a user message that originated from a suggestion */
+.msg-suggestion-origin {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.7rem;
+  color: var(--accent);
+  margin-bottom: 0.3rem;
+  opacity: 0.75;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.msg-thinking {
+  margin-top: 0.35rem;
+  padding: 0;
 }
 
 /* Typing dots */
@@ -737,6 +938,78 @@ body {
 .chat-input-area {
   padding: 0 1.5rem 1.5rem;
   flex-shrink: 0;
+}
+
+/* File preview */
+.file-preview {
+  max-width: 720px;
+  margin: 0 auto 0.5rem;
+  padding: 0.75rem;
+  border-radius: 12px;
+  background: rgba(36, 137, 255, 0.1);
+  border: 1px solid rgba(36, 137, 255, 0.3);
+}
+
+.file-preview-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.file-preview-name {
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-preview-remove {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.file-preview-remove:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+/* File input */
+.file-input {
+  display: none;
+}
+
+.file-input-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  padding: 0;
+}
+
+.file-input-btn:hover {
+  background: rgba(36, 137, 255, 0.1);
+  border-color: rgba(36, 137, 255, 0.3);
+  color: var(--accent);
 }
 
 .chat-input-form {
