@@ -162,5 +162,63 @@ defmodule MessagingWeb.API.UploadFlowTest do
       assert file_message["metadata"]["url"] == upload_response["url"]
       assert file_message["body"] == nil
     end
+
+    test "is_suggestion persists for user text messages across bot and conversation reloads", %{
+      conn: conn
+    } do
+      bot_response =
+        conn
+        |> post(~p"/api/bot-tokens", %{"name" => "Suggestion Flag Bot"})
+        |> json_response(:created)
+
+      conversation_response =
+        conn
+        |> post(~p"/api/conversations", %{"bot_token_id" => bot_response["id"]})
+        |> json_response(:created)
+
+      conversation_id = conversation_response["id"]
+      bot_token = bot_response["token"]
+
+      message_response =
+        conn
+        |> post(~p"/api/conversations/#{conversation_id}/messages", %{
+          "body" => "From suggestion chip",
+          "is_suggestion" => true
+        })
+        |> json_response(:created)
+
+      assert message_response["is_suggestion"] == true
+
+      conversation_show_response =
+        conn
+        |> get(~p"/api/conversations/#{conversation_id}")
+        |> json_response(:ok)
+
+      suggested_message =
+        Enum.find(conversation_show_response["messages"], fn message ->
+          message["id"] == message_response["id"]
+        end)
+
+      assert suggested_message
+      assert suggested_message["is_suggestion"] == true
+
+      bot_conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_req_header("authorization", "Bearer #{bot_token}")
+
+      pending_messages =
+        bot_conn
+        |> get(~p"/api/bot/messages")
+        |> json_response(:ok)
+        |> Map.fetch!("messages")
+
+      bot_pending =
+        Enum.find(pending_messages, fn message ->
+          message["id"] == message_response["id"]
+        end)
+
+      assert bot_pending
+      assert bot_pending["is_suggestion"] == true
+    end
   end
 end

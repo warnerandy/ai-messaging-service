@@ -12,6 +12,7 @@ defmodule MessagingWeb.BotAPI.MessageController do
       content_type: params["content_type"] || "text",
       body: params["body"],
       metadata: params["metadata"] || %{},
+      is_suggestion: params["is_suggestion"] || false,
       conversation_id: params["conversation_id"]
     }
 
@@ -28,6 +29,7 @@ defmodule MessagingWeb.BotAPI.MessageController do
           body: message.body,
           metadata: message.metadata,
           model: message.model,
+          is_suggestion: message.is_suggestion,
           inserted_at: message.inserted_at
         })
 
@@ -69,6 +71,8 @@ defmodule MessagingWeb.BotAPI.MessageController do
             body: m.body,
             metadata: m.metadata,
             model: m.model,
+            acknowledged: m.acknowledged,
+            is_suggestion: m.is_suggestion,
             inserted_at: m.inserted_at
           }
         end)

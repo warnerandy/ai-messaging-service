@@ -25,7 +25,6 @@ defmodule MessagingWeb.Router do
     plug MessagingWeb.BotAuth
   end
 
-  # Public - registration & login
   scope "/api", MessagingWeb.API do
     pipe_through :public_api
 
@@ -37,6 +36,7 @@ defmodule MessagingWeb.Router do
   scope "/api", MessagingWeb.API do
     pipe_through :user_api
 
+    get "/ping", PingController, :show
     resources "/bot-tokens", BotTokenController, only: [:index, :create, :delete]
     get "/bot-tokens/:bot_token_id/channel", BotTokenController, :channel
     get "/bot-tokens/:bot_token_id/models", BotModelController, :index

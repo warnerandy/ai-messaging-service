@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "useTabs": true,
+  "tabWidth": 2,
+  "lineWidth": 100,
+  "endOfLine": "lf",
+  "quoteProps": "as-needed",
+  "singleQuote": false,
+  "jsxSingleQuote": false,
+  "trailingComma": "all",
+  "semi": false,
+  "bracketSpacing": true,
+  "bracketSameLine": false,
+  "arrowParens": "always",
+  "htmlWhitespaceSensitivity": "css",
+  "proseWrap": "preserve",
+  "objectWrap": "preserve",
+  "ignorePatterns": []
+}

@@ -11,6 +11,8 @@ defmodule Messaging.Chat.Message do
     field :body, :string
     field :metadata, :map, default: %{}
     field :model, :string
+    field :acknowledged, :boolean, default: false
+    field :is_suggestion, :boolean, default: false
 
     belongs_to :conversation, Messaging.Chat.Conversation
 
@@ -19,7 +21,16 @@ defmodule Messaging.Chat.Message do
 
   def changeset(message, attrs) do
     message
-    |> cast(attrs, [:role, :content_type, :body, :metadata, :model, :conversation_id])
+    |> cast(attrs, [
+      :role,
+      :content_type,
+      :body,
+      :metadata,
+      :model,
+      :acknowledged,
+      :is_suggestion,
+      :conversation_id
+    ])
     |> validate_required([:role, :conversation_id])
     |> validate_inclusion(:role, @valid_roles)
     |> validate_inclusion(:content_type, @valid_content_types)

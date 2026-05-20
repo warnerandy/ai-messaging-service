@@ -7,7 +7,7 @@ export default defineConfig(({ command }) => {
   const isDev = command === "serve"
 
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [react({ jsxRuntime: "automatic" }), tailwindcss()],
     root: path.resolve(__dirname),
     publicDir: false,
     build: {
@@ -29,6 +29,13 @@ export default defineConfig(({ command }) => {
           },
         },
       },
+    },
+    test: {
+      environment: "jsdom",
+      globals: true,
+      setupFiles: path.resolve(__dirname, "js/test/setup.js"),
+      clearMocks: true,
+      restoreMocks: true,
     },
     resolve: {
       alias: {

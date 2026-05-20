@@ -113,6 +113,7 @@ test('shows thinking animation in bot bubble when bot acknowledges message', asy
   // ── 8. Thinking animation should now appear in the bot bubble ────────────
   const thinkingDots = page.locator('.msg-bubble--typing .typing-dots')
   await expect(thinkingDots).toBeVisible({ timeout: 5000 })
+  await expect(page.locator('.msg-bubble--typing .msg-thinking-timer')).toBeVisible({ timeout: 5000 })
 
   // User bubble should not render its own thinking indicator
   await expect(userBubble.locator('.msg-thinking')).toHaveCount(0)

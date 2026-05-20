@@ -56,6 +56,7 @@ defmodule MessagingWeb.BotChannel do
         body: message.body,
         metadata: message.metadata,
         model: message.model,
+        is_suggestion: message.is_suggestion,
         inserted_at: message.inserted_at
       }
     })
@@ -84,6 +85,7 @@ defmodule MessagingWeb.BotChannel do
       content_type: payload["content_type"] || "text",
       body: payload["body"],
       metadata: payload["metadata"] || %{},
+      is_suggestion: payload["is_suggestion"] || false,
       conversation_id: payload["conversation_id"]
     }
 

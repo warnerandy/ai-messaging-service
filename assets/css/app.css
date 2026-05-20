@@ -238,6 +238,13 @@ body {
   padding: 0.5rem 0.5rem 0.25rem;
 }
 
+.sidebar-user-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
 .user-avatar {
   width: 28px;
   height: 28px;
@@ -258,6 +265,59 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.sidebar-app-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: fit-content;
+  padding: 0.14rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.sidebar-app-status--online {
+  border-color: rgba(34, 197, 94, 0.24);
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.sidebar-app-status--offline {
+  border-color: rgba(239, 68, 68, 0.22);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.sidebar-app-status--checking {
+  border-color: rgba(250, 204, 21, 0.22);
+  background: rgba(250, 204, 21, 0.08);
+}
+
+.sidebar-app-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.sidebar-app-status-dot--online {
+  background: #22c55e;
+}
+
+.sidebar-app-status-dot--offline {
+  background: #ef4444;
+}
+
+.sidebar-app-status-dot--checking {
+  background: #facc15;
+}
+
+.sidebar-app-status-label {
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .sidebar-action-btn {
@@ -589,10 +649,6 @@ body {
   justify-content: flex-end;
 }
 
-.thinking-tone-picker {
-  min-width: 7rem;
-}
-
 .connection-dot {
   width: 8px;
   height: 8px;
@@ -693,15 +749,13 @@ body {
   width: fit-content;
   max-width: fit-content;
   min-width: 4rem;
-  padding-top: 0.5rem;
-  padding-bottom: 0.5rem;
+  padding: 0.65rem 0.85rem;
 }
 
-.msg-typing-row {
+.msg-thinking {
   display: flex;
-  align-items: center;
-  gap: 0.85rem;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 0.35rem;
 }
 
 .msg-thinking-blurb {
@@ -712,6 +766,18 @@ body {
   letter-spacing: 0.01em;
   max-width: min(100%, 26rem);
   animation: thinking-blurb-fade 240ms ease;
+}
+
+.msg-thinking-timer {
+  align-self: flex-start;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  padding: 0.14rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .msg--pending .msg-bubble { opacity: 0.6; }
@@ -940,11 +1006,10 @@ body {
   padding: 0;
 }
 
-/* Typing dots */
 .typing-dots {
   display: flex;
   gap: 0.25rem;
-  padding: 0.5rem 0;
+  padding: 0.1rem 0 0.2rem;
 }
 
 .typing-dots span {

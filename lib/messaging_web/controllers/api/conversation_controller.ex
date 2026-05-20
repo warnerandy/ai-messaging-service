@@ -55,7 +55,9 @@ defmodule MessagingWeb.API.ConversationController do
   def show(conn, %{"id" => id}) do
     user = conn.assigns.current_user
     conversation = Chat.get_conversation!(id, user_id: user.id)
-    messages = Chat.list_messages(conversation.id)
+    after_id = parse_positive_integer(conn.params["after_id"])
+    limit = parse_positive_integer(conn.params["limit"])
+    messages = Chat.list_messages(conversation.id, after_id: after_id, limit: limit)
 
     json(conn, %{
       conversation: %{
@@ -72,6 +74,8 @@ defmodule MessagingWeb.API.ConversationController do
             body: m.body,
             metadata: m.metadata,
             model: m.model,
+            acknowledged: m.acknowledged,
+            is_suggestion: m.is_suggestion,
             inserted_at: m.inserted_at
           }
         end)
@@ -97,4 +101,17 @@ defmodule MessagingWeb.API.ConversationController do
       end)
     end)
   end
+
+  defp parse_positive_integer(nil), do: nil
+
+  defp parse_positive_integer(value) when is_integer(value) and value > 0, do: value
+
+  defp parse_positive_integer(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {parsed, ""} when parsed > 0 -> parsed
+      _ -> nil
+    end
+  end
+
+  defp parse_positive_integer(_), do: nil
 end

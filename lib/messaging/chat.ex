@@ -44,11 +44,19 @@ defmodule Messaging.Chat do
 
   # --- Messages ---
 
-  def list_messages(conversation_id) do
-    Message
-    |> where(conversation_id: ^conversation_id)
-    |> order_by(asc: :inserted_at)
-    |> Repo.all()
+  def list_messages(conversation_id, opts \\ []) do
+    conversation_id = normalize_conversation_id!(conversation_id)
+    after_id = Keyword.get(opts, :after_id)
+    limit = Keyword.get(opts, :limit)
+
+    query =
+      Message
+      |> where(conversation_id: ^conversation_id)
+      |> maybe_scope_after_id(after_id)
+      |> maybe_limit_messages(limit)
+
+    Repo.all(query)
+    |> Enum.reverse()
   end
 
   def get_pending_messages_for_bot(bot_token_id, opts \\ []) do
@@ -59,6 +67,7 @@ defmodule Messaging.Chat do
       |> join(:inner, [m], c in Conversation, on: m.conversation_id == c.id)
       |> where([m, c], c.bot_token_id == ^bot_token_id)
       |> where([m], m.role == "user")
+      |> where([m], not m.acknowledged)
       |> order_by([m], asc: m.inserted_at)
       |> select([m, c], %{message: m, conversation_id: c.id})
 
@@ -102,11 +111,23 @@ defmodule Messaging.Chat do
   def get_message!(id), do: Repo.get!(Message, id)
 
   def acknowledge_message(message_id, conversation_id) do
-    Phoenix.PubSub.broadcast(
-      Messaging.PubSub,
-      "conversation:#{conversation_id}",
-      {:message_acknowledged, message_id}
-    )
+    {count, _} =
+      Message
+      |> where(
+        [m],
+        m.id == ^message_id and m.conversation_id == ^conversation_id and m.role == "user"
+      )
+      |> Repo.update_all(set: [acknowledged: true])
+
+    if count > 0 do
+      Phoenix.PubSub.broadcast(
+        Messaging.PubSub,
+        "conversation:#{conversation_id}",
+        {:message_acknowledged, message_id}
+      )
+    end
+
+    :ok
   end
 
   defp get_conversation_with_bot!(id) do
@@ -127,6 +148,30 @@ defmodule Messaging.Chat do
       {key, _value}, _acc_query ->
         raise ArgumentError, "unsupported conversation scope: #{inspect(key)}"
     end)
+  end
+
+  defp maybe_scope_after_id(query, nil), do: query
+
+  defp maybe_scope_after_id(query, after_id) when is_integer(after_id) do
+    where(query, [m], m.id > ^after_id)
+  end
+
+  defp maybe_scope_after_id(_query, after_id) do
+    raise ArgumentError, "invalid after_id: #{inspect(after_id)}"
+  end
+
+  defp maybe_limit_messages(query, nil) do
+    order_by(query, [m], desc: m.id)
+  end
+
+  defp maybe_limit_messages(query, limit) when is_integer(limit) and limit > 0 do
+    query
+    |> order_by([m], desc: m.id)
+    |> limit(^limit)
+  end
+
+  defp maybe_limit_messages(_query, limit) do
+    raise ArgumentError, "invalid limit: #{inspect(limit)}"
   end
 
   defp normalize_conversation_id!(id) when is_integer(id), do: id

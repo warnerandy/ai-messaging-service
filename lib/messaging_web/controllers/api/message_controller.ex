@@ -30,6 +30,7 @@ defmodule MessagingWeb.API.MessageController do
            body: body,
            metadata: metadata,
            model: params["model"],
+           is_suggestion: params["is_suggestion"] || false,
            conversation_id: conversation.id
          }) do
       {:ok, message} ->
@@ -43,6 +44,8 @@ defmodule MessagingWeb.API.MessageController do
           body: message.body,
           metadata: message.metadata,
           model: message.model,
+          acknowledged: message.acknowledged,
+          is_suggestion: message.is_suggestion,
           inserted_at: message.inserted_at
         })
 

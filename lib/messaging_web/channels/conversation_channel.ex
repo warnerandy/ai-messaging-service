@@ -40,6 +40,8 @@ defmodule MessagingWeb.ConversationChannel do
         body: message.body,
         metadata: message.metadata,
         model: message.model,
+        acknowledged: message.acknowledged,
+        is_suggestion: message.is_suggestion,
         inserted_at: message.inserted_at
       }
     })
