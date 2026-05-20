@@ -91,6 +91,14 @@ export function createConversationMessage(token, conversationId, payload) {
 	})
 }
 
+export function createConversationTimeoutMessage(token, conversationId, messageId) {
+	return apiRequest(`/api/conversations/${conversationId}/messages/timeout`, {
+		method: "POST",
+		body: { message_id: messageId },
+		token,
+	})
+}
+
 export function uploadConversationAsset(token, conversationId, file) {
 	return uploadFile(`/api/conversations/${conversationId}/assets`, file, token)
 }

@@ -45,6 +45,7 @@ defmodule MessagingWeb.Router do
     resources "/conversations", ConversationController, only: [:index, :create, :show]
     get "/conversations/:id/channel", ConversationController, :channel
     post "/conversations/:conversation_id/messages", MessageController, :create
+    post "/conversations/:conversation_id/messages/timeout", MessageController, :timeout
     post "/conversations/:conversation_id/assets", AssetController, :upload
   end
 

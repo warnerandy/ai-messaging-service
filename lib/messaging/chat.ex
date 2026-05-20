@@ -108,16 +108,93 @@ defmodule Messaging.Chat do
     end)
   end
 
+  def create_bot_timeout_message(conversation_id, message_id) do
+    conversation_id = normalize_conversation_id!(conversation_id)
+    message_id = normalize_message_id!(message_id)
+
+    Repo.transaction(fn ->
+      user_message =
+        Message
+        |> where(
+          [m],
+          m.id == ^message_id and m.conversation_id == ^conversation_id and m.role == "user" and
+            m.acknowledged
+        )
+        |> lock("FOR UPDATE")
+        |> Repo.one()
+
+      if is_nil(user_message) do
+        Repo.rollback(:not_eligible)
+      end
+
+      bot_replied? =
+        Message
+        |> where(
+          [m],
+          m.conversation_id == ^conversation_id and m.role == "bot" and m.id > ^message_id
+        )
+        |> Repo.exists?()
+
+      already_reported? =
+        Message
+        |> where([m], m.conversation_id == ^conversation_id and m.role == "system")
+        |> where(
+          [m],
+          fragment("?->>'kind' = 'bot_timeout'", m.metadata) and
+            fragment("(?->>'timeout_for_message_id')::bigint = ?", m.metadata, ^message_id)
+        )
+        |> Repo.exists?()
+
+      cond do
+        bot_replied? ->
+          Repo.rollback(:already_responded)
+
+        already_reported? ->
+          Repo.rollback(:already_reported)
+
+        true ->
+          attrs = %{
+            role: "system",
+            content_type: "text",
+            body: "The bot failed to respond.",
+            metadata: %{"kind" => "bot_timeout", "timeout_for_message_id" => message_id},
+            conversation_id: conversation_id
+          }
+
+          case Repo.insert(Message.changeset(%Message{}, attrs)) do
+            {:ok, message} -> message
+            {:error, changeset} -> Repo.rollback({:invalid, changeset})
+          end
+      end
+    end)
+    |> case do
+      {:ok, message} ->
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "conversation:#{message.conversation_id}",
+          {:new_message, message}
+        )
+
+        {:ok, message}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   def get_message!(id), do: Repo.get!(Message, id)
 
   def acknowledge_message(message_id, conversation_id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
     {count, _} =
       Message
       |> where(
         [m],
-        m.id == ^message_id and m.conversation_id == ^conversation_id and m.role == "user"
+        m.id == ^message_id and m.conversation_id == ^conversation_id and m.role == "user" and
+          not m.acknowledged
       )
-      |> Repo.update_all(set: [acknowledged: true])
+      |> Repo.update_all(set: [acknowledged: true, acknowledged_at: now])
 
     if count > 0 do
       Phoenix.PubSub.broadcast(
@@ -180,6 +257,15 @@ defmodule Messaging.Chat do
     case Integer.parse(id) do
       {parsed, ""} -> parsed
       _ -> raise Ecto.NoResultsError, queryable: Conversation
+    end
+  end
+
+  defp normalize_message_id!(id) when is_integer(id), do: id
+
+  defp normalize_message_id!(id) when is_binary(id) do
+    case Integer.parse(id) do
+      {parsed, ""} -> parsed
+      _ -> raise Ecto.NoResultsError, queryable: Message
     end
   end
 end

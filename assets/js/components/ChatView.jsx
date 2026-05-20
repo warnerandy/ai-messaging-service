@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useRef } from "react"
+import React, { useState, useEffect, useRef, useCallback } from "react"
 import { Socket } from "phoenix"
 import MessageBubbleView from "./MessageBubble.jsx"
 import TypingIndicatorView from "./TypingIndicator.jsx"
 import {
+	createConversationTimeoutMessage,
 	createConversationMessage,
 	getConversation,
 	getConversationChannel,
@@ -11,10 +12,31 @@ import {
 import { showNotificationIfBackgrounded } from "../lib/notifications.js"
 import { startThinkingTimer, stopThinkingTimer } from "../thinkingTimer.mjs"
 
+const BOT_RESPONSE_TIMEOUT_MS = 10 * 60 * 1000
+
+function getTimeoutStartMs(message) {
+	const timestamp = message.acknowledged_at ?? message.inserted_at
+	const parsed = timestamp ? Date.parse(timestamp) : Number.NaN
+	return Number.isNaN(parsed) ? null : parsed
+}
+
+function isBotTimeoutSystemMessage(message) {
+	const timeoutForMessageId = Number(message.metadata?.timeout_for_message_id)
+	return (
+		message.role === "system" &&
+		message.metadata?.kind === "bot_timeout" &&
+		Number.isInteger(timeoutForMessageId)
+	)
+}
+
 export function deriveConversationState(messages) {
 	let hasPendingBotResponse = false
-
 	const nextMessages = [...messages]
+	const timedOutMessageIds = new Set(
+		nextMessages
+			.filter((message) => isBotTimeoutSystemMessage(message))
+			.map((message) => Number(message.metadata.timeout_for_message_id)),
+	)
 
 	for (let index = nextMessages.length - 1; index >= 0; index -= 1) {
 		const message = nextMessages[index]
@@ -25,7 +47,11 @@ export function deriveConversationState(messages) {
 		}
 
 		if (message.role === "user") {
-			const awaitingResponse = Boolean(message.acknowledged) && !hasPendingBotResponse
+			const awaitingResponse =
+				Boolean(message.acknowledged) &&
+				!hasPendingBotResponse &&
+				!timedOutMessageIds.has(message.id) &&
+				!message.timeoutReported
 
 			nextMessages[index] = {
 				...message,
@@ -33,6 +59,11 @@ export function deriveConversationState(messages) {
 			}
 
 			hasPendingBotResponse = awaitingResponse || hasPendingBotResponse
+			continue
+		}
+
+		if (isBotTimeoutSystemMessage(message)) {
+			hasPendingBotResponse = false
 		}
 	}
 
@@ -56,6 +87,7 @@ export function normalizeMessage(message, fallback = {}) {
 		...fallback,
 		...message,
 		acknowledged: message.acknowledged ?? fallback.acknowledged ?? false,
+		timeoutReported: message.timeoutReported ?? fallback.timeoutReported ?? false,
 		fromSuggestion,
 	}
 }
@@ -88,6 +120,8 @@ export default function ChatView({
 	const hasJoinedConversationRef = useRef(false)
 	const messagesRef = useRef([])
 	const typingTimeoutRef = useRef(null)
+	const responseTimeoutsRef = useRef(new Map())
+	const timeoutRequestsRef = useRef(new Set())
 	const inputRef = useRef(null)
 
 	function startBotThinking(timeoutMs = null) {
@@ -98,6 +132,45 @@ export default function ChatView({
 		stopThinkingTimer(typingTimeoutRef, setBotIsTyping)
 	}
 
+	const clearResponseTimeout = useCallback((messageId) => {
+		const timeoutId = responseTimeoutsRef.current.get(messageId)
+		if (timeoutId !== undefined) {
+			window.clearTimeout(timeoutId)
+			responseTimeoutsRef.current.delete(messageId)
+		}
+	}, [])
+
+	const handleResponseTimeout = useCallback(
+		async (messageId) => {
+			timeoutRequestsRef.current.delete(messageId)
+
+			setMessages((prev) => {
+				const next = prev.map((message) =>
+					message.id === messageId && message.role === "user"
+						? { ...message, timeoutReported: true }
+						: message,
+				)
+				const state = deriveConversationState(next)
+				setBotIsTyping(state.botIsTyping)
+				return state.messages
+			})
+
+			try {
+				const response = await createConversationTimeoutMessage(
+					token,
+					selectedConversationId,
+					messageId,
+				)
+				if (response?.id) renderedIdsRef.current.add(response.id)
+			} catch (err) {
+				if (!/already responded|already reported/i.test(String(err?.message ?? ""))) {
+					console.error("Timeout system message failed:", err)
+				}
+			}
+		},
+		[selectedConversationId, token],
+	)
+
 	// Scroll to bottom
 	useEffect(() => {
 		messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -106,6 +179,42 @@ export default function ChatView({
 	useEffect(() => {
 		messagesRef.current = messages
 	}, [messages])
+
+	useEffect(() => {
+		if (!selectedConversationId || !token) return
+
+		const activeTimeoutIds = new Set()
+
+		messages.forEach((message) => {
+			if (message.role !== "user" || !message.awaitingResponse || message.timeoutReported) return
+			if (typeof message.id !== "number") return
+
+			activeTimeoutIds.add(message.id)
+			if (responseTimeoutsRef.current.has(message.id) || timeoutRequestsRef.current.has(message.id))
+				return
+
+			const startedAt = getTimeoutStartMs(message)
+			const remainingMs =
+				startedAt == null
+					? BOT_RESPONSE_TIMEOUT_MS
+					: Math.max(0, BOT_RESPONSE_TIMEOUT_MS - (Date.now() - startedAt))
+
+			const timeoutId = window.setTimeout(() => {
+				clearResponseTimeout(message.id)
+				timeoutRequestsRef.current.add(message.id)
+				handleResponseTimeout(message.id)
+			}, remainingMs)
+
+			responseTimeoutsRef.current.set(message.id, timeoutId)
+		})
+
+		Array.from(responseTimeoutsRef.current.keys()).forEach((messageId) => {
+			if (!activeTimeoutIds.has(messageId)) {
+				clearResponseTimeout(messageId)
+				timeoutRequestsRef.current.delete(messageId)
+			}
+		})
+	}, [clearResponseTimeout, handleResponseTimeout, messages, selectedConversationId, token])
 
 	// WebSocket connection
 	useEffect(() => {
@@ -215,20 +324,15 @@ export default function ChatView({
 								pending: false,
 								failed: false,
 							})
-							return next
+							const state = deriveConversationState(next)
+							setBotIsTyping(state.botIsTyping)
+							return state.messages
 						}
 
-						return [...prev, incoming]
+						const state = deriveConversationState([...prev, incoming])
+						setBotIsTyping(state.botIsTyping)
+						return state.messages
 					})
-
-					if (incoming.role !== "user") {
-						stopBotThinking()
-						setMessages((prev) =>
-							prev.map((m) =>
-								m.role === "user" && m.awaitingResponse ? { ...m, awaitingResponse: false } : m,
-							),
-						)
-					}
 
 					showNotificationIfBackgrounded(payload.message)
 				})
@@ -236,15 +340,17 @@ export default function ChatView({
 				ch.on("message_acknowledged", (payload) => {
 					if (!payload?.message_id) return
 
-					setMessages((prev) =>
-						prev.map((m) =>
+					setMessages((prev) => {
+						const next = prev.map((m) =>
 							m.id === payload.message_id
-								? { ...m, acknowledged: true, awaitingResponse: true }
+								? { ...m, acknowledged: true, acknowledged_at: new Date().toISOString() }
 								: m,
-						),
-					)
-
-					startBotThinking()
+						)
+						const state = deriveConversationState(next)
+						setBotIsTyping(state.botIsTyping)
+						if (state.botIsTyping) startBotThinking()
+						return state.messages
+					})
 				})
 
 				ch.on("bot_status_changed", (payload) => {
@@ -295,6 +401,10 @@ export default function ChatView({
 		hasJoinedConversationRef.current = false
 		renderedIdsRef.current.clear()
 		stopBotThinking()
+		Array.from(responseTimeoutsRef.current.keys()).forEach((messageId) =>
+			clearResponseTimeout(messageId),
+		)
+		timeoutRequestsRef.current.clear()
 		setUsedSuggestions({})
 
 		async function loadMessages() {
@@ -327,6 +437,10 @@ export default function ChatView({
 	useEffect(() => {
 		return () => {
 			clearTimeout(typingTimeoutRef.current)
+			Array.from(responseTimeoutsRef.current.keys()).forEach((messageId) =>
+				clearResponseTimeout(messageId),
+			)
+			timeoutRequestsRef.current.clear()
 		}
 	}, [])
 

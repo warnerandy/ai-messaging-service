@@ -3,10 +3,19 @@ import { renderMarkdown } from "../lib/renderMarkdown.js"
 
 export default function MessageBubble({ message, onSuggestion, usedSuggestion }) {
 	const isUser = message.role === "user"
+	const isSystem = message.role === "system"
 	const botBodyHtml = useMemo(
 		() => (!isUser && message.body ? renderMarkdown(message.body) : ""),
 		[isUser, message.body],
 	)
+
+	if (isSystem) {
+		return (
+			<div className="msg msg--system">
+				<div className="msg-system-banner">{message.body}</div>
+			</div>
+		)
+	}
 
 	if (isUser) {
 		return (

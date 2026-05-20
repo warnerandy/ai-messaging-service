@@ -72,6 +72,7 @@ defmodule MessagingWeb.BotAPI.MessageController do
             metadata: m.metadata,
             model: m.model,
             acknowledged: m.acknowledged,
+            acknowledged_at: m.acknowledged_at,
             is_suggestion: m.is_suggestion,
             inserted_at: m.inserted_at
           }

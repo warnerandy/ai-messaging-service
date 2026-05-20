@@ -431,6 +431,11 @@ async function connectConversationChannel(conversationId) {
 	const channel = state.socket.channel(topic, {})
 	channel.on("new_message", (payload) => {
 		if (payload?.message) {
+			if (payload.message.role !== "user") {
+				state.botIsTyping = false
+				hideTypingIndicator()
+				clearTimeout(state.typingTimeoutId)
+			}
 			appendMessage(payload.message)
 			showNotificationIfBackgrounded(payload.message)
 		}

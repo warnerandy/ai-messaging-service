@@ -2,7 +2,7 @@ defmodule Messaging.Chat.Message do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @valid_roles ~w(user bot)
+  @valid_roles ~w(user bot system)
   @valid_content_types ~w(text image video file actions)
 
   schema "messages" do
@@ -12,6 +12,7 @@ defmodule Messaging.Chat.Message do
     field :metadata, :map, default: %{}
     field :model, :string
     field :acknowledged, :boolean, default: false
+    field :acknowledged_at, :utc_datetime
     field :is_suggestion, :boolean, default: false
 
     belongs_to :conversation, Messaging.Chat.Conversation
@@ -28,6 +29,7 @@ defmodule Messaging.Chat.Message do
       :metadata,
       :model,
       :acknowledged,
+      :acknowledged_at,
       :is_suggestion,
       :conversation_id
     ])

@@ -56,6 +56,7 @@ defmodule MessagingWeb.BotChannel do
         body: message.body,
         metadata: message.metadata,
         model: message.model,
+        acknowledged_at: message.acknowledged_at,
         is_suggestion: message.is_suggestion,
         inserted_at: message.inserted_at
       }

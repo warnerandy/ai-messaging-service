@@ -64,6 +64,22 @@ describe("deriveConversationState", () => {
 		expect(state.messages[2].awaitingResponse).toBe(true)
 		expect(state.botIsTyping).toBe(true)
 	})
+
+	it("stops awaiting when a timeout system message exists for that user message", () => {
+		const state = deriveConversationState([
+			{ id: 1, role: "user", acknowledged: true },
+			{
+				id: 2,
+				role: "system",
+				content_type: "text",
+				body: "The bot failed to respond.",
+				metadata: { kind: "bot_timeout", timeout_for_message_id: 1 },
+			},
+		])
+
+		expect(state.messages[0].awaitingResponse).toBe(false)
+		expect(state.botIsTyping).toBe(false)
+	})
 })
 
 describe("normalizeMessage", () => {
@@ -72,6 +88,7 @@ describe("normalizeMessage", () => {
 			id: "m-1",
 			role: "bot",
 			acknowledged: true,
+			timeoutReported: false,
 			fromSuggestion: false,
 		})
 	})
@@ -81,6 +98,7 @@ describe("normalizeMessage", () => {
 			id: "m-2",
 			is_suggestion: true,
 			acknowledged: false,
+			timeoutReported: false,
 			fromSuggestion: true,
 		})
 	})
