@@ -241,6 +241,5 @@ export function useWorkspaceData() {
 		handleRefreshModels,
 		handleBotStatusChange,
 		handleDeleteBot,
-		setSelectedConversationId,
 	}
 }

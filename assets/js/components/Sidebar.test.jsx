@@ -1,5 +1,5 @@
 import React from "react"
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import Sidebar from "./Sidebar.jsx"
@@ -39,10 +39,6 @@ describe("Sidebar", () => {
 				onSelectBot={onSelectBot}
 				onBotsChange={onBotsChange}
 				onDeleteBot={vi.fn()}
-				conversations={[{ id: "conv-1", title: "First chat" }]}
-				selectedConversationId="conv-1"
-				onSelectConversation={vi.fn()}
-				onCreateConversation={vi.fn()}
 				userEmail="user@example.com"
 				onLogout={vi.fn()}
 				isOpen
@@ -74,10 +70,6 @@ describe("Sidebar", () => {
 				onSelectBot={vi.fn()}
 				onBotsChange={vi.fn()}
 				onDeleteBot={onDeleteBot}
-				conversations={[]}
-				selectedConversationId={null}
-				onSelectConversation={vi.fn()}
-				onCreateConversation={vi.fn()}
 				userEmail="user@example.com"
 				onLogout={vi.fn()}
 				isOpen
@@ -87,7 +79,6 @@ describe("Sidebar", () => {
 
 		await user.click(screen.getByRole("button", { name: "Delete Alpha" }))
 		expect(screen.getByText("Delete Bot")).toBeInTheDocument()
-
 		await user.click(screen.getByRole("button", { name: "Delete" }))
 
 		await waitFor(() => {

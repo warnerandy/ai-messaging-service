@@ -9,10 +9,6 @@ export default function Sidebar({
 	onSelectBot,
 	onBotsChange,
 	onDeleteBot,
-	conversations,
-	selectedConversationId,
-	onSelectConversation,
-	onCreateConversation,
 	userEmail,
 	onLogout,
 	isOpen,
@@ -81,14 +77,6 @@ export default function Sidebar({
 				</div>
 			</div>
 
-			{/* New chat button */}
-			<button type="button" className="sidebar-action-btn" onClick={onCreateConversation}>
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-					<path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-				</svg>
-				New Bot
-			</button>
-
 			{/* Bot selector */}
 			<div className="sidebar-section">
 				<div className="sidebar-section-header">
@@ -153,31 +141,6 @@ export default function Sidebar({
 					))}
 					{bots.length === 0 && <p className="sidebar-hint">No bots yet</p>}
 				</div>
-			</div>
-
-			{/* Conversations */}
-			<div className="sidebar-section sidebar-section--grow">
-				<span className="sidebar-section-label">Recent</span>
-				<nav className="conv-list">
-					{conversations.map((c) => (
-						<button
-							key={c.id}
-							type="button"
-							className={`conv-item ${c.id === selectedConversationId ? "conv-item--active" : ""}`}
-							onClick={() => onSelectConversation(c.id)}
-						>
-							<svg className="conv-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
-								<path
-									d="M3 4.5a1.5 1.5 0 011.5-1.5h7a1.5 1.5 0 011.5 1.5v5a1.5 1.5 0 01-1.5 1.5H8l-2.5 2V11H4.5A1.5 1.5 0 013 9.5v-5z"
-									stroke="currentColor"
-									strokeWidth="1.2"
-								/>
-							</svg>
-							<span className="conv-title">{c.title || `Conversation ${c.id}`}</span>
-						</button>
-					))}
-					{conversations.length === 0 && <p className="sidebar-hint">No conversations</p>}
-				</nav>
 			</div>
 
 			{/* Logout */}

@@ -97,8 +97,6 @@ export default function ChatView({
 	bot,
 	conversations,
 	selectedConversationId,
-	onSelectConversation,
-	onCreateConversation,
 	models,
 	onRefreshModels,
 	onBotStatusChange,

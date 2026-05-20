@@ -25,11 +25,9 @@ function App() {
 		handleLogout,
 		loadBots,
 		selectBot,
-		handleCreateConversation,
 		handleRefreshModels,
 		handleBotStatusChange,
 		handleDeleteBot,
-		setSelectedConversationId,
 	} = useWorkspaceData()
 
 	if (!token) {
@@ -57,16 +55,6 @@ function App() {
 						}}
 						onBotsChange={loadBots}
 						onDeleteBot={handleDeleteBot}
-						conversations={conversations}
-						selectedConversationId={selectedConversationId}
-						onSelectConversation={(id) => {
-							setSelectedConversationId(id)
-							setMobileSidebarOpen(false)
-						}}
-						onCreateConversation={() => {
-							handleCreateConversation()
-							setMobileSidebarOpen(false)
-						}}
 						userEmail={userEmail}
 						onLogout={handleLogout}
 						isOpen={mobileSidebarOpen}
@@ -77,8 +65,6 @@ function App() {
 						bot={selectedBot}
 						conversations={conversations}
 						selectedConversationId={selectedConversationId}
-						onSelectConversation={setSelectedConversationId}
-						onCreateConversation={handleCreateConversation}
 						models={models}
 						onRefreshModels={handleRefreshModels}
 						onBotStatusChange={handleBotStatusChange}
