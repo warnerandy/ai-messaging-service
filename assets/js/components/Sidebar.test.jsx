@@ -4,8 +4,10 @@ import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import Sidebar, {
 	formatCompactRelativeTime,
+	getSessionSubtitle,
 	isSessionActive,
 	isSessionDone,
+	isSessionOlderThanDays,
 	sortConversations,
 } from "./Sidebar.jsx"
 import { createBot } from "../lib/data.js"
@@ -432,13 +434,52 @@ describe("Sidebar", () => {
 		// "Done Task" should be hidden by default
 		expect(screen.queryByText("Done Task")).not.toBeInTheDocument()
 
-		// Clicking the toggle shows completed & archived sessions
-		const toggleBtn = screen.getByLabelText(/Show completed & archived/i)
+		// Clicking the toggle shows completed & archived sessions (no count badge in button)
+		const toggleBtn = screen.getByLabelText(/Show hidden & completed chats/i)
 		expect(toggleBtn).toBeInTheDocument()
 		await user.click(toggleBtn)
 
 		// Now "Done Task" should be visible
 		expect(screen.getByText("Done Task")).toBeInTheDocument()
+	})
+
+	it("automatically hides idle sessions older than 5 days by default", async () => {
+		const user = userEvent.setup()
+		const sixDaysAgo = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000).toISOString()
+		const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()
+
+		const sessions = [
+			{ id: 1, title: "Recent Session", status: "idle", updated_at: twoDaysAgo },
+			{ id: 2, title: "Old 6-Day Session", status: "idle", updated_at: sixDaysAgo },
+		]
+
+		render(
+			<Sidebar
+				token="token-1"
+				bots={[{ id: "bot-1", name: "Worker", bot_type: "ahp", is_connected: true }]}
+				selectedBotId="bot-1"
+				conversations={sessions}
+				selectedConversationId={1}
+				onSelectBot={vi.fn()}
+				onBotsChange={vi.fn()}
+				onDeleteBot={vi.fn()}
+				userEmail="user@example.com"
+				onLogout={vi.fn()}
+				isOpen
+				appConnection="online"
+			/>,
+		)
+
+		// Recent session should be visible
+		expect(screen.getByText("Recent Session")).toBeInTheDocument()
+
+		// Old session > 5 days should be automatically hidden
+		expect(screen.queryByText("Old 6-Day Session")).not.toBeInTheDocument()
+
+		// Toggle unhides it
+		const toggleBtn = screen.getByLabelText(/Show hidden & completed chats/i)
+		await user.click(toggleBtn)
+		expect(screen.getByText("Old 6-Day Session")).toBeInTheDocument()
 	})
 
 	it("renders project pill when session has project metadata", () => {
@@ -471,5 +512,93 @@ describe("Sidebar", () => {
 		)
 
 		expect(screen.getByText("botamus-prime-copilot")).toBeInTheDocument()
+	})
+
+	describe("getSessionSubtitle", () => {
+		it("returns step or tool text for running sessions", () => {
+			expect(getSessionSubtitle({ metadata: { step: "Compiling..." } }, "running", false)).toBe("Compiling...")
+			expect(getSessionSubtitle({ metadata: { tool: "view_file" } }, "running", false)).toBe("Running view_file...")
+		})
+
+		it("returns question title or step for waiting_for_input sessions", () => {
+			expect(
+				getSessionSubtitle(
+					{ metadata: { step: "Awaiting approval", question: { title: "Approve migration?" } } },
+					"waiting_for_input",
+					false,
+				),
+			).toBe("Awaiting approval")
+			expect(
+				getSessionSubtitle(
+					{ metadata: { question: { title: "Approve migration?" } } },
+					"waiting_for_input",
+					false,
+				),
+			).toBe("Approve migration?")
+		})
+
+		it("returns step text for thinking sessions", () => {
+			expect(getSessionSubtitle({ metadata: { step: "Evaluating model response..." } }, "thinking", false)).toBe(
+				"Evaluating model response...",
+			)
+		})
+
+		it("returns Completed for done sessions", () => {
+			expect(getSessionSubtitle({}, "done", true)).toBe("Completed")
+			expect(getSessionSubtitle({ metadata: { step: "Finished all tasks" } }, "idle", true)).toBe(
+				"Finished all tasks",
+			)
+		})
+	})
+
+	it("renders active sessions in 2-row layout with header row and details row", () => {
+		const sessions = [
+			{
+				id: "s-1",
+				title: "Database Migration for Bot Token Index",
+				status: "waiting_for_input",
+				updated_at: new Date(Date.now() - 50 * 60 * 1000).toISOString(),
+				metadata: {
+					step: "Awaiting human approval before running database migration",
+					project: { name: "core-db" },
+				},
+			},
+		]
+
+		const { container } = render(
+			<Sidebar
+				token="token-1"
+				bots={[{ id: "bot-1", name: "Worker", bot_type: "ahp", is_connected: true }]}
+				selectedBotId="bot-1"
+				conversations={sessions}
+				selectedConversationId="s-1"
+				onSelectBot={vi.fn()}
+				onBotsChange={vi.fn()}
+				onDeleteBot={vi.fn()}
+				userEmail="user@example.com"
+				onLogout={vi.fn()}
+				isOpen
+				appConnection="online"
+			/>,
+		)
+
+		// Button has 2-row container class
+		const convItem = container.querySelector(".conv-item--two-row")
+		expect(convItem).toBeInTheDocument()
+
+		// Row 1 contains title and timestamp
+		const rowTop = container.querySelector(".conv-row--top")
+		expect(rowTop).toBeInTheDocument()
+		expect(rowTop.querySelector(".conv-title")).toHaveTextContent("Database Migration for Bot Token Index")
+		expect(rowTop.querySelector(".conv-time")).toHaveTextContent("50m")
+
+		// Row 2 contains project pill, action icon, and step preview text
+		const rowBottom = container.querySelector(".conv-row--bottom")
+		expect(rowBottom).toBeInTheDocument()
+		expect(rowBottom.querySelector(".conv-project-pill")).toHaveTextContent("core-db")
+		expect(rowBottom.querySelector(".conv-step-preview")).toHaveTextContent(
+			"Awaiting human approval before running database migration",
+		)
+		expect(screen.getByLabelText("Needs input")).toBeInTheDocument()
 	})
 })

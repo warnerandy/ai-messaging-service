@@ -18,9 +18,16 @@ async function main() {
 		els.map((el) => ({
 			title: el.querySelector(".conv-title")?.textContent?.trim(),
 			time: el.querySelector(".conv-time")?.textContent?.trim(),
+			step: el.querySelector(".conv-step-preview")?.textContent?.trim(),
+			hasTopRow: Boolean(el.querySelector(".conv-row--top")),
+			hasBottomRow: Boolean(el.querySelector(".conv-row--bottom")),
+			height: el.clientHeight,
 		})),
 	)
-	console.log("Atlas sessions:", atlasItems)
+	console.log("Atlas 2-row sessions:", atlasItems)
+
+	const sidebar = page.locator(".sidebar")
+	await sidebar.screenshot({ path: "test-results/sidebar-atlas.png" })
 
 	const claude = page.locator(".bot-pill", { hasText: "Claude 3.7 Sonnet" })
 	await claude.click()
@@ -33,6 +40,8 @@ async function main() {
 		})),
 	)
 	console.log("Claude sessions:", claudeItems)
+
+	await sidebar.screenshot({ path: "test-results/sidebar-current.png" })
 
 	await browser.close()
 }

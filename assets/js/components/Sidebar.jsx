@@ -54,6 +54,17 @@ export function isSessionDone(conv) {
 	return false
 }
 
+export const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000
+
+export function isSessionOlderThanDays(conv, days = 5, now = Date.now()) {
+	if (!conv) return false
+	const dateStr = getSessionTimestamp(conv)
+	if (!dateStr) return false
+	const time = new Date(dateStr).getTime()
+	if (Number.isNaN(time)) return false
+	return now - time > days * 24 * 60 * 60 * 1000
+}
+
 export function getSessionProjectInfo(conv) {
 	if (!conv || !conv.metadata) return null
 	const meta = conv.metadata
@@ -76,6 +87,40 @@ export function getSessionProjectInfo(conv) {
 		return { name, uri }
 	}
 	return null
+}
+
+export function getSessionSubtitle(conv, status, isDone, isAhp = false) {
+	if (!conv) return ""
+	const meta = conv.metadata || {}
+
+	if (isDone) {
+		return meta.step || meta.current_step || "Completed"
+	}
+
+	if (status === "waiting_for_input" || status === "needs_input") {
+		return meta.step || meta.question?.title || meta.current_step || meta.question?.prompt || ""
+	}
+
+	if (status === "running") {
+		return meta.step || meta.current_step || meta.action || (meta.tool ? `Running ${meta.tool}...` : "")
+	}
+
+	if (status === "thinking") {
+		return meta.step || meta.current_step || (meta.tool ? `Evaluating ${meta.tool}...` : "")
+	}
+
+	// idle or other statuses
+	if (meta.current_step) return meta.current_step
+	if (meta.step) return meta.step
+	if (meta.action) return meta.action
+	if (Array.isArray(meta.prompt_queue) && meta.prompt_queue.length > 0) {
+		return `${meta.prompt_queue.length} prompt${meta.prompt_queue.length > 1 ? "s" : ""} queued`
+	}
+	if (meta.preview) return meta.preview
+	if (isAhp && conv.external_session_id) {
+		return conv.external_session_id
+	}
+	return ""
 }
 
 export function getSessionTimestamp(conv) {
@@ -296,12 +341,29 @@ export default function Sidebar({
 	const selectedBot = (bots || []).find((b) => b.id === selectedBotId)
 	const isAhp = selectedBot?.bot_type === "ahp"
 
-	const doneCount = (conversations || []).filter((c) => c && isSessionDone(c)).length
+	const hiddenCount = (conversations || []).filter((c) => {
+		if (!c) return false
+		if (isSessionDone(c)) return true
+		if (!isSessionActive(c) && isSessionOlderThanDays(c, 5)) return true
+		return false
+	}).length
 
 	const activeConversations = sortConversations(
 		(conversations || []).filter((c) => {
 			if (!c) return false
+			// Always keep current selected conversation visible so user doesn't lose context
+			const isSelected = c.id === selectedConversationId
+			if (isSelected) return true
+
+			// Automatically hide idle/done conversations older than 5 days
+			// (active sessions like running / waiting_for_input are kept visible)
+			if (!isSessionActive(c) && isSessionOlderThanDays(c, 5)) {
+				return !hideDone
+			}
+
+			// Hide completed/archived sessions when hideDone is enabled
 			if (hideDone && isSessionDone(c)) return false
+
 			return true
 		}),
 		isAhp,
@@ -408,20 +470,19 @@ export default function Sidebar({
 							{selectedBot?.bot_type === "ahp" ? "Active Sessions" : "Conversations"}
 						</span>
 						<div className="sidebar-section-actions">
-							{doneCount > 0 && (
+							{hiddenCount > 0 && (
 								<button
 									type="button"
 									className={`sidebar-icon-btn ${!hideDone ? "sidebar-icon-btn--active" : ""}`}
 									onClick={toggleHideDone}
-									title={hideDone ? `Show completed & archived (${doneCount})` : `Hide completed & archived (${doneCount})`}
-									aria-label={hideDone ? `Show completed & archived (${doneCount})` : `Hide completed & archived (${doneCount})`}
+									title={hideDone ? "Show hidden & completed chats" : "Hide completed & older chats"}
+									aria-label={hideDone ? "Show hidden & completed chats" : "Hide completed & older chats"}
 								>
 									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
 										<rect x="2" y="3" width="20" height="5" rx="1" />
 										<path d="M4 8v11a2 2 0 002 2h12a2 2 0 002-2V8" />
 										<path d="M10 12h4" />
 									</svg>
-									<span className="sidebar-icon-badge">{doneCount}</span>
 								</button>
 							)}
 							<button
@@ -446,98 +507,106 @@ export default function Sidebar({
 					<div className="conv-list">
 						{activeConversations.map((conv) => {
 							const status = conv.status || "idle"
-							const stepText = conv.metadata?.step || conv.metadata?.action || ""
 							const isDone = isSessionDone(conv)
+							const isAhp = selectedBot?.bot_type === "ahp"
+							const subtitleText = getSessionSubtitle(conv, status, isDone, isAhp)
 							const timeText = formatCompactRelativeTime(conv)
 							const tooltipText = getSessionDisplayTooltip(conv)
-
 							const projectInfo = getSessionProjectInfo(conv)
 
 							return (
 								<button
 									key={conv.id}
 									type="button"
-									className={`conv-item ${conv.id === selectedConversationId ? "conv-item--active" : ""} ${isDone ? "conv-item--done" : ""}`}
+									className={`conv-item conv-item--two-row ${conv.id === selectedConversationId ? "conv-item--active" : ""} ${isDone ? "conv-item--done" : ""}`}
 									onClick={() => onSelectConversation && onSelectConversation(conv.id)}
+									title={tooltipText}
 								>
-									<div className="conv-item-left">
-										<span className={`conv-status-dot conv-status-dot--${status}`} />
-										<div className="conv-text-col">
-											<div className="conv-title-row">
-												<span className="conv-title">{conv.title || "Session"}</span>
-												{projectInfo?.name && (
-													<span className="conv-project-pill" title={projectInfo.uri || projectInfo.name}>
-														{projectInfo.name}
-													</span>
-												)}
-											</div>
-											{stepText && status === "running" && (
-												<span className="conv-step-preview" title={stepText}>
-													{stepText}
+									{/* Row 1: Status Dot, Title, and Actions / Time */}
+									<div className="conv-row conv-row--top">
+										<div className="conv-title-col">
+											<span className={`conv-status-dot conv-status-dot--${status}`} />
+											<span className="conv-title" title={conv.title || "Session"}>
+												{conv.title || "Session"}
+											</span>
+										</div>
+
+										<div className="conv-item-actions">
+											{Boolean(
+												conv.unread ||
+												conv.has_unread ||
+												conv.metadata?.unread ||
+												(typeof conv.unread_count === "number" && conv.unread_count > 0)
+											) && (
+												<span
+													className="conv-action-icon conv-action-icon--unread"
+													title={typeof conv.unread_count === "number" && conv.unread_count > 0 ? `${conv.unread_count} unread` : "Unread"}
+													aria-label="Unread"
+												>
+													<span className="unread-dot" />
+													{typeof conv.unread_count === "number" && conv.unread_count > 0 ? conv.unread_count : null}
+												</span>
+											)}
+											{isDone && (
+												<span className="conv-done-indicator" title="Done / Completed" aria-label="Done / Completed">
+													✓
+												</span>
+											)}
+											{onArchiveConversation && !isDone && (
+												<button
+													type="button"
+													className="conv-archive-btn"
+													onClick={(e) => {
+														e.stopPropagation()
+														onArchiveConversation(conv.id)
+													}}
+													title="Archive chat"
+													aria-label="Archive chat"
+												>
+													<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+														<rect x="2" y="3" width="20" height="5" rx="1" />
+														<path d="M4 8v11a2 2 0 002 2h12a2 2 0 002-2V8" />
+														<path d="M10 12h4" />
+													</svg>
+												</button>
+											)}
+											{timeText && (
+												<span className="conv-time" title={tooltipText}>
+													{timeText}
 												</span>
 											)}
 										</div>
 									</div>
 
-									<div className="conv-item-actions">
-										{(status === "waiting_for_input" || status === "needs_input") && (
-											<span className="conv-action-icon conv-action-icon--waiting" title="Needs input" aria-label="Needs input">
-												<VSCodePulseDot size={11} />
-											</span>
-										)}
-										{status === "running" && (
-											<span className="conv-action-icon conv-action-icon--running" title="Running" aria-label="Running">
-												<VSCodeLoadingIcon size={13} spin smooth={false} />
-											</span>
-										)}
-										{status === "thinking" && (
-											<span className="conv-action-icon conv-action-icon--thinking" title="Thinking" aria-label="Thinking">
-												<VSCodeSparkleIcon size={13} animated />
-											</span>
-										)}
-										{Boolean(
-											conv.unread ||
-											conv.has_unread ||
-											conv.metadata?.unread ||
-											(typeof conv.unread_count === "number" && conv.unread_count > 0)
-										) && (
-											<span
-												className="conv-action-icon conv-action-icon--unread"
-												title={typeof conv.unread_count === "number" && conv.unread_count > 0 ? `${conv.unread_count} unread` : "Unread"}
-												aria-label="Unread"
-											>
-												<span className="unread-dot" />
-												{typeof conv.unread_count === "number" && conv.unread_count > 0 ? conv.unread_count : null}
-											</span>
-										)}
-										{isDone && (
-											<span className="conv-done-indicator" title="Done / Completed" aria-label="Done / Completed">
-												✓
-											</span>
-										)}
-										{onArchiveConversation && !isDone && (
-											<button
-												type="button"
-												className="conv-archive-btn"
-												onClick={(e) => {
-													e.stopPropagation()
-													onArchiveConversation(conv.id)
-												}}
-												title="Archive chat"
-												aria-label="Archive chat"
-											>
-												<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-													<rect x="2" y="3" width="20" height="5" rx="1" />
-													<path d="M4 8v11a2 2 0 002 2h12a2 2 0 002-2V8" />
-													<path d="M10 12h4" />
-												</svg>
-											</button>
-										)}
-										{timeText && (
-											<span className="conv-time" title={tooltipText}>
-												{timeText}
-											</span>
-										)}
+									{/* Row 2: Secondary Info (Project Pill, Status Working Icon, Step Preview) */}
+									<div className="conv-row conv-row--bottom">
+										<div className="conv-meta-col">
+											{projectInfo?.name && (
+												<span className="conv-project-pill" title={projectInfo.uri || projectInfo.name}>
+													{projectInfo.name}
+												</span>
+											)}
+											{(status === "waiting_for_input" || status === "needs_input") && (
+												<span className="conv-action-icon conv-action-icon--waiting" title="Needs input" aria-label="Needs input">
+													<VSCodePulseDot size={10} />
+												</span>
+											)}
+											{status === "running" && (
+												<span className="conv-action-icon conv-action-icon--running" title="Running" aria-label="Running">
+													<VSCodeLoadingIcon size={12} spin smooth={false} />
+												</span>
+											)}
+											{status === "thinking" && (
+												<span className="conv-action-icon conv-action-icon--thinking" title="Thinking" aria-label="Thinking">
+													<VSCodeSparkleIcon size={12} animated />
+												</span>
+											)}
+											{subtitleText && (
+												<span className={`conv-step-preview conv-step-preview--${status}`} title={subtitleText}>
+													{subtitleText}
+												</span>
+											)}
+										</div>
 									</div>
 								</button>
 							)

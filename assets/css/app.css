@@ -563,23 +563,88 @@ body {
 
 .conv-item {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.6rem;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.5rem 0.65rem;
+  min-height: 52px;
   border-radius: 8px;
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--text-secondary);
   font-size: 0.85rem;
   font-family: inherit;
   cursor: pointer;
   text-align: left;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
   width: 100%;
+  box-sizing: border-box;
 }
 
-.conv-item:hover { background: var(--bg-hover); color: var(--text-primary); }
-.conv-item--active { background: var(--bg-active); color: var(--text-primary); }
+.conv-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.conv-item--active {
+  background: var(--bg-active);
+  border-color: rgba(99, 102, 241, 0.25);
+  color: var(--text-primary);
+}
+
+.conv-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-width: 0;
+}
+
+.conv-row--top {
+  gap: 0.4rem;
+}
+
+.conv-row--bottom {
+  gap: 0.4rem;
+  padding-left: 14px;
+}
+
+.conv-title-col {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.conv-title {
+  font-size: 0.84rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.conv-item:not(.conv-item--active) .conv-title {
+  color: var(--text-secondary);
+}
+
+.conv-item:hover .conv-title {
+  color: var(--text-primary);
+}
+
+.conv-meta-col {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
 
 .conv-icon {
   flex-shrink: 0;
@@ -594,27 +659,20 @@ body {
   width: 100%;
 }
 
-.conv-title {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-  min-width: 0;
-}
-
 .conv-project-pill {
-  font-size: 0.65rem;
+  font-size: 0.62rem;
   font-weight: 500;
   color: #93c5fd;
-  background: rgba(59, 130, 246, 0.15);
-  border: 1px solid rgba(59, 130, 246, 0.25);
-  padding: 0.1rem 0.35rem;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.22);
+  padding: 0.05rem 0.35rem;
   border-radius: 4px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 80px;
+  max-width: 85px;
   flex-shrink: 0;
+  line-height: 1.2;
 }
 
 .sidebar-hint {
@@ -1993,13 +2051,33 @@ body {
 }
 
 .conv-step-preview {
-  font-size: 0.68rem;
-  color: #4ade80;
-  font-family: monospace;
+  font-size: 0.7rem;
+  color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  opacity: 0.9;
+  line-height: 1.2;
+  flex: 1;
+  min-width: 0;
+}
+
+.conv-step-preview--running {
+  color: #4ade80;
+  font-family: monospace;
+}
+
+.conv-step-preview--thinking {
+  color: #c084fc;
+}
+
+.conv-step-preview--waiting_for_input,
+.conv-step-preview--needs_input {
+  color: #fde047;
+}
+
+.conv-step-preview--idle {
+  color: var(--text-muted);
+  opacity: 0.85;
 }
 
 .conv-item-actions {
