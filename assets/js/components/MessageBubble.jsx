@@ -81,7 +81,14 @@ export default function MessageBubble({ message, onSuggestion, usedSuggestion })
 							className="msg-text msg-text--markdown"
 							dangerouslySetInnerHTML={{ __html: botBodyHtml }}
 						/>
-						{message.model && <span className="msg-model">{message.model}</span>}
+						{message.model && (
+							<span className="msg-model">
+								{message.model}
+								{message.context_size
+									? ` (${message.context_size >= 1000 ? `${Math.round(message.context_size / 1000)}k` : message.context_size})`
+									: ""}
+							</span>
+						)}
 					</div>
 				)}
 				{message.content_type === "image" && message.metadata?.url && (

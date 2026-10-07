@@ -29,10 +29,10 @@ defmodule MessagingWeb.BotAPI.MessageController do
           body: message.body,
           metadata: message.metadata,
           model: message.model,
+          context_size: message.context_size,
           is_suggestion: message.is_suggestion,
           inserted_at: message.inserted_at
         })
-
       {:error, changeset} ->
         conn
         |> put_status(:unprocessable_entity)
@@ -71,6 +71,7 @@ defmodule MessagingWeb.BotAPI.MessageController do
             body: m.body,
             metadata: m.metadata,
             model: m.model,
+            context_size: m.context_size,
             acknowledged: m.acknowledged,
             acknowledged_at: m.acknowledged_at,
             is_suggestion: m.is_suggestion,

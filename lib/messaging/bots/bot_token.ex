@@ -11,6 +11,8 @@ defmodule Messaging.Bots.BotToken do
     field :last_connected_at, :utc_datetime
     field :is_connected, :boolean, default: false
     field :is_working, :boolean, default: false
+    field :bot_type, :string, default: "chat"
+    field :metadata, :map, default: %{}
     field :revoked_at, :utc_datetime
 
     belongs_to :user, Messaging.Accounts.User
@@ -22,8 +24,9 @@ defmodule Messaging.Bots.BotToken do
 
   def create_changeset(bot_token, attrs) do
     bot_token
-    |> cast(attrs, [:name, :user_id])
+    |> cast(attrs, [:name, :user_id, :bot_type, :metadata])
     |> validate_required([:name, :user_id])
+    |> validate_inclusion(:bot_type, ["chat", "ahp"])
     |> validate_length(:name, min: 1, max: 100)
     |> put_token()
   end
@@ -39,6 +42,12 @@ defmodule Messaging.Bots.BotToken do
     |> put_change(:channel_code, channel_code)
   end
 
+  def regenerate_token_changeset(bot_token) do
+    bot_token
+    |> change()
+    |> put_token()
+  end
+
   def revoke_changeset(bot_token) do
     bot_token
     |> change(%{revoked_at: DateTime.utc_now() |> DateTime.truncate(:second)})
@@ -46,7 +55,8 @@ defmodule Messaging.Bots.BotToken do
 
   def status_changeset(bot_token, attrs) do
     bot_token
-    |> cast(attrs, [:is_connected, :is_working, :last_connected_at])
+    |> cast(attrs, [:is_connected, :is_working, :last_connected_at, :bot_type, :metadata])
+    |> validate_inclusion(:bot_type, ["chat", "ahp"])
   end
 
   @doc """

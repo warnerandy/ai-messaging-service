@@ -10,6 +10,11 @@ defmodule Messaging.MixProject do
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       deps: deps(),
+      releases: [
+        messaging: [
+          validate_compile_env: false
+        ]
+      ],
       listeners: [Phoenix.CodeReloader]
     ]
   end

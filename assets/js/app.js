@@ -310,11 +310,12 @@ async function loadConversations(botId) {
 
 function renderConversations() {
 	elements.conversationSelect.replaceChildren()
+	const bot = state.bots.find((entry) => entry.id === state.selectedBotId)
 
 	for (const conversation of state.conversations) {
 		const option = document.createElement("option")
 		option.value = String(conversation.id)
-		option.textContent = conversation.title || `Conversation ${conversation.id}`
+		option.textContent = conversation.title || bot?.name || `Conversation ${conversation.id}`
 		if (conversation.id === state.selectedConversationId) option.selected = true
 		elements.conversationSelect.appendChild(option)
 	}
@@ -322,10 +323,14 @@ function renderConversations() {
 
 async function onCreateConversation() {
 	if (!state.selectedBotId) return
+	const bot = state.bots.find((entry) => entry.id === state.selectedBotId)
 
 	const response = await apiRequest("/api/conversations", {
 		method: "POST",
-		body: { bot_token_id: state.selectedBotId },
+		body: {
+			bot_token_id: state.selectedBotId,
+			...(bot?.name ? { title: bot.name } : {}),
+		},
 	})
 
 	state.conversations.unshift(response)
@@ -476,8 +481,11 @@ function appendMessage(message) {
 	row.className = `message ${message.role === "user" ? "outbound" : "inbound"}`
 	if (message.pending) row.classList.add("pending")
 
+	const contextSizeLabel = message.context_size
+		? ` (${message.context_size >= 1000 ? `${Math.round(message.context_size / 1000)}k` : message.context_size})`
+		: ""
 	const modelTag = message.model
-		? `<span class="message-model">${escapeHtml(message.model)}</span>`
+		? `<span class="message-model">${escapeHtml(message.model + contextSizeLabel)}</span>`
 		: ""
 	const pendingBadge = message.pending ? '<span class="pending-badge">Sending...</span>' : ""
 

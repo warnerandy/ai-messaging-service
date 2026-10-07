@@ -10,7 +10,9 @@ ARG RUNNER_IMAGE="debian:${DEBIAN_VERSION}"
 # ---- Build stage ----
 FROM ${BUILDER_IMAGE} AS builder
 
-RUN apt-get update -y && apt-get install -y build-essential git \
+RUN apt-get update -y && apt-get install -y build-essential git curl \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
     && apt-get clean && rm -f /var/lib/apt/lists/*_*
 
 WORKDIR /app
@@ -28,11 +30,21 @@ RUN mkdir config
 COPY config/config.exs config/prod.exs config/
 RUN mix deps.compile
 
+# Install npm dependencies
+COPY package.json ./
+RUN npm install --registry=https://registry.npmjs.org/
+
+# Copy assets
+COPY assets assets
+
 # Copy application code
 COPY priv priv
 COPY lib lib
 
 RUN mix compile
+
+# Compile assets
+RUN mix assets.deploy
 
 # Copy runtime config
 COPY config/runtime.exs config/

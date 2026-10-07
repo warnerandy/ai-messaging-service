@@ -34,3 +34,11 @@ LICENSE
 # Ignore OS files
 .DS_Store
 Thumbs.db
+
+# Ignore Node.js dependencies and Playwright/test artifacts
+node_modules
+assets/node_modules
+playwright-report
+test-results
+.npmrc
+npm-debug.log

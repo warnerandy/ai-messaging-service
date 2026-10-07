@@ -12,7 +12,7 @@ defmodule Messaging.Chat do
   def list_conversations(user_id) do
     Conversation
     |> where(user_id: ^user_id)
-    |> order_by(desc: :updated_at)
+    |> order_by([c], desc: c.updated_at, desc: c.id)
     |> preload(:bot_token)
     |> Repo.all()
   end
@@ -20,7 +20,7 @@ defmodule Messaging.Chat do
   def list_conversations_for_bot(bot_token_id) do
     Conversation
     |> where(bot_token_id: ^bot_token_id)
-    |> order_by(desc: :updated_at)
+    |> order_by([c], desc: c.updated_at, desc: c.id)
     |> Repo.all()
   end
 
@@ -40,6 +40,214 @@ defmodule Messaging.Chat do
     %Conversation{}
     |> Conversation.changeset(attrs)
     |> Repo.insert()
+  end
+
+  def get_conversation_by_external_session(bot_token_id, external_session_id) do
+    Conversation
+    |> where(bot_token_id: ^normalize_conversation_id!(bot_token_id))
+    |> where(external_session_id: ^to_string(external_session_id))
+    |> preload(:bot_token)
+    |> Repo.one()
+  end
+
+  def sync_bot_sessions(%Messaging.Bots.BotToken{} = bot_token, sessions_list)
+      when is_list(sessions_list) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    normalized_sessions =
+      Enum.map(sessions_list, fn s ->
+        session_id = to_string(s["session_id"] || s[:session_id] || s["id"] || s[:id])
+        title = s["title"] || s[:title]
+        status = s["status"] || s[:status] || "idle"
+        metadata = s["metadata"] || s[:metadata] || %{}
+        %{session_id: session_id, title: title, status: status, metadata: metadata}
+      end)
+      |> Enum.filter(&(&1.session_id != ""))
+
+    incoming_session_ids = Enum.map(normalized_sessions, & &1.session_id)
+
+    existing_conversations =
+      Conversation
+      |> where(bot_token_id: ^bot_token.id)
+      |> where([c], not is_nil(c.external_session_id))
+      |> Repo.all()
+      |> Map.new(fn c -> {c.external_session_id, c} end)
+
+    synced =
+      Enum.map(normalized_sessions, fn item ->
+        case Map.get(existing_conversations, item.session_id) do
+          nil ->
+            attrs = %{
+              user_id: bot_token.user_id,
+              bot_token_id: bot_token.id,
+              external_session_id: item.session_id,
+              title: item.title || "Session #{item.session_id}",
+              status: item.status,
+              metadata: item.metadata
+            }
+
+            {:ok, conv} = create_conversation(attrs)
+            conv
+
+          existing ->
+            update_attrs = %{
+              status: item.status,
+              metadata: Map.merge(existing.metadata || %{}, item.metadata)
+            }
+
+            update_attrs =
+              if item.title && item.title != "" do
+                Map.put(update_attrs, :title, item.title)
+              else
+                update_attrs
+              end
+
+            {:ok, conv} =
+              existing
+              |> Conversation.changeset(update_attrs)
+              |> Repo.update()
+
+            conv
+        end
+      end)
+
+    from(c in Conversation,
+      where:
+        c.bot_token_id == ^bot_token.id and not is_nil(c.external_session_id) and
+          c.external_session_id not in ^incoming_session_ids and c.status != "archived"
+    )
+    |> Repo.update_all(set: [status: "archived", updated_at: now])
+
+    # Broadcast to bot session subscribers
+    Phoenix.PubSub.broadcast(
+      Messaging.PubSub,
+      "bot_sessions:#{bot_token.id}",
+      {:bot_sessions_updated, bot_token.id, synced}
+    )
+
+    Phoenix.PubSub.broadcast(
+      Messaging.PubSub,
+      "bot_status:#{bot_token.user_id}",
+      {:bot_sessions_updated, bot_token.id, synced}
+    )
+
+    {:ok, synced}
+  end
+
+  def update_session_status(conversation_id, status, metadata \\ %{}) do
+    conversation = get_conversation!(conversation_id, [])
+
+    merged_metadata =
+      (conversation.metadata || %{})
+      |> Map.merge(metadata || %{})
+
+    case conversation
+         |> Conversation.changeset(%{status: status, metadata: merged_metadata})
+         |> Repo.update() do
+      {:ok, updated} ->
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "conversation:#{updated.id}",
+          {:session_status_changed, updated.id, status, merged_metadata}
+        )
+
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "bot_sessions:#{updated.bot_token_id}",
+          {:session_status_changed, updated.id, status, merged_metadata}
+        )
+
+        {:ok, updated}
+
+      error ->
+        error
+    end
+  end
+
+  def queue_prompt(conversation_id, prompt_data) do
+    conversation = get_conversation!(conversation_id, [])
+    current_meta = conversation.metadata || %{}
+    current_queue = Map.get(current_meta, "prompt_queue", [])
+
+    prompt_item =
+      case prompt_data do
+        %{} = map ->
+          map
+          |> Map.put_new("id", :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower))
+          |> Map.put_new("queued_at", DateTime.utc_now() |> DateTime.to_iso8601())
+
+        body when is_binary(body) ->
+          %{
+            "id" => :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower),
+            "body" => body,
+            "queued_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+          }
+      end
+
+    updated_queue = current_queue ++ [prompt_item]
+    new_meta = Map.put(current_meta, "prompt_queue", updated_queue)
+
+    {:ok, updated} =
+      conversation
+      |> Conversation.changeset(%{metadata: new_meta})
+      |> Repo.update()
+
+    Phoenix.PubSub.broadcast(
+      Messaging.PubSub,
+      "conversation:#{updated.id}",
+      {:prompt_queue_updated, updated.id, updated_queue}
+    )
+
+    {:ok, prompt_item, updated_queue}
+  end
+
+  def pop_queued_prompt(conversation_id) do
+    conversation = get_conversation!(conversation_id, [])
+    current_meta = conversation.metadata || %{}
+    current_queue = Map.get(current_meta, "prompt_queue", [])
+
+    case current_queue do
+      [] ->
+        {:ok, nil, []}
+
+      [head | tail] ->
+        new_meta = Map.put(current_meta, "prompt_queue", tail)
+
+        {:ok, updated} =
+          conversation
+          |> Conversation.changeset(%{metadata: new_meta})
+          |> Repo.update()
+
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "conversation:#{updated.id}",
+          {:prompt_queue_updated, updated.id, tail}
+        )
+
+        {:ok, head, tail}
+    end
+  end
+
+  def remove_queued_prompt(conversation_id, prompt_id) do
+    conversation = get_conversation!(conversation_id, [])
+    current_meta = conversation.metadata || %{}
+    current_queue = Map.get(current_meta, "prompt_queue", [])
+
+    updated_queue = Enum.reject(current_queue, fn item -> item["id"] == prompt_id end)
+    new_meta = Map.put(current_meta, "prompt_queue", updated_queue)
+
+    {:ok, updated} =
+      conversation
+      |> Conversation.changeset(%{metadata: new_meta})
+      |> Repo.update()
+
+    Phoenix.PubSub.broadcast(
+      Messaging.PubSub,
+      "conversation:#{updated.id}",
+      {:prompt_queue_updated, updated.id, updated_queue}
+    )
+
+    {:ok, updated_queue}
   end
 
   # --- Messages ---
@@ -87,6 +295,12 @@ defmodule Messaging.Chat do
     |> Repo.insert()
     |> tap(fn
       {:ok, message} ->
+        # Touch conversation updated_at so recent conversations sort to the top
+        now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+        from(c in Conversation, where: c.id == ^message.conversation_id)
+        |> Repo.update_all(set: [updated_at: now])
+
         # Broadcast to conversation subscribers
         Phoenix.PubSub.broadcast(
           Messaging.PubSub,

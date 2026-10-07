@@ -22,10 +22,17 @@ export function listBots(token) {
 	return apiRequest("/api/bot-tokens", { token })
 }
 
-export function createBot(token, name) {
+export function createBot(token, name, botType = "chat") {
 	return apiRequest("/api/bot-tokens", {
 		method: "POST",
-		body: { name },
+		body: { name, bot_type: botType },
+		token,
+	})
+}
+
+export function regenerateBotToken(token, botId) {
+	return apiRequest(`/api/bot-tokens/${botId}/regenerate`, {
+		method: "POST",
 		token,
 	})
 }
@@ -52,10 +59,13 @@ export function listConversations(token) {
 	return apiRequest("/api/conversations", { token })
 }
 
-export function createConversation(token, botTokenId) {
+export function createConversation(token, botTokenId, title) {
 	return apiRequest("/api/conversations", {
 		method: "POST",
-		body: { bot_token_id: botTokenId },
+		body: {
+			bot_token_id: botTokenId,
+			...(title ? { title } : {}),
+		},
 		token,
 	})
 }

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react"
 import { formatThinkingDuration, pickThinkingBlurb } from "../lib/thinkingConfig.js"
+import { VSCodeSparkleIcon } from "./VSCodeWorkingIcons.jsx"
 
 export default function TypingIndicator() {
 	const [blurb] = useState(() => pickThinkingBlurb())
@@ -30,6 +31,11 @@ export default function TypingIndicator() {
 			<div className="msg-content">
 				<div className="msg-bubble msg-bubble--bot msg-bubble--typing">
 					<div className="msg-thinking">
+						<VSCodeSparkleIcon
+							size={16}
+							animated={true}
+							className="text-purple-400 mr-1.5 flex-shrink-0"
+						/>
 						<div className="typing-dots">
 							<span />
 							<span />

@@ -37,7 +37,8 @@ defmodule MessagingWeb.API.BotModelController do
       id: m.id,
       name: m.name,
       input_cost_per_token: Decimal.to_string(m.input_cost_per_token),
-      output_cost_per_token: Decimal.to_string(m.output_cost_per_token)
+      output_cost_per_token: Decimal.to_string(m.output_cost_per_token),
+      context_sizes: m.context_sizes || []
     }
   end
 end

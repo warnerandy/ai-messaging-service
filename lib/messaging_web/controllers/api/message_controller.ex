@@ -30,6 +30,7 @@ defmodule MessagingWeb.API.MessageController do
            body: body,
            metadata: metadata,
            model: params["model"],
+           context_size: params["context_size"],
            is_suggestion: params["is_suggestion"] || false,
            conversation_id: conversation.id
          }) do
@@ -44,6 +45,7 @@ defmodule MessagingWeb.API.MessageController do
           body: message.body,
           metadata: message.metadata,
           model: message.model,
+          context_size: message.context_size,
           acknowledged: message.acknowledged,
           acknowledged_at: message.acknowledged_at,
           is_suggestion: message.is_suggestion,
@@ -77,6 +79,7 @@ defmodule MessagingWeb.API.MessageController do
             body: message.body,
             metadata: message.metadata,
             model: message.model,
+            context_size: message.context_size,
             acknowledged: message.acknowledged,
             acknowledged_at: message.acknowledged_at,
             is_suggestion: message.is_suggestion,

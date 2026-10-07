@@ -57,4 +57,19 @@ describe("MessageBubble", () => {
 		expect(usedSuggestionButton).toBeDisabled()
 		expect(usedSuggestionButton).toHaveAttribute("aria-pressed", "true")
 	})
+
+	it("renders model and context size tag", () => {
+		render(
+			<MessageBubble
+				message={{
+					role: "bot",
+					body: "response with context",
+					model: "gpt-4o",
+					context_size: 32768,
+				}}
+			/>,
+		)
+
+		expect(screen.getByText(/gpt-4o \(33k\)/)).toBeInTheDocument()
+	})
 })

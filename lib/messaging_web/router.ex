@@ -38,6 +38,7 @@ defmodule MessagingWeb.Router do
 
     get "/ping", PingController, :show
     resources "/bot-tokens", BotTokenController, only: [:index, :create, :delete]
+    post "/bot-tokens/:bot_token_id/regenerate", BotTokenController, :regenerate
     get "/bot-tokens/:bot_token_id/channel", BotTokenController, :channel
     get "/bot-tokens/:bot_token_id/models", BotModelController, :index
     post "/bot-tokens/:bot_token_id/refresh-models", BotModelController, :refresh

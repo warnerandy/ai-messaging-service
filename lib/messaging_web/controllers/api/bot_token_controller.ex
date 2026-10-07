@@ -13,6 +13,8 @@ defmodule MessagingWeb.API.BotTokenController do
           %{
             id: t.id,
             name: t.name,
+            bot_type: t.bot_type,
+            metadata: t.metadata,
             is_connected: t.is_connected,
             is_working: t.is_working,
             last_connected_at: t.last_connected_at,
@@ -22,17 +24,27 @@ defmodule MessagingWeb.API.BotTokenController do
     })
   end
 
-  def create(conn, %{"name" => name}) do
+  def create(conn, %{"name" => name} = params) do
     user = conn.assigns.current_user
 
-    case Bots.create_bot_token(%{name: name, user_id: user.id}) do
+    attrs = %{
+      name: name,
+      user_id: user.id,
+      bot_type: params["bot_type"] || "chat",
+      metadata: params["metadata"] || %{}
+    }
+
+    case Bots.create_bot_token(attrs) do
       {:ok, bot_token} ->
         conn
         |> put_status(:created)
         |> json(%{
           id: bot_token.id,
           name: bot_token.name,
-          token: bot_token.token
+          token: bot_token.token,
+          channel_code: bot_token.channel_code,
+          bot_type: bot_token.bot_type,
+          metadata: bot_token.metadata
         })
 
       {:error, changeset} ->
@@ -40,6 +52,32 @@ defmodule MessagingWeb.API.BotTokenController do
         |> put_status(:unprocessable_entity)
         |> json(%{errors: format_errors(changeset)})
     end
+  end
+
+  def regenerate(conn, %{"bot_token_id" => id}) do
+    user = conn.assigns.current_user
+    bot_token = Bots.get_bot_token!(id, user.id)
+
+    case Bots.regenerate_bot_token(bot_token) do
+      {:ok, updated} ->
+        json(conn, %{
+          id: updated.id,
+          name: updated.name,
+          token: updated.token,
+          channel_code: updated.channel_code,
+          bot_type: updated.bot_type
+        })
+
+      {:error, changeset} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{errors: format_errors(changeset)})
+    end
+  rescue
+    Ecto.NoResultsError ->
+      conn
+      |> put_status(:not_found)
+      |> json(%{error: "Not found"})
   end
 
   def channel(conn, %{"bot_token_id" => id}) do

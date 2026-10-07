@@ -16,8 +16,27 @@
     <title>Botamus Prime</title>
   </head>
   <body>
+    <div id="splash-screen" class="splash-screen">
+      <div class="splash-inner">
+        <img src="/botamus-prime-192.png" alt="Botamus Prime" class="splash-logo" />
+        <h1 class="splash-title">Botamus Prime</h1>
+        <div class="splash-loader">
+          <div class="splash-loader-bar"></div>
+        </div>
+      </div>
+    </div>
+
     <div id="app"></div>
 
     <script type="module" src="/assets/js/app.js"></script>
+    <script>
+      setTimeout(() => {
+        const splash = document.getElementById("splash-screen");
+        if (splash) {
+          splash.classList.add("splash-hidden");
+          setTimeout(() => splash.remove(), 400);
+        }
+      }, 2000);
+    </script>
   </body>
 </html>

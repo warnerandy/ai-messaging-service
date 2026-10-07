@@ -2,6 +2,16 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
 import { Socket } from "phoenix"
 import MessageBubbleView from "./MessageBubble.jsx"
 import TypingIndicatorView from "./TypingIndicator.jsx"
+import LiveThinking from "./LiveThinking.jsx"
+import QuestionApprovalCard from "./QuestionApprovalCard.jsx"
+import PromptQueue from "./PromptQueue.jsx"
+import BotConfigModal from "./BotConfigModal.jsx"
+import {
+	VSCodeWorkingStateIcon,
+	VSCodeProgressBar,
+	VSCodeSparkleIcon,
+	VSCodeIconsShowcase,
+} from "./VSCodeWorkingIcons.jsx"
 import {
 	createConversationTimeoutMessage,
 	createConversationMessage,
@@ -30,7 +40,7 @@ function isBotTimeoutSystemMessage(message) {
 }
 
 export function deriveConversationState(messages) {
-	let hasPendingBotResponse = false
+	let hasBotResponseAfter = false
 	const nextMessages = [...messages]
 	const timedOutMessageIds = new Set(
 		nextMessages
@@ -42,14 +52,14 @@ export function deriveConversationState(messages) {
 		const message = nextMessages[index]
 
 		if (message.role === "bot") {
-			hasPendingBotResponse = false
+			hasBotResponseAfter = true
 			continue
 		}
 
 		if (message.role === "user") {
 			const awaitingResponse =
 				Boolean(message.acknowledged) &&
-				!hasPendingBotResponse &&
+				!hasBotResponseAfter &&
 				!timedOutMessageIds.has(message.id) &&
 				!message.timeoutReported
 
@@ -58,12 +68,14 @@ export function deriveConversationState(messages) {
 				awaitingResponse,
 			}
 
-			hasPendingBotResponse = awaitingResponse || hasPendingBotResponse
+			// This user message consumes the "no bot response" state;
+			// earlier user messages need their own bot response after them.
+			hasBotResponseAfter = false
 			continue
 		}
 
 		if (isBotTimeoutSystemMessage(message)) {
-			hasPendingBotResponse = false
+			hasBotResponseAfter = true
 		}
 	}
 
@@ -105,12 +117,21 @@ export default function ChatView({
 	const [messages, setMessages] = useState([])
 	const [inputValue, setInputValue] = useState("")
 	const [selectedModel, setSelectedModel] = useState("")
+	const [selectedContextSize, setSelectedContextSize] = useState("")
 	const [botIsTyping, setBotIsTyping] = useState(false)
 	const [sending, setSending] = useState(false)
 	const [selectedFile, setSelectedFile] = useState(null)
 	const [uploading, setUploading] = useState(false)
 	// Maps message id -> value of the suggestion the user clicked
 	const [usedSuggestions, setUsedSuggestions] = useState({})
+	const [sessionStatus, setSessionStatus] = useState("idle")
+	const [sessionMetadata, setSessionMetadata] = useState({})
+	const [thinkingText, setThinkingText] = useState("")
+	const [toolCalls, setToolCalls] = useState([])
+	const [pendingQuestion, setPendingQuestion] = useState(null)
+	const [promptQueue, setPromptQueue] = useState([])
+	const [showConfigModal, setShowConfigModal] = useState(false)
+	const [showShowcaseModal, setShowShowcaseModal] = useState(false)
 	const messagesEndRef = useRef(null)
 	const socketRef = useRef(null)
 	const channelRef = useRef(null)
@@ -168,6 +189,18 @@ export default function ChatView({
 		},
 		[selectedConversationId, token],
 	)
+
+	// Set document title to bot name
+	useEffect(() => {
+		if (bot?.name) {
+			document.title = bot.name
+		} else {
+			document.title = "Botamus Prime"
+		}
+		return () => {
+			document.title = "Botamus Prime"
+		}
+	}, [bot?.name])
 
 	// Scroll to bottom
 	useEffect(() => {
@@ -306,6 +339,11 @@ export default function ChatView({
 					if (!payload?.message) return
 					const incoming = normalizeMessage(payload.message)
 
+					// When a bot message arrives, immediately stop the thinking indicator
+					if (incoming.role === "bot") {
+						stopBotThinking()
+					}
+
 					setMessages((prev) => {
 						if (renderedIdsRef.current.has(incoming.id)) return prev
 						renderedIdsRef.current.add(incoming.id)
@@ -364,10 +402,65 @@ export default function ChatView({
 					}
 				})
 
+				ch.on("session_status_changed", (payload) => {
+					if (!payload) return
+					setSessionStatus(payload.status || "idle")
+					const meta = payload.metadata || {}
+					setSessionMetadata(meta)
+					if (meta.prompt_queue) setPromptQueue(meta.prompt_queue)
+					if (meta.question) setPendingQuestion(meta.question)
+					if (payload.status === "idle") {
+						setThinkingText("")
+						stopBotThinking()
+					} else if (payload.status === "thinking" || payload.status === "running") {
+						startBotThinking()
+					}
+				})
+
+				ch.on("ahp_event", (payload) => {
+					if (!payload) return
+					const { event_type, data } = payload
+					if (event_type === "thinking") {
+						const chunk = data?.chunk ?? data?.text ?? data?.thought ?? ""
+						setThinkingText((prev) => prev + chunk)
+						setSessionStatus("thinking")
+						startBotThinking()
+					} else if (event_type === "step" || event_type === "tool_call") {
+						setToolCalls((prev) => [...prev, data])
+						if (data?.step || data?.tool || data?.name) {
+							setSessionMetadata((prev) => ({
+								...prev,
+								step: data.step || prev.step,
+								tool: data.tool || data.name || prev.tool,
+							}))
+						}
+					} else if (event_type === "question") {
+						setPendingQuestion(data)
+						setSessionStatus("waiting_for_input")
+					} else if (event_type === "status") {
+						setSessionStatus(data?.status || "running")
+					}
+				})
+
+				ch.on("prompt_queue_updated", (payload) => {
+					if (payload?.prompt_queue) {
+						setPromptQueue(payload.prompt_queue)
+					}
+				})
+
 				ch.join()
-					.receive("ok", () => {
+					.receive("ok", (resp) => {
 						if (cancelled) return
 						channelRef.current = ch
+
+						if (resp?.status) setSessionStatus(resp.status)
+						if (resp?.metadata) {
+							setSessionMetadata(resp.metadata)
+							if (resp.metadata.prompt_queue) setPromptQueue(resp.metadata.prompt_queue)
+							if (resp.metadata.question) setPendingQuestion(resp.metadata.question)
+							if (resp.metadata.thinking) setThinkingText(resp.metadata.thinking)
+							if (resp.metadata.tool_calls) setToolCalls(resp.metadata.tool_calls)
+						}
 
 						if (hasJoinedConversationRef.current) {
 							refetchMissedMessages()
@@ -413,6 +506,16 @@ export default function ChatView({
 				const nextState = deriveConversationState(msgs)
 				setMessages(nextState.messages)
 				setBotIsTyping(nextState.botIsTyping)
+				if (res.conversation) {
+					if (res.conversation.status) setSessionStatus(res.conversation.status)
+					if (res.conversation.metadata) {
+						setSessionMetadata(res.conversation.metadata)
+						if (res.conversation.metadata.prompt_queue) setPromptQueue(res.conversation.metadata.prompt_queue)
+						if (res.conversation.metadata.question) setPendingQuestion(res.conversation.metadata.question)
+						if (res.conversation.metadata.thinking) setThinkingText(res.conversation.metadata.thinking)
+						if (res.conversation.metadata.tool_calls) setToolCalls(res.conversation.metadata.tool_calls)
+					}
+				}
 			} catch (err) {
 				console.error("Load messages failed:", err)
 			}
@@ -423,6 +526,7 @@ export default function ChatView({
 	useEffect(() => {
 		if (models.length === 0) {
 			setSelectedModel("")
+			setSelectedContextSize("")
 			return
 		}
 
@@ -431,6 +535,19 @@ export default function ChatView({
 			setSelectedModel(models[0].name)
 		}
 	}, [models, selectedModel])
+
+	useEffect(() => {
+		const currentModelObj = models.find((m) => m.name === selectedModel)
+		const sizes = currentModelObj?.context_sizes || []
+		if (sizes.length === 0) {
+			setSelectedContextSize("")
+		} else if (
+			selectedContextSize &&
+			!sizes.some((s) => String(s) === String(selectedContextSize))
+		) {
+			setSelectedContextSize("")
+		}
+	}, [models, selectedModel, selectedContextSize])
 
 	useEffect(() => {
 		return () => {
@@ -463,11 +580,13 @@ export default function ChatView({
 		if (!body || !selectedConversationId) return
 
 		const model = selectedModel || models[0]?.name || null
+		const contextSize = selectedContextSize ? Number(selectedContextSize) : null
 		const optimisticId = `optimistic-${Date.now()}`
 		const optimistic = {
 			id: optimisticId,
 			body,
 			model,
+			context_size: contextSize,
 			role: "user",
 			content_type: "text",
 			pending: true,
@@ -481,6 +600,7 @@ export default function ChatView({
 		try {
 			const payload = { body }
 			if (model) payload.model = model
+			if (contextSize) payload.context_size = contextSize
 			if (opts.fromSuggestion) payload.is_suggestion = true
 
 			const res = await createConversationMessage(token, selectedConversationId, payload)
@@ -515,6 +635,7 @@ export default function ChatView({
 		if (!file || !selectedConversationId) return
 
 		const model = selectedModel || models[0]?.name || null
+		const contextSize = selectedContextSize ? Number(selectedContextSize) : null
 		const optimisticId = `optimistic-${Date.now()}`
 		const assetType = file.type.startsWith("image/") ? "image" : "file"
 		const optimistic = {
@@ -522,6 +643,7 @@ export default function ChatView({
 			body: null,
 			metadata: { url: URL.createObjectURL(file), filename: file.name },
 			model,
+			context_size: contextSize,
 			role: "user",
 			content_type: assetType,
 			pending: true,
@@ -543,6 +665,7 @@ export default function ChatView({
 				asset_filename: file.name,
 			}
 			if (model) payload.model = model
+			if (contextSize) payload.context_size = contextSize
 
 			const res = await createConversationMessage(token, selectedConversationId, payload)
 
@@ -588,6 +711,49 @@ export default function ChatView({
 		if (selectedFile) {
 			await sendAsset(selectedFile)
 		}
+	}
+
+	const activeConv = conversations?.find((c) => c.id === selectedConversationId)
+
+	useEffect(() => {
+		if (activeConv) {
+			setSessionStatus(activeConv.status || "idle")
+			setSessionMetadata(activeConv.metadata || {})
+			setPromptQueue(activeConv.metadata?.prompt_queue || [])
+			setPendingQuestion(activeConv.metadata?.question || null)
+			setThinkingText(activeConv.metadata?.thinking || "")
+			setToolCalls(activeConv.metadata?.tool_calls || [])
+		}
+	}, [activeConv, selectedConversationId])
+
+	function handleStop() {
+		channelRef.current?.push("steer", { action: "stop" })
+	}
+
+	function handleSteer(instruction) {
+		channelRef.current?.push("steer", { action: "steer", instruction })
+	}
+
+	function handleAnswerQuestion(answerData) {
+		channelRef.current?.push("answer_question", answerData)
+		setPendingQuestion(null)
+		setSessionStatus("running")
+	}
+
+	function handleQueuePrompt(e) {
+		e?.preventDefault()
+		const text = inputValue.trim()
+		if (!text) return
+		channelRef.current?.push("queue_prompt", {
+			body: text,
+			model: selectedModel || models[0]?.name || null,
+			context_size: selectedContextSize ? Number(selectedContextSize) : null,
+		})
+		setInputValue("")
+	}
+
+	function handleRemovePrompt(promptId) {
+		channelRef.current?.push("remove_queued_prompt", { prompt_id: promptId })
 	}
 
 	if (!bot) {
@@ -639,33 +805,98 @@ export default function ChatView({
 		)
 	}
 
-	const selectedConv = conversations.find((c) => c.id === selectedConversationId)
-
 	return (
 		<main className="chat-main">
 			{/* Top bar */}
 			<div className="chat-topbar">
-				<button
-					type="button"
-					className="mobile-menu-btn"
-					onClick={onToggleSidebar}
-					aria-label="Toggle sidebar"
-				>
-					<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-						<path
-							d="M3 5h14M3 10h14M3 15h14"
-							stroke="currentColor"
-							strokeWidth="1.8"
-							strokeLinecap="round"
-						/>
-					</svg>
-				</button>
-				<h2 className="chat-title">{selectedConv?.title || bot.name}</h2>
+				<div className="chat-topbar-left">
+					<button
+						type="button"
+						className="mobile-menu-btn"
+						onClick={onToggleSidebar}
+						aria-label="Toggle sidebar"
+					>
+						<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+							<path
+								d="M3 5h14M3 10h14M3 15h14"
+								stroke="currentColor"
+								strokeWidth="1.8"
+								strokeLinecap="round"
+							/>
+						</svg>
+					</button>
+					<div className="chat-topbar-titles">
+						<h2 className="chat-title">{bot.name}</h2>
+						<span
+							className={`bot-protocol-badge bot-protocol-badge--${bot.bot_type === "ahp" ? "ahp" : "chat"}`}
+							title={
+								bot.bot_type === "ahp"
+									? "Integrated via Agent Host Protocol (AHP)"
+									: "Integrated via Chat Protocol"
+							}
+						>
+							{bot.bot_type === "ahp" ? "AHP Protocol" : "Chat Protocol"}
+						</span>
+						{activeConv && (
+							<span className="chat-subtitle">
+								/ {activeConv.title || "Session"}
+							</span>
+						)}
+					</div>
+					{bot.bot_type === "ahp" && (
+						<span
+							className={`session-status-badge session-status-badge--${sessionStatus}`}
+						>
+							<VSCodeWorkingStateIcon
+								status={sessionStatus}
+								size={13}
+								className="mr-1 inline-flex"
+							/>
+							{sessionStatus === "waiting_for_input"
+								? "Needs Input"
+								: sessionStatus}
+						</span>
+					)}
+				</div>
+
 				<div className="chat-topbar-right">
 					<span className={`connection-dot ${bot.is_connected ? "connection-dot--on" : ""}`} />
 					<span className="connection-label">{bot.is_connected ? "Online" : "Offline"}</span>
+					<button
+						type="button"
+						className="bot-config-btn"
+						onClick={() => setShowShowcaseModal(true)}
+						title="VS Code Working States Gallery"
+						aria-label="VS Code Working States Gallery"
+					>
+						<VSCodeSparkleIcon size={16} animated={false} className="text-purple-400" />
+					</button>
+					<button
+						type="button"
+						className="bot-config-btn"
+						onClick={() => setShowConfigModal(true)}
+						title="Bot Configuration & Keys"
+						aria-label="Bot Configuration & Keys"
+					>
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+							<path
+								d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+								stroke="currentColor"
+								strokeWidth="1.8"
+								strokeLinecap="round"
+								strokeLinejoin="round"
+							/>
+							<circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.8" />
+						</svg>
+					</button>
 				</div>
 			</div>
+
+			{/* VS Code Indeterminate Running Bar */}
+			<VSCodeProgressBar
+				active={sessionStatus === "running" || sessionStatus === "thinking"}
+				variant={sessionStatus === "thinking" ? "thinking" : "running"}
+			/>
 
 			{/* Messages */}
 			<div className="chat-messages">
@@ -674,6 +905,11 @@ export default function ChatView({
 						<p className="chat-welcome-text">
 							Start a conversation with <strong>{bot.name}</strong>
 						</p>
+						<span
+							className={`bot-protocol-badge bot-protocol-badge--${bot.bot_type === "ahp" ? "ahp" : "chat"}`}
+						>
+							{bot.bot_type === "ahp" ? "AHP Protocol" : "Chat Protocol"}
+						</span>
 					</div>
 				)}
 				{messages.map((msg) => (
@@ -684,12 +920,37 @@ export default function ChatView({
 						usedSuggestion={usedSuggestions[msg.id]}
 					/>
 				))}
+
+				{/* AHP Interactive Question / Approval Card */}
+				{pendingQuestion && (
+					<QuestionApprovalCard
+						question={pendingQuestion}
+						onAnswer={handleAnswerQuestion}
+					/>
+				)}
+
+				{/* AHP Live Thinking, Tool Steps, & Steering */}
+				<LiveThinking
+					status={sessionStatus}
+					metadata={sessionMetadata}
+					thinkingText={thinkingText}
+					toolCalls={toolCalls}
+					onStop={handleStop}
+					onSteer={handleSteer}
+				/>
+
 				{botIsTyping && <TypingIndicatorView />}
 				<div ref={messagesEndRef} />
 			</div>
 
 			{/* Input area */}
 			<div className="chat-input-area">
+				{/* Prompt Queue Chips */}
+				<PromptQueue
+					queue={promptQueue}
+					onRemovePrompt={handleRemovePrompt}
+				/>
+
 				{/* File preview when selected */}
 				{selectedFile && (
 					<div className="file-preview">
@@ -719,7 +980,11 @@ export default function ChatView({
 						id="message-input"
 						ref={inputRef}
 						className="chat-textarea"
-						placeholder="What do you want to know?"
+						placeholder={
+							sessionStatus === "running" || sessionStatus === "thinking"
+								? "Agent is active. Enter a prompt to send or queue..."
+								: "What do you want to know?"
+						}
 						value={inputValue}
 						onChange={(e) => setInputValue(e.target.value)}
 						rows={1}
@@ -768,7 +1033,41 @@ export default function ChatView({
 									</option>
 								))}
 							</select>
+							{models.find((m) => m.name === selectedModel)?.context_sizes?.length > 0 && (
+								<select
+									id="context-size-select"
+									className="model-picker"
+									value={selectedContextSize}
+									onChange={(e) => setSelectedContextSize(e.target.value)}
+									aria-label="Context Size"
+								>
+									<option value="">Default context</option>
+									{models
+										.find((m) => m.name === selectedModel)
+										.context_sizes.map((size) => (
+											<option key={size} value={size}>
+												{size >= 1000
+													? `${Math.round(size / 1000)}k (${size.toLocaleString()} tokens)`
+													: `${size} tokens`}
+											</option>
+										))}
+								</select>
+							)}
 						</div>
+
+						{/* Queue Button for Busy Agents */}
+						{(sessionStatus === "running" || sessionStatus === "thinking") && (
+							<button
+								type="button"
+								className={`queue-btn ${inputValue.trim() ? "queue-btn--active" : ""}`}
+								onClick={handleQueuePrompt}
+								disabled={!inputValue.trim()}
+								title="Queue prompt to run once agent is idle"
+							>
+								⚡ Queue
+							</button>
+						)}
+
 						{selectedFile ? (
 							<button
 								type="button"
@@ -815,6 +1114,56 @@ export default function ChatView({
 					</div>
 				</form>
 			</div>
+
+			{/* Bot Configuration Modal */}
+			{showConfigModal && (
+				<BotConfigModal
+					token={token}
+					bot={bot}
+					onClose={() => setShowConfigModal(false)}
+					onBotUpdated={(updated) => {
+						onBotStatusChange && onBotStatusChange(updated.id, updated)
+					}}
+				/>
+			)}
+
+			{/* VS Code Working States Showcase Modal */}
+			{showShowcaseModal && (
+				<div className="modal-overlay" onClick={() => setShowShowcaseModal(false)}>
+					<div
+						className="modal-card modal-card--config"
+						style={{ maxWidth: "720px", width: "90%" }}
+						onClick={(e) => e.stopPropagation()}
+					>
+						<div className="modal-header">
+							<div className="modal-title-row">
+								<VSCodeSparkleIcon size={18} animated={true} className="text-purple-400 mr-2" />
+								<h3 className="modal-title">VS Code Working States Preview</h3>
+							</div>
+							<button
+								type="button"
+								className="modal-close-btn"
+								onClick={() => setShowShowcaseModal(false)}
+								aria-label="Close"
+							>
+								✕
+							</button>
+						</div>
+						<div className="modal-body" style={{ maxHeight: "75vh", overflowY: "auto" }}>
+							<VSCodeIconsShowcase />
+						</div>
+						<div className="modal-actions">
+							<button
+								type="button"
+								className="modal-btn modal-btn--primary"
+								onClick={() => setShowShowcaseModal(false)}
+							>
+								Done
+							</button>
+						</div>
+					</div>
+				</div>
+			)}
 		</main>
 	)
 }

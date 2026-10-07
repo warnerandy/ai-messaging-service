@@ -6,9 +6,18 @@ export async function apiRequest(path, { method = "GET", body, token } = {}) {
 		method,
 		headers,
 		body: body ? JSON.stringify(body) : undefined,
+		cache: "no-store",
 	})
 	const json = await res.json().catch(() => ({}))
-	if (!res.ok) throw new Error(json.error || "Request failed")
+	if (!res.ok) {
+		if (json.errors) {
+			const errorMsg = Object.entries(json.errors)
+				.map(([field, msgs]) => `${field} ${msgs.join(", ")}`)
+				.join("; ")
+			throw new Error(errorMsg)
+		}
+		throw new Error(json.error || "Request failed")
+	}
 	return json
 }
 

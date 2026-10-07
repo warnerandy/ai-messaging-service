@@ -11,6 +11,7 @@ defmodule Messaging.Chat.Message do
     field :body, :string
     field :metadata, :map, default: %{}
     field :model, :string
+    field :context_size, :integer
     field :acknowledged, :boolean, default: false
     field :acknowledged_at, :utc_datetime
     field :is_suggestion, :boolean, default: false
@@ -28,6 +29,7 @@ defmodule Messaging.Chat.Message do
       :body,
       :metadata,
       :model,
+      :context_size,
       :acknowledged,
       :acknowledged_at,
       :is_suggestion,
@@ -36,6 +38,7 @@ defmodule Messaging.Chat.Message do
     |> validate_required([:role, :conversation_id])
     |> validate_inclusion(:role, @valid_roles)
     |> validate_inclusion(:content_type, @valid_content_types)
+    |> validate_number(:context_size, greater_than: 0)
     |> validate_content()
   end
 

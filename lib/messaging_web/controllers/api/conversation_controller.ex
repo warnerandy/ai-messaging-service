@@ -13,8 +13,12 @@ defmodule MessagingWeb.API.ConversationController do
           %{
             id: c.id,
             title: c.title,
+            external_session_id: c.external_session_id,
+            status: c.status,
+            metadata: c.metadata,
             bot_token_id: c.bot_token_id,
             bot_name: c.bot_token.name,
+            bot_type: c.bot_token.bot_type,
             bot_connected: c.bot_token.is_connected,
             inserted_at: c.inserted_at,
             updated_at: c.updated_at
@@ -31,7 +35,10 @@ defmodule MessagingWeb.API.ConversationController do
     case Chat.create_conversation(%{
            user_id: user.id,
            bot_token_id: bot_token.id,
-           title: params["title"] || "New conversation"
+           title: params["title"] || bot_token.name,
+           external_session_id: params["external_session_id"],
+           status: params["status"] || "idle",
+           metadata: params["metadata"] || %{}
          }) do
       {:ok, conversation} ->
         conn
@@ -39,6 +46,9 @@ defmodule MessagingWeb.API.ConversationController do
         |> json(%{
           id: conversation.id,
           title: conversation.title,
+          external_session_id: conversation.external_session_id,
+          status: conversation.status,
+          metadata: conversation.metadata,
           bot_token_id: conversation.bot_token_id
         })
 
@@ -63,7 +73,13 @@ defmodule MessagingWeb.API.ConversationController do
       conversation: %{
         id: conversation.id,
         title: conversation.title,
-        bot_token_id: conversation.bot_token_id
+        external_session_id: conversation.external_session_id,
+        status: conversation.status,
+        metadata: conversation.metadata,
+        bot_token_id: conversation.bot_token_id,
+        bot_name: conversation.bot_token.name,
+        bot_type: conversation.bot_token.bot_type,
+        bot_connected: conversation.bot_token.is_connected
       },
       messages:
         Enum.map(messages, fn m ->
@@ -74,6 +90,7 @@ defmodule MessagingWeb.API.ConversationController do
             body: m.body,
             metadata: m.metadata,
             model: m.model,
+            context_size: m.context_size,
             acknowledged: m.acknowledged,
             acknowledged_at: m.acknowledged_at,
             is_suggestion: m.is_suggestion,

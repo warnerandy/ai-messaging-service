@@ -85,4 +85,41 @@ describe("Sidebar", () => {
 			expect(onDeleteBot).toHaveBeenCalledWith("bot-1")
 		})
 	})
+
+	it("renders conversations and calls onSelectConversation and onCreateConversation", async () => {
+		const user = userEvent.setup()
+		const onSelectConversation = vi.fn()
+		const onCreateConversation = vi.fn()
+
+		render(
+			<Sidebar
+				token="token-1"
+				bots={[{ id: "bot-1", name: "Alpha", is_connected: true }]}
+				selectedBotId="bot-1"
+				conversations={[
+					{ id: "conv-1", title: "Project Discussion" },
+					{ id: "conv-2", title: "Bug Analysis" },
+				]}
+				selectedConversationId="conv-1"
+				onSelectBot={vi.fn()}
+				onSelectConversation={onSelectConversation}
+				onCreateConversation={onCreateConversation}
+				onBotsChange={vi.fn()}
+				onDeleteBot={vi.fn()}
+				userEmail="user@example.com"
+				onLogout={vi.fn()}
+				isOpen
+				appConnection="online"
+			/>,
+		)
+
+		expect(screen.getByText("Project Discussion")).toBeInTheDocument()
+		expect(screen.getByText("Bug Analysis")).toBeInTheDocument()
+
+		await user.click(screen.getByText("Bug Analysis"))
+		expect(onSelectConversation).toHaveBeenCalledWith("conv-2")
+
+		await user.click(screen.getByRole("button", { name: "New conversation" }))
+		expect(onCreateConversation).toHaveBeenCalledTimes(1)
+	})
 })

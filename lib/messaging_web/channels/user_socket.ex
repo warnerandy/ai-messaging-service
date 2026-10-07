@@ -4,6 +4,7 @@ defmodule MessagingWeb.UserSocket do
   alias Messaging.Accounts
 
   channel "conversation:*", MessagingWeb.ConversationChannel
+  channel "bot_sessions:*", MessagingWeb.BotSessionsChannel
 
   @impl true
   def connect(%{"token" => encoded_token}, socket, _connect_info) do

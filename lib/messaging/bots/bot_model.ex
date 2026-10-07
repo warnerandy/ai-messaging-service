@@ -6,6 +6,7 @@ defmodule Messaging.Bots.BotModel do
     field :name, :string
     field :input_cost_per_token, :decimal
     field :output_cost_per_token, :decimal
+    field :context_sizes, {:array, :integer}, default: []
 
     belongs_to :bot_token, Messaging.Bots.BotToken
 
@@ -14,7 +15,13 @@ defmodule Messaging.Bots.BotModel do
 
   def changeset(bot_model, attrs) do
     bot_model
-    |> cast(attrs, [:name, :input_cost_per_token, :output_cost_per_token, :bot_token_id])
+    |> cast(attrs, [
+      :name,
+      :input_cost_per_token,
+      :output_cost_per_token,
+      :bot_token_id,
+      :context_sizes
+    ])
     |> validate_required([:name, :input_cost_per_token, :output_cost_per_token, :bot_token_id])
     |> validate_length(:name, min: 1, max: 200)
     |> validate_number(:input_cost_per_token, greater_than_or_equal_to: 0)

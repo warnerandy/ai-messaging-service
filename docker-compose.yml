@@ -18,13 +18,14 @@ services:
   app:
     build: .
     ports:
-      - "4000:4000"
+      - "4002:4000"
     environment:
       DATABASE_URL: ecto://messaging:messaging@db/messaging_prod
-      SECRET_KEY_BASE: ${SECRET_KEY_BASE:-please-change-me-to-a-64-byte-secret-key-base-value-generated-by-mix-phx-gen-secret}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:-g3m1n1AdvaNcEdAgEnTiCcOdInGtEaMmEsSaGiNgSeRvIcEsEcReTkEyBaSe1234}
       PHX_HOST: ${PHX_HOST:-localhost}
       CHECK_ORIGIN: ${CHECK_ORIGIN:-}
       PORT: "4000"
+      FORCE_SSL: "false"
     depends_on:
       db:
         condition: service_healthy

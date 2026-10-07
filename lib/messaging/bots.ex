@@ -53,6 +53,12 @@ defmodule Messaging.Bots do
     |> Repo.update()
   end
 
+  def regenerate_bot_token(%BotToken{} = bot_token) do
+    bot_token
+    |> BotToken.regenerate_token_changeset()
+    |> Repo.update()
+  end
+
   def update_bot_status(%BotToken{} = bot_token, attrs) do
     bot_token
     |> BotToken.status_changeset(attrs)

@@ -48,11 +48,11 @@ describe("AuthPanel", () => {
 		expect(screen.getByText("Create your account")).toBeInTheDocument()
 
 		await user.type(screen.getByLabelText("Email"), "new@example.com")
-		await user.type(screen.getByLabelText("Password"), "secret456")
+		await user.type(screen.getByLabelText("Password (min 12 characters)"), "secret4567890")
 		fireEvent.submit(document.getElementById("register-form"))
 
 		await waitFor(() => {
-			expect(registerUser).toHaveBeenCalledWith("new@example.com", "secret456")
+			expect(registerUser).toHaveBeenCalledWith("new@example.com", "secret4567890")
 			expect(onAuth).toHaveBeenCalledWith({ token: "token-456" })
 		})
 	})

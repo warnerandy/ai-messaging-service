@@ -56,6 +56,7 @@ defmodule MessagingWeb.BotChannel do
         body: message.body,
         metadata: message.metadata,
         model: message.model,
+        context_size: message.context_size,
         acknowledged_at: message.acknowledged_at,
         is_suggestion: message.is_suggestion,
         inserted_at: message.inserted_at
@@ -69,6 +70,30 @@ defmodule MessagingWeb.BotChannel do
   def handle_info(:refresh_models, socket) do
     Logger.info("[BotChannel] pushing refresh_models bot_token_id=#{socket.assigns.bot_token.id}")
     push(socket, "refresh_models", %{})
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:answer_question, payload}, socket) do
+    Logger.info("[BotChannel] pushing answer_question bot_token_id=#{socket.assigns.bot_token.id}")
+    push(socket, "answer_question", payload)
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:steer_agent, payload}, socket) do
+    Logger.info("[BotChannel] pushing steer_agent bot_token_id=#{socket.assigns.bot_token.id}")
+    push(socket, "steer_agent", payload)
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:execute_queued_prompt, payload}, socket) do
+    Logger.info(
+      "[BotChannel] pushing execute_queued_prompt bot_token_id=#{socket.assigns.bot_token.id}"
+    )
+
+    push(socket, "execute_queued_prompt", payload)
     {:noreply, socket}
   end
 
@@ -138,6 +163,80 @@ defmodule MessagingWeb.BotChannel do
     {:reply, :ok, socket}
   end
 
+  # Bot synchronizes active AHP sessions
+  def handle_in("sync_sessions", %{"sessions" => sessions}, socket) do
+    bot_token = socket.assigns.bot_token
+
+    Logger.info(
+      "[BotChannel] sync_sessions count=#{length(sessions)} bot_token_id=#{bot_token.id}"
+    )
+
+    case Chat.sync_bot_sessions(bot_token, sessions) do
+      {:ok, synced} ->
+        serialized =
+          Enum.map(synced, fn c ->
+            %{
+              id: c.id,
+              external_session_id: c.external_session_id,
+              title: c.title,
+              status: c.status,
+              metadata: c.metadata,
+              updated_at: c.updated_at
+            }
+          end)
+
+        {:reply, {:ok, %{sessions: serialized}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{reason: inspect(reason)}}, socket}
+    end
+  end
+
+  # Bot updates sub-chat / session status (e.g. idle, running, waiting_for_input)
+  def handle_in("session_status", payload, socket) do
+    bot_token = socket.assigns.bot_token
+    conv = resolve_conversation(bot_token, payload)
+    status = payload["status"] || "idle"
+    metadata = payload["metadata"] || %{}
+
+    Logger.info(
+      "[BotChannel] session_status conversation_id=#{conv.id} status=#{status} bot_token_id=#{bot_token.id}"
+    )
+
+    Chat.update_session_status(conv.id, status, metadata)
+    maybe_dispatch_queued_prompt(conv.id, status, socket)
+
+    {:reply, :ok, socket}
+  rescue
+    Ecto.NoResultsError ->
+      {:reply, {:error, %{reason: "not_found"}}, socket}
+  end
+
+  # Bot ferrys raw AHP event (thinking, step, question, status, plan, etc.)
+  def handle_in("ahp_event", payload, socket) do
+    bot_token = socket.assigns.bot_token
+    conv = resolve_conversation(bot_token, payload)
+    event_type = payload["event_type"] || payload["type"]
+    data = payload["data"] || %{}
+
+    if event_type == "status" or Map.has_key?(data, "status") do
+      new_status = data["status"] || event_type
+      Chat.update_session_status(conv.id, new_status, data)
+      maybe_dispatch_queued_prompt(conv.id, new_status, socket)
+    end
+
+    Phoenix.PubSub.broadcast(
+      Messaging.PubSub,
+      "conversation:#{conv.id}",
+      {:ahp_event, conv.id, event_type, data}
+    )
+
+    {:reply, :ok, socket}
+  rescue
+    Ecto.NoResultsError ->
+      {:reply, {:error, %{reason: "not_found"}}, socket}
+  end
+
   @impl true
   def terminate(reason, socket) do
     bot_token = socket.assigns.bot_token
@@ -167,4 +266,49 @@ defmodule MessagingWeb.BotChannel do
       _ -> topic_key == bot_token.channel_code
     end
   end
+
+  defp resolve_conversation(bot_token, payload) do
+    cond do
+      conv_id = payload["conversation_id"] ->
+        Chat.get_conversation!(conv_id, bot_token_id: bot_token.id)
+
+      ext_id = payload["session_id"] || payload["external_session_id"] ->
+        case Chat.get_conversation_by_external_session(bot_token.id, ext_id) do
+          nil ->
+            {:ok, conv} =
+              Chat.create_conversation(%{
+                user_id: bot_token.user_id,
+                bot_token_id: bot_token.id,
+                external_session_id: to_string(ext_id),
+                title: "Session #{ext_id}",
+                status: "idle"
+              })
+
+            conv
+
+          conv ->
+            conv
+        end
+
+      true ->
+        raise Ecto.NoResultsError, queryable: Messaging.Chat.Conversation
+    end
+  end
+
+  defp maybe_dispatch_queued_prompt(conv_id, "idle", socket) do
+    case Chat.pop_queued_prompt(conv_id) do
+      {:ok, %{} = prompt, _remaining} ->
+        Logger.info("[BotChannel] popping queued prompt conversation_id=#{conv_id}")
+
+        push(socket, "execute_queued_prompt", %{
+          conversation_id: conv_id,
+          prompt: prompt
+        })
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp maybe_dispatch_queued_prompt(_conv_id, _status, _socket), do: :ok
 end
