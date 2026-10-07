@@ -8,6 +8,10 @@ defmodule Messaging.Chat.Conversation do
     field :status, :string, default: "idle"
     field :metadata, :map, default: %{}
 
+    field :last_user_input_time, :utc_datetime, virtual: true
+    field :last_modified_time, :utc_datetime, virtual: true
+    field :last_message_at, :utc_datetime, virtual: true
+
     belongs_to :user, Messaging.Accounts.User
     belongs_to :bot_token, Messaging.Bots.BotToken
     has_many :messages, Messaging.Chat.Message

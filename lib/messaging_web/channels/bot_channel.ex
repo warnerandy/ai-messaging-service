@@ -75,7 +75,10 @@ defmodule MessagingWeb.BotChannel do
 
   @impl true
   def handle_info({:answer_question, payload}, socket) do
-    Logger.info("[BotChannel] pushing answer_question bot_token_id=#{socket.assigns.bot_token.id}")
+    Logger.info(
+      "[BotChannel] pushing answer_question bot_token_id=#{socket.assigns.bot_token.id}"
+    )
+
     push(socket, "answer_question", payload)
     {:noreply, socket}
   end
@@ -181,6 +184,10 @@ defmodule MessagingWeb.BotChannel do
               title: c.title,
               status: c.status,
               metadata: c.metadata,
+              last_user_input_time: c.last_user_input_time,
+              last_modified_time: c.last_modified_time,
+              last_message_at: c.last_message_at,
+              inserted_at: c.inserted_at,
               updated_at: c.updated_at
             }
           end)

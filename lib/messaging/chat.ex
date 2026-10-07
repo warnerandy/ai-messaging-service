@@ -9,19 +9,95 @@ defmodule Messaging.Chat do
 
   # --- Conversations ---
 
+  def resolve_conversation_timestamps(%Conversation{} = c, stats \\ %{}) do
+    meta = c.metadata || %{}
+
+    last_user_input_time =
+      meta["last_user_input_time"] ||
+        meta[:last_user_input_time] ||
+        meta["lastUserInputTime"] ||
+        meta[:lastUserInputTime] ||
+        stats[:last_user_input_time]
+
+    last_modified_time =
+      meta["last_modified_time"] ||
+        meta[:last_modified_time] ||
+        meta["lastModifiedTime"] ||
+        meta[:lastModifiedTime] ||
+        meta["source_updated_at"] ||
+        meta[:source_updated_at] ||
+        meta["last_modified"] ||
+        meta[:last_modified] ||
+        meta["last_activity_at"] ||
+        meta[:last_activity_at] ||
+        stats[:last_message_at] ||
+        c.updated_at
+
+    last_message_at =
+      stats[:last_message_at] ||
+        meta["last_message_at"] ||
+        meta[:last_message_at] ||
+        meta["lastMessageAt"] ||
+        meta[:lastMessageAt] ||
+        last_modified_time
+
+    %{
+      c
+      | last_user_input_time: last_user_input_time,
+        last_modified_time: last_modified_time,
+        last_message_at: last_message_at
+    }
+  end
+
+  def get_message_stats_for_conversations(conversation_ids) when is_list(conversation_ids) do
+    if conversation_ids == [] do
+      %{}
+    else
+      from(m in Message,
+        where: m.conversation_id in ^conversation_ids,
+        group_by: m.conversation_id,
+        select: %{
+          conversation_id: m.conversation_id,
+          last_message_at: max(m.inserted_at),
+          last_user_input_time:
+            max(fragment("CASE WHEN ? = 'user' THEN ? ELSE NULL END", m.role, m.inserted_at))
+        }
+      )
+      |> Repo.all()
+      |> Map.new(fn s -> {s.conversation_id, s} end)
+    end
+  end
+
   def list_conversations(user_id) do
-    Conversation
-    |> where(user_id: ^user_id)
-    |> order_by([c], desc: c.updated_at, desc: c.id)
-    |> preload(:bot_token)
-    |> Repo.all()
+    convs =
+      Conversation
+      |> where(user_id: ^user_id)
+      |> order_by([c], desc: c.updated_at, desc: c.id)
+      |> preload(:bot_token)
+      |> Repo.all()
+
+    conv_ids = Enum.map(convs, & &1.id)
+    stats_map = get_message_stats_for_conversations(conv_ids)
+
+    Enum.map(convs, fn c ->
+      resolve_conversation_timestamps(c, Map.get(stats_map, c.id, %{}))
+    end)
   end
 
   def list_conversations_for_bot(bot_token_id) do
-    Conversation
-    |> where(bot_token_id: ^bot_token_id)
-    |> order_by([c], desc: c.updated_at, desc: c.id)
-    |> Repo.all()
+    convs =
+      Conversation
+      |> where(bot_token_id: ^bot_token_id)
+      |> order_by([c], desc: c.updated_at, desc: c.id)
+      |> preload(:bot_token)
+      |> Repo.all()
+
+    conv_ids = Enum.map(convs, & &1.id)
+    stats_map = get_message_stats_for_conversations(conv_ids)
+
+    Enum.map(convs, fn c ->
+      resolve_conversation_timestamps(c, Map.get(stats_map, c.id, %{}))
+    end)
   end
 
   def get_conversation!(id, opts) when is_list(opts) do
@@ -33,13 +109,26 @@ defmodule Messaging.Chat do
       |> maybe_scope_conversation(opts)
       |> preload(:bot_token)
 
-    Repo.one!(query)
+    conv = Repo.one!(query)
+    stats = get_message_stats_for_conversations([conv.id])
+    resolve_conversation_timestamps(conv, Map.get(stats, conv.id, %{}))
   end
 
   def create_conversation(attrs) do
     %Conversation{}
     |> Conversation.changeset(attrs)
     |> Repo.insert()
+    |> tap(fn
+      {:ok, conv} ->
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "bot_sessions:#{conv.bot_token_id}",
+          {:conversation_created, conv}
+        )
+
+      _ ->
+        :ok
+    end)
   end
 
   def get_conversation_by_external_session(bot_token_id, external_session_id) do
@@ -59,7 +148,16 @@ defmodule Messaging.Chat do
         session_id = to_string(s["session_id"] || s[:session_id] || s["id"] || s[:id])
         title = s["title"] || s[:title]
         status = s["status"] || s[:status] || "idle"
-        metadata = s["metadata"] || s[:metadata] || %{}
+        raw_meta = s["metadata"] || s[:metadata] || %{}
+        
+        # Merge top-level attributes like project, working_directories, source_updated_at into metadata
+        extra_keys =
+          s
+          |> Map.drop(["session_id", :session_id, "id", :id, "title", :title, "status", :status, "metadata", :metadata])
+          |> Enum.map(fn {k, v} -> {to_string(k), v} end)
+          |> Map.new()
+
+        metadata = Map.merge(extra_keys, raw_meta)
         %{session_id: session_id, title: title, status: status, metadata: metadata}
       end)
       |> Enum.filter(&(&1.session_id != ""))
@@ -110,6 +208,7 @@ defmodule Messaging.Chat do
             conv
         end
       end)
+      |> Enum.map(&resolve_conversation_timestamps(&1, %{}))
 
     from(c in Conversation,
       where:
@@ -155,6 +254,32 @@ defmodule Messaging.Chat do
           Messaging.PubSub,
           "bot_sessions:#{updated.bot_token_id}",
           {:session_status_changed, updated.id, status, merged_metadata}
+        )
+
+        {:ok, updated}
+
+      error ->
+        error
+    end
+  end
+
+  def archive_conversation(conversation_id, user_id) do
+    conversation = get_conversation!(conversation_id, user_id: user_id)
+
+    case conversation
+         |> Conversation.changeset(%{status: "archived"})
+         |> Repo.update() do
+      {:ok, updated} ->
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "conversation:#{updated.id}",
+          {:session_status_changed, updated.id, "archived", updated.metadata}
+        )
+
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "bot_sessions:#{updated.bot_token_id}",
+          {:session_status_changed, updated.id, "archived", updated.metadata}
         )
 
         {:ok, updated}
@@ -315,6 +440,12 @@ defmodule Messaging.Chat do
           Messaging.PubSub,
           "bot:#{conversation.bot_token_id}",
           {:new_message, message, conversation}
+        )
+
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "bot_sessions:#{conversation.bot_token_id}",
+          {:session_message_created, conversation.id, now}
         )
 
       _ ->

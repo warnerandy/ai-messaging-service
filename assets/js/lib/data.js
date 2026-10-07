@@ -112,3 +112,10 @@ export function createConversationTimeoutMessage(token, conversationId, messageI
 export function uploadConversationAsset(token, conversationId, file) {
 	return uploadFile(`/api/conversations/${conversationId}/assets`, file, token)
 }
+
+export function archiveConversation(token, conversationId) {
+	return apiRequest(`/api/conversations/${conversationId}/archive`, {
+		method: "POST",
+		token,
+	})
+}

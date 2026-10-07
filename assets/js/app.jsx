@@ -37,7 +37,11 @@ function App() {
 		handleCreateConversation,
 		handleRefreshModels,
 		handleBotStatusChange,
+		handleConversationStatusChange,
+		handleConversationTouch,
+		handleSessionsUpdated,
 		handleDeleteBot,
+		handleArchiveConversation,
 	} = useWorkspaceData()
 
 	if (!token) {
@@ -72,6 +76,7 @@ function App() {
 						onCreateConversation={handleCreateConversation}
 						onBotsChange={loadBots}
 						onDeleteBot={handleDeleteBot}
+						onArchiveConversation={handleArchiveConversation}
 						userEmail={userEmail}
 						onLogout={handleLogout}
 						isOpen={mobileSidebarOpen}
@@ -85,6 +90,10 @@ function App() {
 						models={models}
 						onRefreshModels={handleRefreshModels}
 						onBotStatusChange={handleBotStatusChange}
+						onConversationStatusChange={handleConversationStatusChange}
+						onConversationTouch={handleConversationTouch}
+						onSessionsUpdated={handleSessionsUpdated}
+						onArchiveConversation={handleArchiveConversation}
 						onToggleSidebar={() => setMobileSidebarOpen(!mobileSidebarOpen)}
 					/>
 				</>

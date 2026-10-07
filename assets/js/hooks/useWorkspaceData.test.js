@@ -27,6 +27,24 @@ vi.mock("../lib/notifications.js", () => ({
 	requestNotificationPermission: vi.fn(),
 }))
 
+const mockChannel = {
+	join: vi.fn().mockReturnValue({
+		receive: vi.fn().mockReturnThis(),
+	}),
+	leave: vi.fn(),
+	on: vi.fn(),
+}
+
+const mockSocket = {
+	connect: vi.fn(),
+	disconnect: vi.fn(),
+	channel: vi.fn().mockReturnValue(mockChannel),
+}
+
+vi.mock("phoenix", () => ({
+	Socket: vi.fn().mockImplementation(() => mockSocket),
+}))
+
 describe("useWorkspaceData", () => {
 	beforeEach(() => {
 		localStorage.clear()
@@ -83,6 +101,52 @@ describe("useWorkspaceData", () => {
 		await waitFor(() => {
 			expect(result.current.selectedBotId).toBe(2)
 			expect(result.current.selectedConversationId).toBe(20)
+		})
+	})
+
+	it("updates conversation status in real-time when session_status_changed is received", async () => {
+		localStorage.setItem("messaging.user.token", "token-1")
+		localStorage.setItem("messaging.selected.bot_id", "2")
+		localStorage.setItem("messaging.selected.conversation_id", "20")
+
+		listBots.mockResolvedValue({
+			bot_tokens: [{ id: 2, name: "Bot2", is_connected: true }],
+		})
+		listBotModels.mockResolvedValue({ models: [] })
+		listConversations.mockResolvedValue({
+			conversations: [
+				{ id: 20, bot_token_id: 2, title: "Chat", status: "idle" },
+			],
+		})
+		pingApp.mockResolvedValue({})
+
+		let statusHandler = null
+		mockChannel.on.mockImplementation((event, handler) => {
+			if (event === "session_status_changed") {
+				statusHandler = handler
+			}
+		})
+
+		const { result } = renderHook(() => useWorkspaceData())
+
+		await waitFor(() => {
+			expect(result.current.conversations).toHaveLength(1)
+			expect(result.current.conversations[0].status).toBe("idle")
+		})
+
+		expect(statusHandler).toBeDefined()
+
+		// Simulate real-time socket event
+		statusHandler({
+			conversation_id: 20,
+			status: "running",
+			metadata: { step: "Analyzing files" },
+		})
+
+		await waitFor(() => {
+			const updated = result.current.conversations.find((c) => c.id === 20)
+			expect(updated.status).toBe("running")
+			expect(updated.metadata?.step).toBe("Analyzing files")
 		})
 	})
 })

@@ -1,7 +1,7 @@
 defmodule MessagingWeb.BotSessionsChannel do
   use MessagingWeb, :channel
 
-  alias Messaging.Bots
+  alias Messaging.{Bots, Chat}
 
   @impl true
   def join("bot_sessions:" <> bot_token_id, _payload, socket) do
@@ -12,7 +12,26 @@ defmodule MessagingWeb.BotSessionsChannel do
       topic = "bot_sessions:#{bot_token.id}"
       Phoenix.PubSub.subscribe(Messaging.PubSub, topic)
 
-      {:ok, %{bot_token_id: bot_token.id}, assign(socket, :bot_token_id, bot_token.id)}
+      sessions = Chat.list_conversations_for_bot(bot_token.id)
+
+      serialized =
+        Enum.map(sessions, fn c ->
+          %{
+            id: c.id,
+            external_session_id: c.external_session_id,
+            title: c.title,
+            status: c.status,
+            metadata: c.metadata,
+            last_user_input_time: c.last_user_input_time,
+            last_modified_time: c.last_modified_time,
+            last_message_at: c.last_message_at,
+            inserted_at: c.inserted_at,
+            updated_at: c.updated_at
+          }
+        end)
+
+      {:ok, %{bot_token_id: bot_token.id, sessions: serialized},
+       assign(socket, :bot_token_id, bot_token.id)}
     else
       _ -> {:error, %{reason: "unauthorized"}}
     end
@@ -33,6 +52,10 @@ defmodule MessagingWeb.BotSessionsChannel do
             title: c.title,
             status: c.status,
             metadata: c.metadata,
+            last_user_input_time: c.last_user_input_time,
+            last_modified_time: c.last_modified_time,
+            last_message_at: c.last_message_at,
+            inserted_at: c.inserted_at,
             updated_at: c.updated_at
           }
         end)
@@ -47,6 +70,33 @@ defmodule MessagingWeb.BotSessionsChannel do
       conversation_id: conv_id,
       status: status,
       metadata: metadata
+    })
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:conversation_created, conv}, socket) do
+    push(socket, "conversation_created", %{
+      conversation: %{
+        id: conv.id,
+        external_session_id: conv.external_session_id,
+        title: conv.title,
+        status: conv.status,
+        metadata: conv.metadata,
+        inserted_at: conv.inserted_at,
+        updated_at: conv.updated_at
+      }
+    })
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:session_message_created, conv_id, timestamp}, socket) do
+    push(socket, "session_message_created", %{
+      conversation_id: conv_id,
+      updated_at: timestamp
     })
 
     {:noreply, socket}

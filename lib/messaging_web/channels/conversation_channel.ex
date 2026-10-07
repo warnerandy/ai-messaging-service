@@ -60,8 +60,9 @@ defmodule MessagingWeb.ConversationChannel do
   end
 
   @impl true
-  def handle_info({:session_status_changed, _conv_id, status, metadata}, socket) do
+  def handle_info({:session_status_changed, conv_id, status, metadata}, socket) do
     push(socket, "session_status_changed", %{
+      conversation_id: conv_id || socket.assigns[:conversation_id],
       status: status,
       metadata: metadata
     })

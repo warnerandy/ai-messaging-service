@@ -1,15 +1,267 @@
 import React, { useState } from "react"
-import { createBot } from "../lib/data.js"
 import BotTokenReveal from "./BotTokenReveal.jsx"
+import CreateBotModal from "./CreateBotModal.jsx"
 import {
 	VSCodeLoadingIcon,
 	VSCodeSparkleIcon,
 	VSCodePulseDot,
 } from "./VSCodeWorkingIcons.jsx"
 
+export function isSessionActive(conv) {
+	if (!conv) return false
+
+	if (
+		conv.unread ||
+		conv.has_unread ||
+		(typeof conv.unread_count === "number" && conv.unread_count > 0) ||
+		conv.metadata?.unread ||
+		conv.metadata?.has_unread ||
+		(typeof conv.metadata?.unread_count === "number" && conv.metadata?.unread_count > 0)
+	) {
+		return true
+	}
+
+	const status = (conv.status || "idle").toLowerCase()
+	const activeStatuses = [
+		"waiting_for_input",
+		"needs_input",
+		"running",
+		"thinking",
+		"active",
+	]
+
+	if (activeStatuses.includes(status)) {
+		return true
+	}
+
+	const inactiveStatuses = ["idle", "completed", "archived", "closed"]
+	if (status && !inactiveStatuses.includes(status)) {
+		return true
+	}
+
+	return false
+}
+
+export function isSessionDone(conv) {
+	if (!conv) return false
+	const status = (conv.status || "").toLowerCase()
+	if (["done", "completed", "archived", "closed"].includes(status)) {
+		return true
+	}
+	if (conv.metadata?.done || conv.metadata?.is_done || conv.metadata?.completed) {
+		return true
+	}
+	return false
+}
+
+export function getSessionProjectInfo(conv) {
+	if (!conv || !conv.metadata) return null
+	const meta = conv.metadata
+	const project = meta.project
+	if (typeof project === "object" && project !== null) {
+		return {
+			name: project.name || "",
+			uri: project.uri || "",
+		}
+	}
+	if (typeof project === "string" && project.trim() !== "") {
+		return {
+			name: project.trim(),
+			uri: "",
+		}
+	}
+	if (Array.isArray(meta.working_directories) && meta.working_directories.length > 0) {
+		const uri = meta.working_directories[0]
+		const name = String(uri).split("/").filter(Boolean).pop() || "project"
+		return { name, uri }
+	}
+	return null
+}
+
+export function getSessionTimestamp(conv) {
+	if (!conv) return null
+
+	// Prioritize fields matching VS Code (last_user_input_time, last_modified_time, source_updated_at)
+	// and message activity over raw DB row updated_at timestamps
+	const candidates = [
+		conv.last_user_input_time,
+		conv.lastUserInputTime,
+		conv.metadata?.last_user_input_time,
+		conv.metadata?.lastUserInputTime,
+		conv.last_modified_time,
+		conv.lastModifiedTime,
+		conv.metadata?.last_modified_time,
+		conv.metadata?.lastModifiedTime,
+		conv.metadata?.source_updated_at,
+		conv.source_updated_at,
+		conv.last_message_at,
+		conv.lastMessageAt,
+		conv.metadata?.last_message_at,
+		conv.metadata?.lastMessageAt,
+		conv.last_activity_at,
+		conv.lastActivityAt,
+		conv.metadata?.last_activity_at,
+		conv.metadata?.lastActivityAt,
+		conv.last_modified,
+		conv.lastModified,
+		conv.metadata?.last_modified,
+		conv.metadata?.lastModified,
+		conv.metadata?.updated_at,
+		conv.metadata?.updatedAt,
+		conv.last_used_at,
+		conv.lastUsedAt,
+		conv.metadata?.last_used_at,
+		conv.metadata?.lastUsedAt,
+		conv.metadata?.timestamp,
+		conv.timestamp,
+		conv.inserted_at,
+		conv.insertedAt,
+		conv.updated_at,
+		conv.updatedAt,
+	]
+
+	for (const candidate of candidates) {
+		if (candidate && typeof candidate === "string") {
+			const time = new Date(candidate).getTime()
+			if (!Number.isNaN(time)) return candidate
+		}
+		if (candidate && typeof candidate === "number" && !Number.isNaN(candidate) && candidate > 0) {
+			return new Date(candidate).toISOString()
+		}
+	}
+
+	return null
+}
+
+export function formatCompactRelativeTime(conv, now = Date.now()) {
+	if (!conv) return ""
+	const dateStr = getSessionTimestamp(conv)
+	if (!dateStr) return ""
+	const time = new Date(dateStr).getTime()
+	if (Number.isNaN(time)) return ""
+
+	const diff = Math.max(0, now - time)
+	const diffSec = Math.floor(diff / 1000)
+	const diffMin = Math.floor(diffSec / 60)
+	const diffHours = Math.floor(diffMin / 60)
+	const diffDays = Math.floor(diffHours / 24)
+	const diffWeeks = Math.floor(diffDays / 7)
+	const diffMonths = Math.floor(diffDays / 30)
+	const diffYears = Math.floor(diffDays / 365)
+
+	if (diffMin < 1) return "now"
+	if (diffHours < 1) return `${diffMin}m`
+	if (diffHours <= 24) return `${diffHours}h`
+	if (diffDays < 7) return `${diffDays}d`
+	if (diffMonths < 1) return `${diffWeeks}w`
+	if (diffYears < 1) return `${diffMonths}mo`
+	return `${diffYears}y`
+}
+
+export function getSessionDisplayTooltip(conv) {
+	if (!conv) return ""
+	const dateStr = getSessionTimestamp(conv)
+	if (!dateStr) return ""
+	const d = new Date(dateStr)
+	return Number.isNaN(d.getTime()) ? "" : d.toLocaleString()
+}
+
+export function getSessionLastUsedTimestamp(conv) {
+	if (!conv) return 0
+	const dateStr = getSessionTimestamp(conv)
+	if (dateStr) {
+		const time = new Date(dateStr).getTime()
+		if (!Number.isNaN(time)) return time
+	}
+	return 0
+}
+
+export function getSessionStableId(conv) {
+	if (!conv) return 0
+	if (typeof conv.id === "number") return conv.id
+	const num = Number(conv.id)
+	if (!Number.isNaN(num) && num > 0) return num
+	const match = String(conv.id || "").match(/\d+/)
+	if (match) return parseInt(match[0], 10)
+	return 0
+}
+
+export function sortConversations(convs = [], isAhp = false) {
+	return [...convs].sort((a, b) => {
+		// 1. Active sessions always sorted above idle sessions
+		const aActive = isSessionActive(a)
+		const bActive = isSessionActive(b)
+
+		if (aActive !== bActive) {
+			return aActive ? -1 : 1
+		}
+
+		// 2. When both are active:
+		// Prioritize needs input / unread over running / thinking
+		if (aActive && bActive) {
+			const getActivePriority = (conv) => {
+				const status = (conv.status || "").toLowerCase()
+				if (
+					status === "waiting_for_input" ||
+					status === "needs_input" ||
+					conv.unread ||
+					conv.has_unread ||
+					conv.metadata?.unread
+				) {
+					return 2
+				}
+				return 1
+			}
+
+			const aPri = getActivePriority(a)
+			const bPri = getActivePriority(b)
+			if (aPri !== bPri) {
+				return bPri - aPri
+			}
+
+			// Same active priority: sort by most recent activity timestamp (last_message_at or updated_at)
+			const aTime =
+				getSessionLastUsedTimestamp(a) ||
+				(a.updated_at ? new Date(a.updated_at).getTime() : 0)
+			const bTime =
+				getSessionLastUsedTimestamp(b) ||
+				(b.updated_at ? new Date(b.updated_at).getTime() : 0)
+
+			if (aTime !== bTime) {
+				return bTime - aTime
+			}
+
+			return getSessionStableId(b) - getSessionStableId(a)
+		}
+
+		// 3. Both are idle:
+		// Keep idle sessions in a FIXED, STABLE order so they do not shuffle or reorder!
+		// If either session has explicit chat message activity, prioritize that:
+		const aMsgTime = getSessionLastUsedTimestamp(a)
+		const bMsgTime = getSessionLastUsedTimestamp(b)
+
+		if (aMsgTime !== bMsgTime) {
+			return bMsgTime - aMsgTime
+		}
+
+		// Otherwise, keep idle sessions strictly ordered by stable creation / ID (descending)
+		const aId = getSessionStableId(a)
+		const bId = getSessionStableId(b)
+
+		if (aId !== bId) {
+			return bId - aId
+		}
+
+		// If IDs are equal or non-numeric, break ties stably by string key
+		const aKey = String(a.external_session_id || a.title || a.id || "")
+		const bKey = String(b.external_session_id || b.title || b.id || "")
+		return aKey.localeCompare(bKey)
+	})
+}
+
 export default function Sidebar({
 	token,
-	bots,
+	bots = [],
 	selectedBotId,
 	conversations = [],
 	selectedConversationId,
@@ -18,41 +270,42 @@ export default function Sidebar({
 	onCreateConversation,
 	onBotsChange,
 	onDeleteBot,
+	onArchiveConversation,
 	userEmail,
 	onLogout,
 	isOpen,
 	appConnection,
 }) {
-	const [newBotName, setNewBotName] = useState("")
-	const [newBotType, setNewBotType] = useState("chat")
 	const [createdToken, setCreatedToken] = useState(null)
-	const [creating, setCreating] = useState(false)
 	const [deletingId, setDeletingId] = useState(null)
-	const [showBotForm, setShowBotForm] = useState(false)
+	const [showCreateModal, setShowCreateModal] = useState(false)
 	const [confirmDelete, setConfirmDelete] = useState(null) // { id, name }
+	const [hideDone, setHideDone] = useState(() => {
+		const saved = localStorage.getItem("messaging.hide_done_sessions")
+		return saved !== "false"
+	})
 
-	const selectedBot = bots.find((b) => b.id === selectedBotId)
-	const activeConversations = conversations.filter((c) => c.status !== "archived")
-
-	async function handleCreateBot(e) {
-		e.preventDefault()
-		const name = newBotName.trim()
-		if (!name) return
-		setCreating(true)
-		try {
-			const created = await createBot(token, name, newBotType)
-			if (created?.token) setCreatedToken(created.token)
-			setNewBotName("")
-			setNewBotType("chat")
-			setShowBotForm(false)
-			await onBotsChange()
-			if (created?.id) onSelectBot(created.id)
-		} catch (err) {
-			console.error("Failed to create bot:", err)
-		} finally {
-			setCreating(false)
-		}
+	function toggleHideDone() {
+		setHideDone((prev) => {
+			const next = !prev
+			localStorage.setItem("messaging.hide_done_sessions", String(next))
+			return next
+		})
 	}
+
+	const selectedBot = (bots || []).find((b) => b.id === selectedBotId)
+	const isAhp = selectedBot?.bot_type === "ahp"
+
+	const doneCount = (conversations || []).filter((c) => c && isSessionDone(c)).length
+
+	const activeConversations = sortConversations(
+		(conversations || []).filter((c) => {
+			if (!c) return false
+			if (hideDone && isSessionDone(c)) return false
+			return true
+		}),
+		isAhp,
+	)
 
 	function requestDeleteBot(e, bot) {
 		e.stopPropagation()
@@ -98,7 +351,7 @@ export default function Sidebar({
 					<button
 						type="button"
 						className="sidebar-icon-btn"
-						onClick={() => setShowBotForm(!showBotForm)}
+						onClick={() => setShowCreateModal(true)}
 						title="Add bot"
 						aria-label="Add bot"
 					>
@@ -113,50 +366,12 @@ export default function Sidebar({
 					</button>
 				</div>
 
-				{showBotForm && (
-					<form onSubmit={handleCreateBot} className="inline-create-form inline-create-form--bot">
-						<input
-							type="text"
-							className="inline-input"
-							placeholder="Bot name…"
-							value={newBotName}
-							onChange={(e) => setNewBotName(e.target.value)}
-							autoFocus
-						/>
-						<div className="bot-type-selector">
-							<label className={`bot-type-option ${newBotType === "chat" ? "bot-type-option--active" : ""}`}>
-								<input
-									type="radio"
-									name="bot_type"
-									value="chat"
-									checked={newBotType === "chat"}
-									onChange={() => setNewBotType("chat")}
-								/>
-								Chat Bot
-							</label>
-							<label className={`bot-type-option ${newBotType === "ahp" ? "bot-type-option--active" : ""}`}>
-								<input
-									type="radio"
-									name="bot_type"
-									value="ahp"
-									checked={newBotType === "ahp"}
-									onChange={() => setNewBotType("ahp")}
-								/>
-								AHP Agent
-							</label>
-						</div>
-						<button type="submit" className="inline-submit" disabled={creating}>
-							{creating ? "…" : "Add"}
-						</button>
-					</form>
-				)}
-
 				{createdToken && (
 					<BotTokenReveal token={createdToken} onDismiss={() => setCreatedToken(null)} />
 				)}
 
 				<div className="bot-pills">
-					{bots.map((bot) => (
+					{(bots || []).map((bot) => (
 						<div
 							key={bot.id}
 							className={`bot-pill ${bot.id === selectedBotId ? "bot-pill--active" : ""}`}
@@ -181,7 +396,7 @@ export default function Sidebar({
 							</button>
 						</div>
 					))}
-					{bots.length === 0 && <p className="sidebar-hint">No bots yet</p>}
+					{(bots || []).length === 0 && <p className="sidebar-hint">No bots yet</p>}
 				</div>
 			</div>
 
@@ -192,40 +407,70 @@ export default function Sidebar({
 						<span className="sidebar-section-label">
 							{selectedBot?.bot_type === "ahp" ? "Active Sessions" : "Conversations"}
 						</span>
-						<button
-							type="button"
-							className="sidebar-icon-btn"
-							onClick={onCreateConversation}
-							title={selectedBot?.bot_type === "ahp" ? "New session" : "New conversation"}
-							aria-label={selectedBot?.bot_type === "ahp" ? "New session" : "New conversation"}
-						>
-							<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-								<path
-									d="M8 3v10M3 8h10"
-									stroke="currentColor"
-									strokeWidth="1.5"
-									strokeLinecap="round"
-								/>
-							</svg>
-						</button>
+						<div className="sidebar-section-actions">
+							{doneCount > 0 && (
+								<button
+									type="button"
+									className={`sidebar-icon-btn ${!hideDone ? "sidebar-icon-btn--active" : ""}`}
+									onClick={toggleHideDone}
+									title={hideDone ? `Show completed & archived (${doneCount})` : `Hide completed & archived (${doneCount})`}
+									aria-label={hideDone ? `Show completed & archived (${doneCount})` : `Hide completed & archived (${doneCount})`}
+								>
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+										<rect x="2" y="3" width="20" height="5" rx="1" />
+										<path d="M4 8v11a2 2 0 002 2h12a2 2 0 002-2V8" />
+										<path d="M10 12h4" />
+									</svg>
+									<span className="sidebar-icon-badge">{doneCount}</span>
+								</button>
+							)}
+							<button
+								type="button"
+								className="sidebar-icon-btn"
+								onClick={onCreateConversation}
+								title={selectedBot?.bot_type === "ahp" ? "New session" : "New conversation"}
+								aria-label={selectedBot?.bot_type === "ahp" ? "New session" : "New conversation"}
+							>
+								<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+									<path
+										d="M8 3v10M3 8h10"
+										stroke="currentColor"
+										strokeWidth="1.5"
+										strokeLinecap="round"
+									/>
+								</svg>
+							</button>
+						</div>
 					</div>
 
 					<div className="conv-list">
 						{activeConversations.map((conv) => {
 							const status = conv.status || "idle"
 							const stepText = conv.metadata?.step || conv.metadata?.action || ""
+							const isDone = isSessionDone(conv)
+							const timeText = formatCompactRelativeTime(conv)
+							const tooltipText = getSessionDisplayTooltip(conv)
+
+							const projectInfo = getSessionProjectInfo(conv)
 
 							return (
 								<button
 									key={conv.id}
 									type="button"
-									className={`conv-item ${conv.id === selectedConversationId ? "conv-item--active" : ""}`}
+									className={`conv-item ${conv.id === selectedConversationId ? "conv-item--active" : ""} ${isDone ? "conv-item--done" : ""}`}
 									onClick={() => onSelectConversation && onSelectConversation(conv.id)}
 								>
 									<div className="conv-item-left">
 										<span className={`conv-status-dot conv-status-dot--${status}`} />
 										<div className="conv-text-col">
-											<span className="conv-title">{conv.title || "Session"}</span>
+											<div className="conv-title-row">
+												<span className="conv-title">{conv.title || "Session"}</span>
+												{projectInfo?.name && (
+													<span className="conv-project-pill" title={projectInfo.uri || projectInfo.name}>
+														{projectInfo.name}
+													</span>
+												)}
+											</div>
 											{stepText && status === "running" && (
 												<span className="conv-step-preview" title={stepText}>
 													{stepText}
@@ -234,24 +479,66 @@ export default function Sidebar({
 										</div>
 									</div>
 
-									{status === "waiting_for_input" && (
-										<span className="conv-status-pill conv-status-pill--waiting">
-											<VSCodePulseDot size={8} className="mr-1 inline-flex" />
-											Needs Input
-										</span>
-									)}
-									{status === "running" && (
-										<span className="conv-status-pill conv-status-pill--running">
-											<VSCodeLoadingIcon size={11} spin smooth={false} className="mr-1 inline-flex" />
-											Running
-										</span>
-									)}
-									{status === "thinking" && (
-										<span className="conv-status-pill conv-status-pill--thinking">
-											<VSCodeSparkleIcon size={11} animated className="mr-1 inline-flex" />
-											Thinking
-										</span>
-									)}
+									<div className="conv-item-actions">
+										{(status === "waiting_for_input" || status === "needs_input") && (
+											<span className="conv-action-icon conv-action-icon--waiting" title="Needs input" aria-label="Needs input">
+												<VSCodePulseDot size={11} />
+											</span>
+										)}
+										{status === "running" && (
+											<span className="conv-action-icon conv-action-icon--running" title="Running" aria-label="Running">
+												<VSCodeLoadingIcon size={13} spin smooth={false} />
+											</span>
+										)}
+										{status === "thinking" && (
+											<span className="conv-action-icon conv-action-icon--thinking" title="Thinking" aria-label="Thinking">
+												<VSCodeSparkleIcon size={13} animated />
+											</span>
+										)}
+										{Boolean(
+											conv.unread ||
+											conv.has_unread ||
+											conv.metadata?.unread ||
+											(typeof conv.unread_count === "number" && conv.unread_count > 0)
+										) && (
+											<span
+												className="conv-action-icon conv-action-icon--unread"
+												title={typeof conv.unread_count === "number" && conv.unread_count > 0 ? `${conv.unread_count} unread` : "Unread"}
+												aria-label="Unread"
+											>
+												<span className="unread-dot" />
+												{typeof conv.unread_count === "number" && conv.unread_count > 0 ? conv.unread_count : null}
+											</span>
+										)}
+										{isDone && (
+											<span className="conv-done-indicator" title="Done / Completed" aria-label="Done / Completed">
+												✓
+											</span>
+										)}
+										{onArchiveConversation && !isDone && (
+											<button
+												type="button"
+												className="conv-archive-btn"
+												onClick={(e) => {
+													e.stopPropagation()
+													onArchiveConversation(conv.id)
+												}}
+												title="Archive chat"
+												aria-label="Archive chat"
+											>
+												<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+													<rect x="2" y="3" width="20" height="5" rx="1" />
+													<path d="M4 8v11a2 2 0 002 2h12a2 2 0 002-2V8" />
+													<path d="M10 12h4" />
+												</svg>
+											</button>
+										)}
+										{timeText && (
+											<span className="conv-time" title={tooltipText}>
+												{timeText}
+											</span>
+										)}
+									</div>
 								</button>
 							)
 						})}
@@ -315,6 +602,20 @@ export default function Sidebar({
 						</div>
 					</div>
 				</div>
+			)}
+
+			{/* Create bot modal */}
+			{showCreateModal && (
+				<CreateBotModal
+					token={token}
+					onClose={() => setShowCreateModal(false)}
+					onBotCreated={async (created) => {
+						setShowCreateModal(false)
+						if (created?.token) setCreatedToken(created.token)
+						await onBotsChange()
+						if (created?.id) onSelectBot(created.id)
+					}}
+				/>
 			)}
 		</aside>
 	)

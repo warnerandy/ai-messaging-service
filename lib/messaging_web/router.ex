@@ -44,6 +44,8 @@ defmodule MessagingWeb.Router do
     post "/bot-tokens/:bot_token_id/refresh-models", BotModelController, :refresh
     post "/bot-tokens/refresh-models", BotModelController, :refresh_all
     resources "/conversations", ConversationController, only: [:index, :create, :show]
+    post "/conversations/:id/archive", ConversationController, :archive
+    delete "/conversations/:id", ConversationController, :archive
     get "/conversations/:id/channel", ConversationController, :channel
     post "/conversations/:conversation_id/messages", MessageController, :create
     post "/conversations/:conversation_id/messages/timeout", MessageController, :timeout

@@ -1068,6 +1068,8 @@ Push `sync_sessions` over WebSocket (`bot:<CHANNEL_CODE>`):
         "session_id": "session-backend-refactor",
         "title": "Refactor Ecto Schemas",
         "status": "running",
+        "last_user_input_time": "2026-10-07T12:30:00Z",
+        "last_modified_time": "2026-10-07T12:45:00Z",
         "metadata": {
           "step": "Running mix compile",
           "tool": "run_command"
@@ -1077,6 +1079,8 @@ Push `sync_sessions` over WebSocket (`bot:<CHANNEL_CODE>`):
         "session_id": "session-test-suite",
         "title": "Unit & Integration Tests",
         "status": "waiting_for_input",
+        "last_user_input_time": "2026-10-07T11:45:00Z",
+        "last_modified_time": "2026-10-07T12:15:00Z",
         "metadata": {
           "step": "Awaiting approval for git push",
           "question": {

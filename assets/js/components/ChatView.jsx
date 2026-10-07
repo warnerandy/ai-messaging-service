@@ -112,6 +112,10 @@ export default function ChatView({
 	models,
 	onRefreshModels,
 	onBotStatusChange,
+	onConversationStatusChange,
+	onConversationTouch,
+	onSessionsUpdated,
+	onArchiveConversation,
 	onToggleSidebar,
 }) {
 	const [messages, setMessages] = useState([])
@@ -264,6 +268,7 @@ export default function ChatView({
 		if (!socketRef.current || !selectedConversationId || !token) return
 
 		let cancelled = false
+		let sessionsCh = null
 
 		function extractLastMessageId(items) {
 			for (let index = items.length - 1; index >= 0; index -= 1) {
@@ -344,6 +349,10 @@ export default function ChatView({
 						stopBotThinking()
 					}
 
+					if (onConversationTouch) {
+						onConversationTouch(selectedConversationId)
+					}
+
 					setMessages((prev) => {
 						if (renderedIdsRef.current.has(incoming.id)) return prev
 						renderedIdsRef.current.add(incoming.id)
@@ -415,6 +424,13 @@ export default function ChatView({
 					} else if (payload.status === "thinking" || payload.status === "running") {
 						startBotThinking()
 					}
+					if (onConversationStatusChange) {
+						onConversationStatusChange(
+							payload.conversation_id || selectedConversationId,
+							payload.status || "idle",
+							meta,
+						)
+					}
 				})
 
 				ch.on("ahp_event", (payload) => {
@@ -425,20 +441,36 @@ export default function ChatView({
 						setThinkingText((prev) => prev + chunk)
 						setSessionStatus("thinking")
 						startBotThinking()
+						if (onConversationStatusChange) {
+							onConversationStatusChange(selectedConversationId, "thinking")
+						}
 					} else if (event_type === "step" || event_type === "tool_call") {
 						setToolCalls((prev) => [...prev, data])
 						if (data?.step || data?.tool || data?.name) {
+							const stepMeta = {
+								step: data.step,
+								tool: data.tool || data.name,
+							}
 							setSessionMetadata((prev) => ({
 								...prev,
-								step: data.step || prev.step,
-								tool: data.tool || data.name || prev.tool,
+								...stepMeta,
 							}))
+							if (onConversationStatusChange) {
+								onConversationStatusChange(selectedConversationId, "running", stepMeta)
+							}
 						}
 					} else if (event_type === "question") {
 						setPendingQuestion(data)
 						setSessionStatus("waiting_for_input")
+						if (onConversationStatusChange) {
+							onConversationStatusChange(selectedConversationId, "waiting_for_input", { question: data })
+						}
 					} else if (event_type === "status") {
-						setSessionStatus(data?.status || "running")
+						const st = data?.status || "running"
+						setSessionStatus(st)
+						if (onConversationStatusChange) {
+							onConversationStatusChange(selectedConversationId, st)
+						}
 					}
 				})
 
@@ -448,12 +480,38 @@ export default function ChatView({
 					}
 				})
 
+				sessionsCh = null
+				if (bot?.bot_type === "ahp" && bot?.id) {
+					sessionsCh = socketRef.current.channel(`bot_sessions:${bot.id}`, {})
+					sessionsCh.on("session_status_changed", (payload) => {
+						if (!payload) return
+						if (payload.conversation_id === selectedConversationId) {
+							setSessionStatus(payload.status || "idle")
+							if (payload.metadata) setSessionMetadata(payload.metadata)
+						}
+						if (onConversationStatusChange && payload.conversation_id) {
+							onConversationStatusChange(payload.conversation_id, payload.status, payload.metadata)
+						}
+					})
+					sessionsCh.on("bot_sessions_updated", (payload) => {
+						if (payload?.sessions && onSessionsUpdated) {
+							onSessionsUpdated(payload.sessions)
+						}
+					})
+					sessionsCh.join()
+				}
+
 				ch.join()
 					.receive("ok", (resp) => {
 						if (cancelled) return
 						channelRef.current = ch
 
-						if (resp?.status) setSessionStatus(resp.status)
+						if (resp?.status) {
+							setSessionStatus(resp.status)
+							if (onConversationStatusChange) {
+								onConversationStatusChange(selectedConversationId, resp.status, resp.metadata)
+							}
+						}
 						if (resp?.metadata) {
 							setSessionMetadata(resp.metadata)
 							if (resp.metadata.prompt_queue) setPromptQueue(resp.metadata.prompt_queue)
@@ -482,6 +540,9 @@ export default function ChatView({
 			if (channelRef.current) {
 				channelRef.current.leave()
 				channelRef.current = null
+			}
+			if (sessionsCh) {
+				sessionsCh.leave()
 			}
 		}
 	}, [selectedConversationId, token])
@@ -604,6 +665,9 @@ export default function ChatView({
 			if (opts.fromSuggestion) payload.is_suggestion = true
 
 			const res = await createConversationMessage(token, selectedConversationId, payload)
+			if (onConversationTouch) {
+				onConversationTouch(selectedConversationId)
+			}
 
 			setMessages((prev) => {
 				const deliveredAlreadyPresent = prev.some((m) => m.id === res.id && !m.pending)
@@ -740,17 +804,6 @@ export default function ChatView({
 		setSessionStatus("running")
 	}
 
-	function handleQueuePrompt(e) {
-		e?.preventDefault()
-		const text = inputValue.trim()
-		if (!text) return
-		channelRef.current?.push("queue_prompt", {
-			body: text,
-			model: selectedModel || models[0]?.name || null,
-			context_size: selectedContextSize ? Number(selectedContextSize) : null,
-		})
-		setInputValue("")
-	}
 
 	function handleRemovePrompt(promptId) {
 		channelRef.current?.push("remove_queued_prompt", { prompt_id: promptId })
@@ -809,24 +862,92 @@ export default function ChatView({
 		<main className="chat-main">
 			{/* Top bar */}
 			<div className="chat-topbar">
-				<div className="chat-topbar-left">
-					<button
-						type="button"
-						className="mobile-menu-btn"
-						onClick={onToggleSidebar}
-						aria-label="Toggle sidebar"
-					>
-						<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-							<path
-								d="M3 5h14M3 10h14M3 15h14"
-								stroke="currentColor"
-								strokeWidth="1.8"
-								strokeLinecap="round"
-							/>
-						</svg>
-					</button>
-					<div className="chat-topbar-titles">
-						<h2 className="chat-title">{bot.name}</h2>
+				<div className="chat-topbar-primary">
+					<div className="chat-topbar-left">
+						<button
+							type="button"
+							className="mobile-menu-btn"
+							onClick={onToggleSidebar}
+							aria-label="Toggle sidebar"
+						>
+							<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+								<path
+									d="M3 5h14M3 10h14M3 15h14"
+									stroke="currentColor"
+									strokeWidth="1.8"
+									strokeLinecap="round"
+								/>
+							</svg>
+						</button>
+						<div className="chat-title-group">
+							<h2 className="chat-title" title={bot.name}>{bot.name}</h2>
+							{bot.bot_type === "ahp" && (
+								<span
+									className={`session-status-badge session-status-badge--${sessionStatus}`}
+									title={sessionStatus === "waiting_for_input" ? "Needs Input" : sessionStatus}
+									aria-label={sessionStatus === "waiting_for_input" ? "Needs Input" : sessionStatus}
+								>
+									<VSCodeWorkingStateIcon
+										status={sessionStatus}
+										size={13}
+										className="inline-flex"
+									/>
+								</span>
+							)}
+						</div>
+					</div>
+
+					<div className="chat-topbar-right">
+						{activeConv && onArchiveConversation && (
+							<button
+								type="button"
+								className="chat-archive-btn"
+								onClick={() => onArchiveConversation(activeConv.id)}
+								title="Archive / mark chat as done"
+								aria-label="Archive / mark chat as done"
+							>
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+									<rect x="2" y="3" width="20" height="5" rx="1" />
+									<path d="M4 8v11a2 2 0 002 2h12a2 2 0 002-2V8" />
+									<path d="M10 12h4" />
+								</svg>
+								<span className="chat-archive-btn-text">Archive</span>
+							</button>
+						)}
+						<span className={`connection-dot ${bot.is_connected ? "connection-dot--on" : ""}`} />
+						<span className="connection-label">{bot.is_connected ? "Online" : "Offline"}</span>
+						<button
+							type="button"
+							className="bot-config-btn"
+							onClick={() => setShowShowcaseModal(true)}
+							title="VS Code Working States Gallery"
+							aria-label="VS Code Working States Gallery"
+						>
+							<VSCodeSparkleIcon size={16} animated={false} className="text-purple-400" />
+						</button>
+						<button
+							type="button"
+							className="bot-config-btn"
+							onClick={() => setShowConfigModal(true)}
+							title="Bot Configuration & Keys"
+							aria-label="Bot Configuration & Keys"
+						>
+							<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+								<path
+									d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+									stroke="currentColor"
+									strokeWidth="1.8"
+									strokeLinecap="round"
+									strokeLinejoin="round"
+								/>
+								<circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.8" />
+							</svg>
+						</button>
+					</div>
+				</div>
+
+				{(bot.bot_type || activeConv) && (
+					<div className="chat-topbar-secondary">
 						<span
 							className={`bot-protocol-badge bot-protocol-badge--${bot.bot_type === "ahp" ? "ahp" : "chat"}`}
 							title={
@@ -837,59 +958,29 @@ export default function ChatView({
 						>
 							{bot.bot_type === "ahp" ? "AHP Protocol" : "Chat Protocol"}
 						</span>
+						{(sessionMetadata?.project?.name || activeConv?.metadata?.project?.name) && (
+							<span
+								className="chat-project-badge"
+								title={
+									sessionMetadata?.project?.uri ||
+									activeConv?.metadata?.project?.uri ||
+									sessionMetadata?.project?.name ||
+									activeConv?.metadata?.project?.name
+								}
+							>
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+									<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+								</svg>
+								{sessionMetadata?.project?.name || activeConv?.metadata?.project?.name}
+							</span>
+						)}
 						{activeConv && (
-							<span className="chat-subtitle">
-								/ {activeConv.title || "Session"}
+							<span className="chat-subtitle" title={activeConv.title || "Session"}>
+								{activeConv.title || "Session"}
 							</span>
 						)}
 					</div>
-					{bot.bot_type === "ahp" && (
-						<span
-							className={`session-status-badge session-status-badge--${sessionStatus}`}
-						>
-							<VSCodeWorkingStateIcon
-								status={sessionStatus}
-								size={13}
-								className="mr-1 inline-flex"
-							/>
-							{sessionStatus === "waiting_for_input"
-								? "Needs Input"
-								: sessionStatus}
-						</span>
-					)}
-				</div>
-
-				<div className="chat-topbar-right">
-					<span className={`connection-dot ${bot.is_connected ? "connection-dot--on" : ""}`} />
-					<span className="connection-label">{bot.is_connected ? "Online" : "Offline"}</span>
-					<button
-						type="button"
-						className="bot-config-btn"
-						onClick={() => setShowShowcaseModal(true)}
-						title="VS Code Working States Gallery"
-						aria-label="VS Code Working States Gallery"
-					>
-						<VSCodeSparkleIcon size={16} animated={false} className="text-purple-400" />
-					</button>
-					<button
-						type="button"
-						className="bot-config-btn"
-						onClick={() => setShowConfigModal(true)}
-						title="Bot Configuration & Keys"
-						aria-label="Bot Configuration & Keys"
-					>
-						<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-							<path
-								d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-								stroke="currentColor"
-								strokeWidth="1.8"
-								strokeLinecap="round"
-								strokeLinejoin="round"
-							/>
-							<circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.8" />
-						</svg>
-					</button>
-				</div>
+				)}
 			</div>
 
 			{/* VS Code Indeterminate Running Bar */}
@@ -980,11 +1071,7 @@ export default function ChatView({
 						id="message-input"
 						ref={inputRef}
 						className="chat-textarea"
-						placeholder={
-							sessionStatus === "running" || sessionStatus === "thinking"
-								? "Agent is active. Enter a prompt to send or queue..."
-								: "What do you want to know?"
-						}
+						placeholder="What do you want to know?"
 						value={inputValue}
 						onChange={(e) => setInputValue(e.target.value)}
 						rows={1}
@@ -1055,18 +1142,7 @@ export default function ChatView({
 							)}
 						</div>
 
-						{/* Queue Button for Busy Agents */}
-						{(sessionStatus === "running" || sessionStatus === "thinking") && (
-							<button
-								type="button"
-								className={`queue-btn ${inputValue.trim() ? "queue-btn--active" : ""}`}
-								onClick={handleQueuePrompt}
-								disabled={!inputValue.trim()}
-								title="Queue prompt to run once agent is idle"
-							>
-								⚡ Queue
-							</button>
-						)}
+
 
 						{selectedFile ? (
 							<button

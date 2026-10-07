@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import { Socket } from "phoenix"
 import {
+	archiveConversation,
 	createConversation,
 	deleteBot,
 	listBotModels,
@@ -188,6 +190,60 @@ export function useWorkspaceData() {
 		setBots((prev) => prev.map((bot) => (bot.id === botTokenId ? { ...bot, ...status } : bot)))
 	}, [])
 
+	const handleConversationStatusChange = useCallback((convId, status, metadata) => {
+		if (!convId) return
+		setConversations((prev) =>
+			prev.map((c) => {
+				if (c.id === convId) {
+					return {
+						...c,
+						status: status ?? c.status,
+						metadata: metadata ? { ...(c.metadata || {}), ...metadata } : c.metadata,
+					}
+				}
+				return c
+			}),
+		)
+	}, [])
+
+	const handleConversationTouch = useCallback((convId) => {
+		if (!convId) return
+		const nowIso = new Date().toISOString()
+		setConversations((prev) =>
+			prev.map((c) => {
+				if (c.id === convId) {
+					return {
+						...c,
+						last_user_input_time: nowIso,
+						last_modified_time: nowIso,
+						last_message_at: nowIso,
+						updated_at: nowIso,
+					}
+				}
+				return c
+			}),
+		)
+	}, [])
+
+	const handleSessionsUpdated = useCallback((syncedSessions) => {
+		if (!Array.isArray(syncedSessions)) return
+		setConversations((prev) => {
+			const map = new Map(prev.map((c) => [c.id, c]))
+			for (const s of syncedSessions) {
+				const existing = map.get(s.id)
+				map.set(s.id, {
+					...(existing || {}),
+					...s,
+					last_user_input_time: s.last_user_input_time || existing?.last_user_input_time,
+					last_modified_time: s.last_modified_time || existing?.last_modified_time,
+					last_message_at: existing?.last_message_at || s.last_message_at,
+					metadata: { ...(existing?.metadata || {}), ...(s.metadata || {}) },
+				})
+			}
+			return Array.from(map.values())
+		})
+	}, [])
+
 	const handleDeleteBot = useCallback(
 		async (botId) => {
 			if (!token || !botId) return
@@ -212,6 +268,132 @@ export function useWorkspaceData() {
 		},
 		[bots, selectedBotId, selectBot, token],
 	)
+
+	const handleArchiveConversation = useCallback(
+		async (convId) => {
+			if (!token || !convId) return
+			try {
+				await archiveConversation(token, convId)
+				setConversations((prev) =>
+					prev.map((c) => (c.id === convId ? { ...c, status: "archived" } : c)),
+				)
+				if (selectedConversationId === convId) {
+					const remaining = conversations.filter(
+						(c) => c.id !== convId && c.status !== "archived" && c.status !== "done" && c.status !== "completed",
+					)
+					if (remaining.length > 0) {
+						selectConversation(remaining[0].id)
+					} else {
+						selectConversation(null)
+					}
+				}
+			} catch (err) {
+				console.error("Failed to archive conversation:", err)
+			}
+		},
+		[conversations, selectConversation, selectedConversationId, token],
+	)
+
+	// Real-time synchronization of session states, updates, and creation for the selected bot
+	useEffect(() => {
+		if (!token || !selectedBotId) return
+
+		let cancelled = false
+		const socket = new Socket("/socket", { params: { token } })
+		socket.connect()
+
+		const channel = socket.channel(`bot_sessions:${selectedBotId}`, {})
+
+		channel.on("session_status_changed", (payload) => {
+			if (!payload?.conversation_id || cancelled) return
+			setConversations((prev) =>
+				prev.map((c) => {
+					if (c.id === payload.conversation_id) {
+						return {
+							...c,
+							status: payload.status ?? c.status,
+							metadata: payload.metadata
+								? { ...(c.metadata || {}), ...payload.metadata }
+								: c.metadata,
+						}
+					}
+					return c
+				}),
+			)
+		})
+
+		channel.on("bot_sessions_updated", (payload) => {
+			if (!payload?.sessions || cancelled) return
+			setConversations((prev) => {
+				const map = new Map(prev.map((c) => [c.id, c]))
+				for (const s of payload.sessions) {
+					const existing = map.get(s.id)
+					map.set(s.id, {
+						...(existing || {}),
+						...s,
+						last_message_at: existing?.last_message_at || s.last_message_at,
+						metadata: { ...(existing?.metadata || {}), ...(s.metadata || {}) },
+					})
+				}
+				return Array.from(map.values())
+			})
+		})
+
+		channel.on("conversation_created", (payload) => {
+			if (!payload?.conversation || cancelled) return
+			setConversations((prev) => {
+				if (prev.some((c) => c.id === payload.conversation.id)) return prev
+				return [payload.conversation, ...prev]
+			})
+		})
+
+		channel.on("session_message_created", (payload) => {
+			if (!payload?.conversation_id || cancelled) return
+			const msgTime = payload.updated_at || new Date().toISOString()
+			setConversations((prev) =>
+				prev.map((c) => {
+					if (c.id === payload.conversation_id) {
+						return {
+							...c,
+							last_message_at: msgTime,
+							updated_at: msgTime,
+						}
+					}
+					return c
+				}),
+			)
+		})
+
+		channel
+			.join()
+			.receive("ok", (resp) => {
+				if (cancelled) return
+				if (Array.isArray(resp?.sessions)) {
+					setConversations((prev) => {
+						const map = new Map(prev.map((c) => [c.id, c]))
+						for (const s of resp.sessions) {
+							const existing = map.get(s.id)
+							map.set(s.id, {
+								...(existing || {}),
+								...s,
+								last_message_at: existing?.last_message_at || s.last_message_at,
+								metadata: { ...(existing?.metadata || {}), ...(s.metadata || {}) },
+							})
+						}
+						return Array.from(map.values())
+					})
+				}
+			})
+			.receive("error", (err) => {
+				console.warn("Failed to join bot_sessions channel:", err)
+			})
+
+		return () => {
+			cancelled = true
+			channel.leave()
+			socket.disconnect()
+		}
+	}, [token, selectedBotId])
 
 	useEffect(() => {
 		if (!token) return
@@ -314,6 +496,10 @@ export function useWorkspaceData() {
 		handleCreateConversation,
 		handleRefreshModels,
 		handleBotStatusChange,
+		handleConversationStatusChange,
+		handleConversationTouch,
+		handleSessionsUpdated,
 		handleDeleteBot,
+		handleArchiveConversation,
 	}
 }

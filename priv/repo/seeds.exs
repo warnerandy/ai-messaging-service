@@ -16,6 +16,7 @@ alias Messaging.Accounts
 alias Messaging.Accounts.User
 alias Messaging.Bots
 alias Messaging.Chat
+alias Messaging.Chat.{Conversation, Message}
 
 Ecto.Migrator.with_repo(Messaging.Repo, fn _repo ->
   email = "tester@example.com"
@@ -69,6 +70,16 @@ IO.puts("✓ Created test user: #{user.email} (Password: #{password})")
 
 IO.puts("✓ Created AHP Bot: #{ahp_bot.name} (Online, AHP Protocol)")
 
+seed_now = DateTime.utc_now() |> DateTime.truncate(:second)
+t_12m_ago = DateTime.add(seed_now, -12 * 60, :second)
+t_2m_ago = DateTime.add(seed_now, -2 * 60, :second)
+t_45m_ago = DateTime.add(seed_now, -45 * 60, :second)
+t_38m_ago = DateTime.add(seed_now, -38 * 60, :second)
+t_3h_ago = DateTime.add(seed_now, -3 * 3600, :second)
+t_2h_ago = DateTime.add(seed_now, -2 * 3600, :second)
+t_1d_ago = DateTime.add(seed_now, -1 * 86400, :second)
+t_3d_ago = DateTime.add(seed_now, -3 * 86400, :second)
+
 # AHP Sub-Chat 1: Thinking / Running session
 {:ok, session1} =
   Chat.create_conversation(%{
@@ -78,6 +89,8 @@ IO.puts("✓ Created AHP Bot: #{ahp_bot.name} (Online, AHP Protocol)")
     external_session_id: "session-auth-revocation",
     status: "thinking",
     metadata: %{
+      "last_user_input_time" => DateTime.to_iso8601(t_12m_ago),
+      "last_modified_time" => DateTime.to_iso8601(t_2m_ago),
       "step" => "Analyzing UserAuth.require_authenticated/2 plug",
       "current_step" => "Analyzing UserAuth.require_authenticated/2 plug",
       "tool" => "view_file",
@@ -92,7 +105,10 @@ IO.puts("✓ Created AHP Bot: #{ahp_bot.name} (Online, AHP Protocol)")
     }
   })
 
-{:ok, _} =
+from(c in Conversation, where: c.id == ^session1.id)
+|> Repo.update_all(set: [inserted_at: t_12m_ago, updated_at: t_2m_ago])
+
+{:ok, msg1_1} =
   Chat.create_message(%{
     conversation_id: session1.id,
     role: "user",
@@ -101,10 +117,13 @@ IO.puts("✓ Created AHP Bot: #{ahp_bot.name} (Online, AHP Protocol)")
     model: "claude-3-7-sonnet",
     context_size: 128_000,
     acknowledged: true,
-    acknowledged_at: DateTime.utc_now() |> DateTime.truncate(:second)
+    acknowledged_at: t_12m_ago
   })
 
-{:ok, _} =
+from(m in Message, where: m.id == ^msg1_1.id)
+|> Repo.update_all(set: [inserted_at: t_12m_ago, updated_at: t_12m_ago])
+
+{:ok, msg1_2} =
   Chat.create_message(%{
     conversation_id: session1.id,
     role: "bot",
@@ -112,6 +131,9 @@ IO.puts("✓ Created AHP Bot: #{ahp_bot.name} (Online, AHP Protocol)")
     body: "I've started investigating the authentication pipeline. I located the session validation logic in `lib/messaging_web/user_auth.ex` and I'm drafting a test case to reproduce the stale session issue.",
     model: "claude-3-7-sonnet"
   })
+
+from(m in Message, where: m.id == ^msg1_2.id)
+|> Repo.update_all(set: [inserted_at: t_2m_ago, updated_at: t_2m_ago])
 
 # AHP Sub-Chat 2: Waiting for Input / Approval card session
 {:ok, session2} =
@@ -122,6 +144,8 @@ IO.puts("✓ Created AHP Bot: #{ahp_bot.name} (Online, AHP Protocol)")
     external_session_id: "session-db-migration",
     status: "waiting_for_input",
     metadata: %{
+      "last_user_input_time" => DateTime.to_iso8601(t_45m_ago),
+      "last_modified_time" => DateTime.to_iso8601(t_38m_ago),
       "step" => "Awaiting human approval before running database migration",
       "current_step" => "Awaiting human approval before running database migration",
       "tool" => "run_command",
@@ -136,7 +160,10 @@ IO.puts("✓ Created AHP Bot: #{ahp_bot.name} (Online, AHP Protocol)")
     }
   })
 
-{:ok, _} =
+from(c in Conversation, where: c.id == ^session2.id)
+|> Repo.update_all(set: [inserted_at: t_45m_ago, updated_at: t_38m_ago])
+
+{:ok, msg2_1} =
   Chat.create_message(%{
     conversation_id: session2.id,
     role: "user",
@@ -145,10 +172,13 @@ IO.puts("✓ Created AHP Bot: #{ahp_bot.name} (Online, AHP Protocol)")
     model: "claude-3-7-sonnet",
     context_size: 64_000,
     acknowledged: true,
-    acknowledged_at: DateTime.utc_now() |> DateTime.truncate(:second)
+    acknowledged_at: t_45m_ago
   })
 
-{:ok, _} =
+from(m in Message, where: m.id == ^msg2_1.id)
+|> Repo.update_all(set: [inserted_at: t_45m_ago, updated_at: t_45m_ago])
+
+{:ok, msg2_2} =
   Chat.create_message(%{
     conversation_id: session2.id,
     role: "bot",
@@ -156,6 +186,9 @@ IO.puts("✓ Created AHP Bot: #{ahp_bot.name} (Online, AHP Protocol)")
     body: "I've generated the migration script to add a composite index on `[:bot_token_id, :external_session_id]`. Before I execute `mix ecto.migrate`, please approve this action via the approval card above.",
     model: "claude-3-7-sonnet"
   })
+
+from(m in Message, where: m.id == ^msg2_2.id)
+|> Repo.update_all(set: [inserted_at: t_38m_ago, updated_at: t_38m_ago])
 
 # AHP Sub-Chat 3: Idle session with prompt queue
 {:ok, session3} =
@@ -166,6 +199,8 @@ IO.puts("✓ Created AHP Bot: #{ahp_bot.name} (Online, AHP Protocol)")
     external_session_id: "session-protocol-badge",
     status: "idle",
     metadata: %{
+      "last_user_input_time" => DateTime.to_iso8601(t_3h_ago),
+      "last_modified_time" => DateTime.to_iso8601(t_2h_ago),
       "step" => "Completed badge implementation",
       "current_step" => "Ready for next instruction",
       "prompt_queue" => [
@@ -175,7 +210,10 @@ IO.puts("✓ Created AHP Bot: #{ahp_bot.name} (Online, AHP Protocol)")
     }
   })
 
-{:ok, _} =
+from(c in Conversation, where: c.id == ^session3.id)
+|> Repo.update_all(set: [inserted_at: t_3h_ago, updated_at: t_2h_ago])
+
+{:ok, msg3_1} =
   Chat.create_message(%{
     conversation_id: session3.id,
     role: "user",
@@ -184,10 +222,13 @@ IO.puts("✓ Created AHP Bot: #{ahp_bot.name} (Online, AHP Protocol)")
     model: "claude-3-7-sonnet",
     context_size: 128_000,
     acknowledged: true,
-    acknowledged_at: DateTime.utc_now() |> DateTime.truncate(:second)
+    acknowledged_at: t_3h_ago
   })
 
-{:ok, _} =
+from(m in Message, where: m.id == ^msg3_1.id)
+|> Repo.update_all(set: [inserted_at: t_3h_ago, updated_at: t_3h_ago])
+
+{:ok, msg3_2} =
   Chat.create_message(%{
     conversation_id: session3.id,
     role: "bot",
@@ -196,7 +237,10 @@ IO.puts("✓ Created AHP Bot: #{ahp_bot.name} (Online, AHP Protocol)")
     model: "claude-3-7-sonnet"
   })
 
-IO.puts("✓ Created 3 AHP Sub-Chats: (1 Thinking, 1 Needs Input, 1 Idle with Prompt Queue)")
+from(m in Message, where: m.id == ^msg3_2.id)
+|> Repo.update_all(set: [inserted_at: t_2h_ago, updated_at: t_2h_ago])
+
+IO.puts("✓ Created 3 AHP Sub-Chats: (1 Thinking [12m/2m], 1 Needs Input [45m/38m], 1 Idle [3h/2h])")
 
 # -------------------------------------------------------------
 # BOT 2: Standard AI Chat Bot (Chat Protocol)
@@ -234,10 +278,17 @@ IO.puts("✓ Created Chat Bot: #{chat_bot.name} (Online, Chat Protocol)")
   Chat.create_conversation(%{
     user_id: user.id,
     bot_token_id: chat_bot.id,
-    title: "Phoenix 1.8 & LiveView Architecture"
+    title: "Phoenix 1.8 & LiveView Architecture",
+    metadata: %{
+      "last_user_input_time" => DateTime.to_iso8601(t_1d_ago),
+      "last_modified_time" => DateTime.to_iso8601(t_1d_ago)
+    }
   })
 
-{:ok, _} =
+from(c in Conversation, where: c.id == ^conv1.id)
+|> Repo.update_all(set: [inserted_at: t_1d_ago, updated_at: t_1d_ago])
+
+{:ok, conv1_m1} =
   Chat.create_message(%{
     conversation_id: conv1.id,
     role: "user",
@@ -246,10 +297,13 @@ IO.puts("✓ Created Chat Bot: #{chat_bot.name} (Online, Chat Protocol)")
     model: "claude-3-7-sonnet",
     context_size: 128_000,
     acknowledged: true,
-    acknowledged_at: DateTime.utc_now() |> DateTime.truncate(:second)
+    acknowledged_at: t_1d_ago
   })
 
-{:ok, _} =
+from(m in Message, where: m.id == ^conv1_m1.id)
+|> Repo.update_all(set: [inserted_at: t_1d_ago, updated_at: t_1d_ago])
+
+{:ok, conv1_m2} =
   Chat.create_message(%{
     conversation_id: conv1.id,
     role: "bot",
@@ -285,8 +339,11 @@ Would you like to see how to wire this up with Phoenix PubSub broadcasts?
     model: "claude-3-7-sonnet"
   })
 
+from(m in Message, where: m.id == ^conv1_m2.id)
+|> Repo.update_all(set: [inserted_at: t_1d_ago, updated_at: t_1d_ago])
+
 # Suggestions message
-{:ok, _} =
+{:ok, conv1_m3} =
   Chat.create_message(%{
     conversation_id: conv1.id,
     role: "bot",
@@ -295,15 +352,25 @@ Would you like to see how to wire this up with Phoenix PubSub broadcasts?
     is_suggestion: true
   })
 
+from(m in Message, where: m.id == ^conv1_m3.id)
+|> Repo.update_all(set: [inserted_at: t_1d_ago, updated_at: t_1d_ago])
+
 # Chat Conversation 2: PostgreSQL Index Types
 {:ok, conv2} =
   Chat.create_conversation(%{
     user_id: user.id,
     bot_token_id: chat_bot.id,
-    title: "PostgreSQL Index Optimization"
+    title: "PostgreSQL Index Optimization",
+    metadata: %{
+      "last_user_input_time" => DateTime.to_iso8601(t_3d_ago),
+      "last_modified_time" => DateTime.to_iso8601(t_3d_ago)
+    }
   })
 
-{:ok, _} =
+from(c in Conversation, where: c.id == ^conv2.id)
+|> Repo.update_all(set: [inserted_at: t_3d_ago, updated_at: t_3d_ago])
+
+{:ok, conv2_m1} =
   Chat.create_message(%{
     conversation_id: conv2.id,
     role: "user",
@@ -312,10 +379,13 @@ Would you like to see how to wire this up with Phoenix PubSub broadcasts?
     model: "claude-3-7-sonnet",
     context_size: 64_000,
     acknowledged: true,
-    acknowledged_at: DateTime.utc_now() |> DateTime.truncate(:second)
+    acknowledged_at: t_3d_ago
   })
 
-{:ok, _} =
+from(m in Message, where: m.id == ^conv2_m1.id)
+|> Repo.update_all(set: [inserted_at: t_3d_ago, updated_at: t_3d_ago])
+
+{:ok, conv2_m2} =
   Chat.create_message(%{
     conversation_id: conv2.id,
     role: "bot",
@@ -333,6 +403,9 @@ For time-series tables where rows are inserted sequentially by `inserted_at`, **
 """,
     model: "claude-3-7-sonnet"
   })
+
+from(m in Message, where: m.id == ^conv2_m2.id)
+|> Repo.update_all(set: [inserted_at: t_3d_ago, updated_at: t_3d_ago])
 
 # -------------------------------------------------------------
 # BOT 3: Offline Bot (to test offline indicator)
