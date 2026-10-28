@@ -25,6 +25,9 @@ vi.mock("../lib/data.js", () => ({
 vi.mock("../lib/notifications.js", () => ({
 	registerServiceWorker: vi.fn(),
 	requestNotificationPermission: vi.fn(),
+	initNotificationListeners: vi.fn(() => vi.fn()),
+	notifySessionCompleted: vi.fn(),
+	notifyWaitingForInput: vi.fn(),
 }))
 
 const mockChannel = {
@@ -42,7 +45,9 @@ const mockSocket = {
 }
 
 vi.mock("phoenix", () => ({
-	Socket: vi.fn().mockImplementation(() => mockSocket),
+	Socket: vi.fn(function () {
+		return mockSocket
+	}),
 }))
 
 describe("useWorkspaceData", () => {
@@ -114,9 +119,7 @@ describe("useWorkspaceData", () => {
 		})
 		listBotModels.mockResolvedValue({ models: [] })
 		listConversations.mockResolvedValue({
-			conversations: [
-				{ id: 20, bot_token_id: 2, title: "Chat", status: "idle" },
-			],
+			conversations: [{ id: 20, bot_token_id: 2, title: "Chat", status: "idle" }],
 		})
 		pingApp.mockResolvedValue({})
 
@@ -148,5 +151,35 @@ describe("useWorkspaceData", () => {
 			expect(updated.status).toBe("running")
 			expect(updated.metadata?.step).toBe("Analyzing files")
 		})
+
+		// Transition to waiting_for_input
+		statusHandler({
+			conversation_id: 20,
+			status: "waiting_for_input",
+			metadata: { question: { prompt: "Approve deploy?" } },
+		})
+
+		const { notifyWaitingForInput, notifySessionCompleted } =
+			await import("../lib/notifications.js")
+		expect(notifyWaitingForInput).toHaveBeenCalledWith(
+			expect.objectContaining({
+				conversationId: 20,
+				question: { prompt: "Approve deploy?" },
+			}),
+		)
+
+		// Transition from running to idle / completed
+		statusHandler({
+			conversation_id: 20,
+			status: "completed",
+			metadata: { step: "Deploy finished" },
+		})
+
+		expect(notifySessionCompleted).toHaveBeenCalledWith(
+			expect.objectContaining({
+				conversationId: 20,
+				metadata: { step: "Deploy finished" },
+			}),
+		)
 	})
 })

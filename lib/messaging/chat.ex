@@ -68,10 +68,22 @@ defmodule Messaging.Chat do
     end
   end
 
-  def list_conversations(user_id) do
-    convs =
+  def list_conversations(user_id, opts \\ []) do
+    include_archived = Keyword.get(opts, :include_archived, false)
+
+    query =
       Conversation
       |> where(user_id: ^user_id)
+
+    query =
+      if include_archived do
+        query
+      else
+        where(query, [c], c.status != "archived")
+      end
+
+    convs =
+      query
       |> order_by([c], desc: c.updated_at, desc: c.id)
       |> preload(:bot_token)
       |> Repo.all()
@@ -84,10 +96,22 @@ defmodule Messaging.Chat do
     end)
   end
 
-  def list_conversations_for_bot(bot_token_id) do
-    convs =
+  def list_conversations_for_bot(bot_token_id, opts \\ []) do
+    include_archived = Keyword.get(opts, :include_archived, false)
+
+    query =
       Conversation
       |> where(bot_token_id: ^bot_token_id)
+
+    query =
+      if include_archived do
+        query
+      else
+        where(query, [c], c.status != "archived")
+      end
+
+    convs =
+      query
       |> order_by([c], desc: c.updated_at, desc: c.id)
       |> preload(:bot_token)
       |> Repo.all()
@@ -112,6 +136,14 @@ defmodule Messaging.Chat do
     conv = Repo.one!(query)
     stats = get_message_stats_for_conversations([conv.id])
     resolve_conversation_timestamps(conv, Map.get(stats, conv.id, %{}))
+  end
+
+  def get_conversation_scoped(id, opts \\ []) do
+    try do
+      get_conversation!(id, opts)
+    rescue
+      Ecto.NoResultsError -> nil
+    end
   end
 
   def create_conversation(attrs) do
@@ -139,6 +171,63 @@ defmodule Messaging.Chat do
     |> Repo.one()
   end
 
+  def resolve_bot_conversation(%Messaging.Bots.BotToken{} = bot_token, payload)
+      when is_map(payload) do
+    raw_id = payload["conversation_id"] || payload[:conversation_id]
+
+    ext_id =
+      payload["session_id"] || payload[:session_id] || payload["external_session_id"] ||
+        payload[:external_session_id]
+
+    cond do
+      is_integer(raw_id) ->
+        get_conversation!(raw_id, bot_token_id: bot_token.id)
+
+      is_binary(raw_id) and raw_id != "" ->
+        case Integer.parse(raw_id) do
+          {int_id, ""} ->
+            case get_conversation_scoped(int_id, bot_token_id: bot_token.id) do
+              nil ->
+                find_or_create_by_external_id(bot_token, raw_id) ||
+                  raise Ecto.NoResultsError, queryable: Conversation
+
+              conv ->
+                conv
+            end
+
+          _ ->
+            find_or_create_by_external_id(bot_token, raw_id) ||
+              raise Ecto.NoResultsError, queryable: Conversation
+        end
+
+      (is_binary(ext_id) and ext_id != "") or is_integer(ext_id) ->
+        find_or_create_by_external_id(bot_token, to_string(ext_id)) ||
+          raise Ecto.NoResultsError, queryable: Conversation
+
+      true ->
+        raise Ecto.NoResultsError, queryable: Conversation
+    end
+  end
+
+  defp find_or_create_by_external_id(bot_token, ext_id) do
+    case get_conversation_by_external_session(bot_token.id, ext_id) do
+      nil ->
+        case create_conversation(%{
+               user_id: bot_token.user_id,
+               bot_token_id: bot_token.id,
+               external_session_id: to_string(ext_id),
+               title: "Session #{ext_id}",
+               status: "idle"
+             }) do
+          {:ok, conv} -> conv
+          _ -> nil
+        end
+
+      conv ->
+        conv
+    end
+  end
+
   def sync_bot_sessions(%Messaging.Bots.BotToken{} = bot_token, sessions_list)
       when is_list(sessions_list) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
@@ -149,11 +238,22 @@ defmodule Messaging.Chat do
         title = s["title"] || s[:title]
         status = s["status"] || s[:status] || "idle"
         raw_meta = s["metadata"] || s[:metadata] || %{}
-        
+
         # Merge top-level attributes like project, working_directories, source_updated_at into metadata
         extra_keys =
           s
-          |> Map.drop(["session_id", :session_id, "id", :id, "title", :title, "status", :status, "metadata", :metadata])
+          |> Map.drop([
+            "session_id",
+            :session_id,
+            "id",
+            :id,
+            "title",
+            :title,
+            "status",
+            :status,
+            "metadata",
+            :metadata
+          ])
           |> Enum.map(fn {k, v} -> {to_string(k), v} end)
           |> Map.new()
 
@@ -175,11 +275,26 @@ defmodule Messaging.Chat do
       Enum.map(normalized_sessions, fn item ->
         case Map.get(existing_conversations, item.session_id) do
           nil ->
+            title =
+              cond do
+                item.title && item.title != "" ->
+                  item.title
+
+                String.match?(
+                  item.session_id,
+                  ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+                ) ->
+                  "Session (#{String.slice(item.session_id, 0, 8)})"
+
+                true ->
+                  "Session #{item.session_id}"
+              end
+
             attrs = %{
               user_id: bot_token.user_id,
               bot_token_id: bot_token.id,
               external_session_id: item.session_id,
-              title: item.title || "Session #{item.session_id}",
+              title: title,
               status: item.status,
               metadata: item.metadata
             }
@@ -188,9 +303,26 @@ defmodule Messaging.Chat do
             conv
 
           existing ->
+            cleared_meta =
+              if item.status in ["idle", "running", "completed", "done", "archived"] and
+                   not Map.has_key?(item.metadata, "question") do
+                Map.delete(existing.metadata || %{}, "question")
+              else
+                existing.metadata || %{}
+              end
+
+            # CRITICAL: Preserve archived status against routine background bot syncs.
+            new_status =
+              if existing.status == "archived" and
+                   item.status not in ["running", "waiting_for_input", "needs_input"] do
+                "archived"
+              else
+                item.status
+              end
+
             update_attrs = %{
-              status: item.status,
-              metadata: Map.merge(existing.metadata || %{}, item.metadata)
+              status: new_status,
+              metadata: Map.merge(cleared_meta, item.metadata)
             }
 
             update_attrs =
@@ -236,12 +368,29 @@ defmodule Messaging.Chat do
   def update_session_status(conversation_id, status, metadata \\ %{}) do
     conversation = get_conversation!(conversation_id, [])
 
+    # Protect archived status from being overwritten by routine status events
+    resolved_status =
+      if conversation.status == "archived" and
+           status not in ["running", "waiting_for_input", "needs_input"] do
+        "archived"
+      else
+        status
+      end
+
+    cleared_metadata =
+      if resolved_status in ["idle", "running", "completed", "done", "archived"] and
+           not Map.has_key?(metadata || %{}, "question") do
+        Map.delete(conversation.metadata || %{}, "question")
+      else
+        conversation.metadata || %{}
+      end
+
     merged_metadata =
-      (conversation.metadata || %{})
+      cleared_metadata
       |> Map.merge(metadata || %{})
 
     case conversation
-         |> Conversation.changeset(%{status: status, metadata: merged_metadata})
+         |> Conversation.changeset(%{status: resolved_status, metadata: merged_metadata})
          |> Repo.update() do
       {:ok, updated} ->
         Phoenix.PubSub.broadcast(
@@ -390,6 +539,16 @@ defmodule Messaging.Chat do
 
     Repo.all(query)
     |> Enum.reverse()
+  end
+
+  def get_last_message(conversation_id) do
+    conv_id = normalize_conversation_id!(conversation_id)
+
+    Message
+    |> where(conversation_id: ^conv_id)
+    |> order_by([m], desc: m.id)
+    |> limit(1)
+    |> Repo.one()
   end
 
   def get_pending_messages_for_bot(bot_token_id, opts \\ []) do

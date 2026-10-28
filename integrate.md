@@ -200,6 +200,7 @@ Authorization: Bearer <USER_TOKEN>
         "step": "Analyzing UserAuth.require_authenticated/2 plug",
         "tool": "view_file"
       },
+      "parent_session_id": null,
       "bot_token_id": 1,
       "bot_name": "Atlas Coding Agent",
       "bot_type": "ahp",
@@ -209,10 +210,27 @@ Authorization: Bearer <USER_TOKEN>
     },
     {
       "id": 2,
+      "title": "Sub-task: Run unit tests",
+      "external_session_id": "session-auth-tests",
+      "status": "running",
+      "metadata": {
+        "step": "Executing test suite"
+      },
+      "parent_session_id": "session-auth-revocation",
+      "bot_token_id": 1,
+      "bot_name": "Atlas Coding Agent",
+      "bot_type": "ahp",
+      "bot_connected": true,
+      "inserted_at": "2026-10-06T18:12:00Z",
+      "updated_at": "2026-10-06T18:16:00Z"
+    },
+    {
+      "id": 3,
       "title": "Phoenix 1.8 & LiveView Architecture",
       "external_session_id": null,
       "status": "idle",
       "metadata": {},
+      "parent_session_id": null,
       "bot_token_id": 2,
       "bot_name": "Claude 3.7 Sonnet",
       "bot_type": "chat",
@@ -247,6 +265,7 @@ Content-Type: application/json
 - `bot_token_id` (required, integer): ID of the bot token.
 - `title` (optional, string): Display title for the conversation / sub-chat.
 - `external_session_id` (optional, string): External session identifier for AHP agents.
+- `parent_session_id` (optional, string): External session ID of the parent session for nested sub-sessions.
 - `status` (optional, string): `"idle"`, `"running"`, `"thinking"`, `"waiting_for_input"`, or `"archived"`. Defaults to `"idle"`.
 - `metadata` (optional, object): Arbitrary metadata (current step, active tools, questions, etc.).
 
@@ -257,6 +276,7 @@ Content-Type: application/json
   "id": 1,
   "title": "Database Migration for Bot Token Index",
   "external_session_id": "session-db-migration",
+  "parent_session_id": null,
   "status": "waiting_for_input",
   "metadata": {
     "step": "Awaiting approval for database migration"
@@ -1090,12 +1110,26 @@ Push `sync_sessions` over WebSocket (`bot:<CHANNEL_CODE>`):
             "options": ["Approve", "Reject"]
           }
         }
+      },
+      {
+        "session_id": "session-subtask-compile",
+        "title": "Subtask: Compile & Verify Types",
+        "parent_session_id": "session-backend-refactor",
+        "status": "running",
+        "metadata": {
+          "step": "Running mix compile --warnings-as-errors"
+        }
       }
     ]
   },
   "ref": "1"
 }
 ```
+
+#### Nested Sessions (Parent-Child Hierarchy)
+AHP agents can nest sub-agent or child sessions under an orchestrator session.
+- To nest a session, provide `parent_session_id` (or `parentSessionId`) set to the parent session's ID (or `external_session_id`), or set `"nested": true`.
+- Top-level attributes like `parent_session_id` are automatically preserved in session metadata.
 
 Sessions not included in subsequent `sync_sessions` calls are marked as `archived` in the service.
 
@@ -1244,6 +1278,21 @@ When an agent transitions to `"idle"`, any prompts queued by the user while the 
 }
 ```
 
+#### d. Request Session Sync (`request_session_sync`)
+When a user opens a session in the PWA or clicks the topbar "Sync" button, the server pushes `request_session_sync` to the bot channel:
+```json
+{
+  "topic": "bot:<CHANNEL_CODE>",
+  "event": "request_session_sync",
+  "payload": {
+    "conversation_id": 42,
+    "external_session_id": "session-backend-refactor",
+    "requested_at": "2026-10-20T20:30:00Z"
+  }
+}
+```
+If your agent host bridge tracks recent turns or unacknowledged messages, it can respond by emitting any missed messages via `send_message` or completion events via `ahp_event`.
+
 ### 6. Example Python Bridge Snippet
 
 ```python
@@ -1324,6 +1373,11 @@ When any bot or sub-chat is selected, a gear icon appears in the top-right chat 
 
 ### 3. Multi-Session Sub-Chats & Status Sidebar
 For AHP bots, the sub-chat navigation drawer and sidebar display all active sessions synchronized via `sync_sessions`. Each sub-chat displays:
+- **Nested Sessions**:
+  - `↳ Nested` badge pill and tree branch icon `↳`.
+  - Hierarchical indentation with an elbow connecting line under the parent session.
+  - Tooltips indicating the parent session: `Nested under: "<Parent Session>"`.
+  - Child sessions are positioned directly beneath their parent session in project groups and session lists.
 - **Status Pills**:
   - `Thinking`: Purple glowing badge indicating active reasoning token generation.
   - `Running`: Blue badge indicating active tool/command execution with tool step preview.

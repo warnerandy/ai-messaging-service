@@ -1,11 +1,22 @@
-import React from "react"
+import React, { act } from "react"
 import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 import ChatView, { deriveConversationState, normalizeMessage } from "./ChatView.jsx"
 
 vi.mock("phoenix", () => ({
-	Socket: class Socket {},
+	Socket: class Socket {
+		connect() {}
+		disconnect() {}
+		channel() {
+			return {
+				join: () => ({ receive: () => ({ receive: () => {} }) }),
+				leave: () => {},
+				on: () => {},
+				push: () => {},
+			}
+		}
+	},
 }))
 
 vi.mock("../lib/data.js", () => ({
@@ -16,7 +27,21 @@ vi.mock("../lib/data.js", () => ({
 }))
 
 vi.mock("../lib/notifications.js", () => ({
+	notifyBotResponse: vi.fn(),
+	notifySessionCompleted: vi.fn(),
+	notifyWaitingForInput: vi.fn(),
+	requestNotificationPermission: vi.fn(),
+	getNotificationPermission: vi.fn(() => "granted"),
+	isNotificationSupported: vi.fn(() => true),
+	isVibrationSupported: vi.fn(() => true),
 	showNotificationIfBackgrounded: vi.fn(),
+	isSessionAlarmEnabled: vi.fn((id) => id === 99),
+	toggleSessionAlarm: vi.fn(() => true),
+	unlockAudio: vi.fn(),
+	playAlarmChime: vi.fn(),
+	playConfirmationPing: vi.fn(),
+	triggerAlarmVibration: vi.fn(),
+	triggerConfirmationVibration: vi.fn(),
 }))
 
 vi.mock("../thinkingTimer.mjs", () => ({
@@ -83,6 +108,104 @@ describe("ChatView", () => {
 
 		const badges = screen.getAllByText("Chat Protocol")
 		expect(badges.length).toBeGreaterThan(0)
+	})
+
+	it("renders project badge with name and branch in header", () => {
+		const conversation = {
+			id: 1,
+			title: "Working on Feature X",
+			status: "idle",
+			metadata: {
+				project: {
+					name: "ai-messaging-service",
+					uri: "file:///workspace/ai-messaging-service",
+					branch: "master",
+				},
+			},
+		}
+
+		render(
+			<ChatView
+				token={null}
+				bot={{ name: "CodeBot", bot_type: "ahp", is_connected: true }}
+				conversations={[conversation]}
+				selectedConversationId={1}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		expect(screen.getByText("ai-messaging-service")).toBeInTheDocument()
+		expect(screen.getByText("master")).toBeInTheDocument()
+	})
+
+	it("opens project info modal when clicking project badge", async () => {
+		const user = userEvent.setup()
+		const conversation = {
+			id: 2,
+			title: "Project Chat",
+			status: "idle",
+			metadata: {
+				project: {
+					name: "my-web-app",
+					branch: "feat/header",
+					path: "/home/user/my-web-app",
+				},
+			},
+		}
+
+		render(
+			<ChatView
+				token={null}
+				bot={{ name: "CodeBot", bot_type: "ahp", is_connected: true }}
+				conversations={[conversation]}
+				selectedConversationId={2}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		const projectBadge = screen.getByRole("button", { name: /Project: my-web-app/i })
+		await user.click(projectBadge)
+
+		expect(screen.getByRole("dialog")).toBeInTheDocument()
+		expect(screen.getByText("Project & Workspace Info")).toBeInTheDocument()
+		expect(screen.getByText("/home/user/my-web-app")).toBeInTheDocument()
+	})
+
+	it("renders LiveThinking component when entering a chat with thinking status", () => {
+		const conversation = {
+			id: 3,
+			title: "Analyzing Algorithm",
+			status: "thinking",
+			metadata: {
+				step: "Evaluating syntax tree",
+				thinking: "Processing AST nodes...",
+			},
+		}
+
+		render(
+			<ChatView
+				token={null}
+				bot={{ name: "CodeBot", bot_type: "ahp", is_connected: true }}
+				conversations={[conversation]}
+				selectedConversationId={3}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		expect(screen.getByText("Thinking")).toBeInTheDocument()
+		expect(screen.getByText("Evaluating syntax tree")).toBeInTheDocument()
+		expect(screen.getByText("Processing AST nodes...")).toBeInTheDocument()
+		// Generic typing dots indicator should NOT be rendered when thinking is active
+		expect(screen.queryByText(/Bot has been thinking for/i)).not.toBeInTheDocument()
 	})
 })
 
@@ -182,7 +305,7 @@ describe("normalizeMessage", () => {
 		const contextSelect = screen.getByRole("combobox", { name: "Context Size" })
 		expect(contextSelect).toBeInTheDocument()
 		expect(screen.getByRole("option", { name: "Default context" })).toBeInTheDocument()
-		expect(screen.getByRole("option", { name: /32k/i })).toBeInTheDocument()
+		expect(screen.getByRole("option", { name: /33k/i })).toBeInTheDocument()
 
 		await user.selectOptions(contextSelect, "32768")
 
@@ -198,5 +321,228 @@ describe("normalizeMessage", () => {
 				context_size: 32768,
 			}),
 		)
+	})
+
+	it("renders notification button in topbar and requests permission on click", async () => {
+		const user = userEvent.setup()
+		const { requestNotificationPermission } = await import("../lib/notifications.js")
+
+		render(
+			<ChatView
+				token={null}
+				bot={{ name: "Atlas", is_connected: true }}
+				conversations={[]}
+				selectedConversationId={null}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		const notifBtn = screen.getByRole("button", { name: /notifications/i })
+		expect(notifBtn).toBeInTheDocument()
+
+		await user.click(notifBtn)
+		expect(requestNotificationPermission).toHaveBeenCalled()
+	})
+
+	it("reflects session alarm state when switching sessions and toggles alarm on click", async () => {
+		const user = userEvent.setup()
+		const { toggleSessionAlarm, unlockAudio } = await import("../lib/notifications.js")
+
+		const { rerender } = render(
+			<ChatView
+				token="fake"
+				bot={{ name: "Atlas", is_connected: true }}
+				conversations={[{ id: 99, title: "Armed Session" }]}
+				selectedConversationId={99}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		// Session 99 is armed in the mock (id === 99)
+		const armedBtn = screen.getByRole("button", { name: /notifications/i })
+		expect(armedBtn).toHaveClass("notification-toggle-btn--armed")
+
+		await user.click(armedBtn)
+		expect(unlockAudio).toHaveBeenCalled()
+		expect(toggleSessionAlarm).toHaveBeenCalledWith(99)
+
+		// Switch to session 100 which is not armed in the mock
+		rerender(
+			<ChatView
+				token="fake"
+				bot={{ name: "Atlas", is_connected: true }}
+				conversations={[
+					{ id: 99, title: "Armed Session" },
+					{ id: 100, title: "Unarmed Session" },
+				]}
+				selectedConversationId={100}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		const disarmedBtn = screen.getByRole("button", { name: /notifications/i })
+		expect(disarmedBtn).toHaveClass("notification-toggle-btn--disarmed")
+	})
+
+	it("renders sync button in topbar and triggers sync on click", async () => {
+		const user = userEvent.setup()
+		const { getConversation } = await import("../lib/data.js")
+		getConversation.mockResolvedValueOnce({
+			messages: [],
+			conversation: { id: 10, status: "idle" },
+		})
+
+		render(
+			<ChatView
+				token="fake"
+				bot={{ name: "Atlas", is_connected: true }}
+				conversations={[{ id: 10, title: "Active Session" }]}
+				selectedConversationId={10}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		const syncBtn = screen.getByRole("button", { name: /sync session/i })
+		expect(syncBtn).toBeInTheDocument()
+
+		await user.click(syncBtn)
+		expect(getConversation).toHaveBeenCalledWith("fake", 10)
+	})
+
+	it("renders safely without crashing when bot is null or loading", () => {
+		render(
+			<ChatView
+				token="fake"
+				bot={null}
+				conversations={[]}
+				selectedConversationId={null}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		expect(screen.getByText("Select or create a bot to start chatting.")).toBeInTheDocument()
+	})
+
+	it("does not render standalone sparkle icon in topbar and opens SettingsModal when clicking gear button", async () => {
+		const user = userEvent.setup()
+
+		render(
+			<ChatView
+				token="fake"
+				bot={{ id: 1, name: "Atlas", is_connected: true }}
+				conversations={[{ id: 10, title: "Active Session" }]}
+				selectedConversationId={10}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		// Sparkle gallery icon is removed from topbar to save horizontal space
+		expect(
+			screen.queryByRole("button", { name: "VS Code Working States Gallery" }),
+		).not.toBeInTheDocument()
+
+		// Gear button is present and opens bot configuration modal
+		const configBtn = screen.getByRole("button", {
+			name: "Bot Configuration & Connection Details",
+		})
+		expect(configBtn).toBeInTheDocument()
+
+		await user.click(configBtn)
+		expect(screen.getByText("Bot Configuration")).toBeInTheDocument()
+		expect(screen.getByText("WebSocket Service URL")).toBeInTheDocument()
+		expect(screen.getByText("Bot Secret Token")).toBeInTheDocument()
+	})
+
+	it("opens SettingsModal when open-settings window event is dispatched", async () => {
+		render(
+			<ChatView
+				token="fake"
+				bot={{ id: 1, name: "Atlas", is_connected: true }}
+				conversations={[{ id: 10, title: "Active Session" }]}
+				selectedConversationId={10}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		await act(async () => {
+			window.dispatchEvent(new CustomEvent("open-settings", { detail: { tab: "states" } }))
+		})
+
+		expect(await screen.findByText("Settings & AHP Statuses")).toBeInTheDocument()
+		expect(screen.getByText("Waiting for Input / Approval")).toBeInTheDocument()
+		expect(screen.getByText("VS Code Working State Icons")).toBeInTheDocument()
+	})
+
+	it("renders archive button and calls onArchiveConversation when clicked", async () => {
+		const user = userEvent.setup()
+		const onArchive = vi.fn()
+
+		render(
+			<ChatView
+				token="fake"
+				bot={{ id: 1, name: "Atlas", is_connected: true }}
+				conversations={[{ id: 10, title: "Active Session", status: "idle" }]}
+				selectedConversationId={10}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+				onArchiveConversation={onArchive}
+			/>,
+		)
+
+		const archiveBtn = screen.getByRole("button", { name: "Archive / mark chat as done" })
+		expect(archiveBtn).toBeInTheDocument()
+
+		await user.click(archiveBtn)
+		expect(onArchive).toHaveBeenCalledWith(10)
+	})
+
+	it("renders archived badge, banner, and close button when active conversation is archived", async () => {
+		const user = userEvent.setup()
+		const onSelect = vi.fn()
+
+		render(
+			<ChatView
+				token="fake"
+				bot={{ id: 1, name: "Atlas", is_connected: true }}
+				conversations={[{ id: 10, title: "Finished Task", status: "archived" }]}
+				selectedConversationId={10}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+				onSelectConversation={onSelect}
+			/>,
+		)
+
+		expect(screen.getByText("✓ Archived")).toBeInTheDocument()
+		expect(screen.getByText("(Archived)")).toBeInTheDocument()
+		expect(screen.getByText(/This session is archived/i)).toBeInTheDocument()
+
+		const closeBtn = screen.getByRole("button", { name: "Close session" })
+		await user.click(closeBtn)
+		expect(onSelect).toHaveBeenCalledWith(null)
 	})
 })

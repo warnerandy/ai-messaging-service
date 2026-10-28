@@ -1,21 +1,14 @@
 import React from "react"
 
-export default function PromptQueue({
-	queue = [],
-	onRemovePrompt,
-}) {
+export default function PromptQueue({ queue = [], onRemovePrompt }) {
 	if (!queue || queue.length === 0) return null
 
 	return (
 		<div className="prompt-queue-container">
 			<div className="prompt-queue-header">
 				<span className="prompt-queue-icon">⚡</span>
-				<span className="prompt-queue-title">
-					Queued Prompts ({queue.length})
-				</span>
-				<span className="prompt-queue-hint">
-					Will dispatch automatically when agent is idle
-				</span>
+				<span className="prompt-queue-title">Queued Prompts ({queue.length})</span>
+				<span className="prompt-queue-hint">Will dispatch automatically when agent is idle</span>
 			</div>
 
 			<div className="prompt-queue-list">

@@ -61,6 +61,58 @@ defmodule Messaging.ChatAhpTest do
       assert active_sess1.status == "waiting_for_input"
       assert active_sess1.title == "Backend Task Updated"
     end
+
+    test "does not unarchive an already archived session during sync_bot_sessions", %{
+      bot_token: bot
+    } do
+      sessions = [
+        %{
+          "session_id" => "sess-archived",
+          "title" => "Archived Task",
+          "status" => "idle"
+        }
+      ]
+
+      assert {:ok, _} = Chat.sync_bot_sessions(bot, sessions)
+      conv = Chat.get_conversation_by_external_session(bot.id, "sess-archived")
+      assert {:ok, archived} = Chat.archive_conversation(conv.id, bot.user_id)
+      assert archived.status == "archived"
+
+      # Bot attempts routine sync with status "idle"
+      assert {:ok, synced} = Chat.sync_bot_sessions(bot, sessions)
+      synced_conv = Enum.find(synced, &(&1.external_session_id == "sess-archived"))
+      assert synced_conv.status == "archived"
+
+      refetched = Chat.get_conversation!(conv.id, [])
+      assert refetched.status == "archived"
+    end
+
+    test "synchronizes nested sub-sessions preserving parent_session_id and nesting metadata",
+         %{bot_token: bot} do
+      sessions = [
+        %{
+          "session_id" => "parent-sess",
+          "title" => "Root Task",
+          "status" => "running"
+        },
+        %{
+          "session_id" => "child-sess",
+          "title" => "Sub-task Compilation",
+          "parent_session_id" => "parent-sess",
+          "nested" => true,
+          "status" => "running",
+          "metadata" => %{"step" => "mix compile"}
+        }
+      ]
+
+      assert {:ok, synced} = Chat.sync_bot_sessions(bot, sessions)
+      assert length(synced) == 2
+
+      child = Enum.find(synced, &(&1.external_session_id == "child-sess"))
+      assert child.metadata["parent_session_id"] == "parent-sess"
+      assert child.metadata["nested"] == true
+      assert child.metadata["step"] == "mix compile"
+    end
   end
 
   describe "update_session_status/3" do
@@ -80,6 +132,33 @@ defmodule Messaging.ChatAhpTest do
       assert updated.status == "running"
       assert updated.metadata["tool"] == "initial"
       assert updated.metadata["step"] == "running tests"
+    end
+
+    test "does not unarchive an already archived session on routine idle status update", %{
+      bot_token: bot,
+      user: user
+    } do
+      {:ok, conv} =
+        Chat.create_conversation(%{
+          user_id: user.id,
+          bot_token_id: bot.id,
+          title: "Session To Archive",
+          status: "idle"
+        })
+
+      assert {:ok, _} = Chat.archive_conversation(conv.id, user.id)
+
+      assert {:ok, updated} =
+               Chat.update_session_status(conv.id, "idle", %{"step" => "routine heartbeat"})
+
+      assert updated.status == "archived"
+      assert updated.metadata["step"] == "routine heartbeat"
+
+      # But if session actively runs, it can wake up
+      assert {:ok, running} =
+               Chat.update_session_status(conv.id, "running", %{"step" => "woken by user prompt"})
+
+      assert running.status == "running"
     end
   end
 

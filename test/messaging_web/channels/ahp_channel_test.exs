@@ -66,6 +66,20 @@ defmodule MessagingWeb.AhpChannelTest do
     assert join_reply.status == "running"
     assert join_reply.external_session_id == "subchat-1"
 
+    # Bot receives request_session_sync upon user joining
+    assert_push "request_session_sync", %{
+      "conversation_id" => ^conv_id,
+      "external_session_id" => "subchat-1"
+    }
+
+    # User can also explicitly request a session sync
+    push(user_channel, "sync_session", %{})
+
+    assert_push "request_session_sync", %{
+      "conversation_id" => ^conv_id,
+      "external_session_id" => "subchat-1"
+    }
+
     # 4. Bot pushes an ahp_event (thinking stream)
     push(bot_channel, "ahp_event", %{
       "conversation_id" => conv_id,
@@ -93,6 +107,11 @@ defmodule MessagingWeb.AhpChannelTest do
       event_type: "question",
       data: %{"id" => "q-1", "title" => "Allow file rewrite?"}
     }
+
+    # Verify conversation status is updated to waiting_for_input and question is saved in metadata
+    updated_conv = Messaging.Chat.get_conversation!(conv_id, [])
+    assert updated_conv.status == "waiting_for_input"
+    assert updated_conv.metadata["question"]["id"] == "q-1"
 
     # 6. User answers question
     push(user_channel, "answer_question", %{
@@ -140,5 +159,66 @@ defmodule MessagingWeb.AhpChannelTest do
       conversation_id: ^conv_id,
       prompt: %{"body" => "Next task: write documentation"}
     }
+
+    # 10. Bot sends final message using session_id (AHP external session ID)
+    push(bot_channel, "send_message", %{
+      "session_id" => "subchat-1",
+      "body" => "Documentation has been generated successfully."
+    })
+
+    # User channel receives new_message
+    assert_push "new_message", %{
+      message: %{
+        body: "Documentation has been generated successfully.",
+        role: "bot",
+        conversation_id: ^conv_id
+      }
+    }
+
+    # 11. Bot sends completion message via ahp_event response
+    push(bot_channel, "ahp_event", %{
+      "session_id" => "subchat-1",
+      "event_type" => "response",
+      "data" => %{"body" => "Turn complete. All files updated."}
+    })
+
+    assert_push "new_message", %{
+      message: %{
+        body: "Turn complete. All files updated.",
+        role: "bot",
+        conversation_id: ^conv_id
+      }
+    }
+  end
+
+  test "sync_sessions serializes parent_session_id for nested sessions", %{
+    bot_token: bot,
+    bot_socket: bot_socket
+  } do
+    {:ok, _, bot_channel} =
+      subscribe_and_join(bot_socket, BotChannel, "bot:#{bot.channel_code}", %{})
+
+    ref =
+      push(bot_channel, "sync_sessions", %{
+        "sessions" => [
+          %{
+            "session_id" => "parent-task",
+            "title" => "Parent Orchestrator",
+            "status" => "running"
+          },
+          %{
+            "session_id" => "child-task",
+            "title" => "Child Sub-task",
+            "parent_session_id" => "parent-task",
+            "status" => "running"
+          }
+        ]
+      })
+
+    assert_reply ref, :ok, %{sessions: sessions}
+    assert length(sessions) == 2
+
+    child = Enum.find(sessions, &(&1.external_session_id == "child-task"))
+    assert child.parent_session_id == "parent-task"
   end
 end

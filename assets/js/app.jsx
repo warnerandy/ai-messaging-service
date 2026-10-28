@@ -79,6 +79,10 @@ function App() {
 						onArchiveConversation={handleArchiveConversation}
 						userEmail={userEmail}
 						onLogout={handleLogout}
+						onOpenSettings={() => {
+							window.dispatchEvent(new CustomEvent("open-settings", { detail: { tab: "states" } }))
+							setMobileSidebarOpen(false)
+						}}
 						isOpen={mobileSidebarOpen}
 						appConnection={appConnection}
 					/>
@@ -94,6 +98,7 @@ function App() {
 						onConversationTouch={handleConversationTouch}
 						onSessionsUpdated={handleSessionsUpdated}
 						onArchiveConversation={handleArchiveConversation}
+						onSelectConversation={selectConversation}
 						onToggleSidebar={() => setMobileSidebarOpen(!mobileSidebarOpen)}
 					/>
 				</>

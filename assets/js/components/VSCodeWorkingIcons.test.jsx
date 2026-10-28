@@ -33,7 +33,9 @@ describe("VSCodeWorkingIcons", () => {
 
 			rerender(<VSCodeLoadingIcon spin={false} ariaLabel="Loading stopped" />)
 			expect(screen.getByRole("img", { name: "Loading stopped" })).not.toHaveClass("vscode-spin")
-			expect(screen.getByRole("img", { name: "Loading stopped" })).not.toHaveClass("vscode-spin-smooth")
+			expect(screen.getByRole("img", { name: "Loading stopped" })).not.toHaveClass(
+				"vscode-spin-smooth",
+			)
 		})
 	})
 

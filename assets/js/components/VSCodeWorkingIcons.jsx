@@ -119,12 +119,7 @@ export function VSCodeSparkleIcon({
 }
 
 // 5. VS Code Pass / Success ($(pass))
-export function VSCodePassIcon({
-	size = 16,
-	className = "",
-	color,
-	ariaLabel = "Passed",
-}) {
+export function VSCodePassIcon({ size = 16, className = "", color, ariaLabel = "Passed" }) {
 	return (
 		<svg
 			width={size}
@@ -148,12 +143,7 @@ export function VSCodePassIcon({
 }
 
 // 6. VS Code Error ($(error))
-export function VSCodeErrorIcon({
-	size = 16,
-	className = "",
-	color,
-	ariaLabel = "Error",
-}) {
+export function VSCodeErrorIcon({ size = 16, className = "", color, ariaLabel = "Error" }) {
 	return (
 		<svg
 			width={size}
@@ -172,12 +162,7 @@ export function VSCodeErrorIcon({
 }
 
 // 7. VS Code Circle Outline / Idle ($(circle-outline))
-export function VSCodeCircleIcon({
-	size = 16,
-	className = "",
-	color,
-	ariaLabel = "Idle",
-}) {
+export function VSCodeCircleIcon({ size = 16, className = "", color, ariaLabel = "Idle" }) {
 	return (
 		<svg
 			width={size}
@@ -200,12 +185,7 @@ export function VSCodeCircleIcon({
 }
 
 // 8. VS Code Sonar / Radar Pulse Dot (for waiting_for_input)
-export function VSCodePulseDot({
-	size = 12,
-	className = "",
-	color,
-	ariaLabel = "Awaiting input",
-}) {
+export function VSCodePulseDot({ size = 12, className = "", color, ariaLabel = "Awaiting input" }) {
 	return (
 		<span
 			className={`vscode-pulse-sonar ${className}`.trim()}
@@ -321,11 +301,7 @@ export function VSCodeWorkingStateIcon({
 		case "error":
 		case "failed":
 			return (
-				<VSCodeErrorIcon
-					size={size}
-					className={`text-rose-400 ${className}`}
-					ariaLabel="Error"
-				/>
+				<VSCodeErrorIcon size={size} className={`text-rose-400 ${className}`} ariaLabel="Error" />
 			)
 
 		case "idle":

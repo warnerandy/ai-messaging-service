@@ -1,4 +1,4 @@
-import test from "node:test"
+import { test, expect } from "vitest"
 import assert from "node:assert/strict"
 
 import { THINKING_BLURBS, formatThinkingDuration, pickThinkingBlurb } from "./lib/thinkingConfig.js"

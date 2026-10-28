@@ -59,12 +59,22 @@ export function listConversations(token) {
 	return apiRequest("/api/conversations", { token })
 }
 
-export function createConversation(token, botTokenId, title) {
+export function createConversation(token, botTokenId, titleOrOpts, maybeMetadata) {
+	const title = typeof titleOrOpts === "string" ? titleOrOpts : titleOrOpts?.title
+	const metadata =
+		typeof titleOrOpts === "object" &&
+		titleOrOpts !== null &&
+		!titleOrOpts.title &&
+		!titleOrOpts.metadata
+			? titleOrOpts
+			: titleOrOpts?.metadata || maybeMetadata || {}
+
 	return apiRequest("/api/conversations", {
 		method: "POST",
 		body: {
 			bot_token_id: botTokenId,
 			...(title ? { title } : {}),
+			...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
 		},
 		token,
 	})

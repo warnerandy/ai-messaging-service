@@ -1,9 +1,5 @@
-import React, { useState } from "react"
-import {
-	VSCodeWorkingStateIcon,
-	VSCodeGearIcon,
-	VSCodeProgressBar,
-} from "./VSCodeWorkingIcons.jsx"
+import React, { useState, useRef, useEffect } from "react"
+import { VSCodeWorkingStateIcon, VSCodeGearIcon, VSCodeProgressBar } from "./VSCodeWorkingIcons.jsx"
 
 export default function LiveThinking({
 	status = "idle",
@@ -16,10 +12,24 @@ export default function LiveThinking({
 	const [isOpen, setIsOpen] = useState(true)
 	const [steerInput, setSteerInput] = useState("")
 	const [showSteerModal, setShowSteerModal] = useState(false)
+	const bodyRef = useRef(null)
+	const userScrolledUpRef = useRef(false)
 
 	const isBusy = status === "running" || status === "thinking"
 	const currentStep = metadata?.step || metadata?.action || metadata?.current_step || ""
 	const currentTool = metadata?.tool || metadata?.tool_name || ""
+
+	useEffect(() => {
+		if (isOpen && bodyRef.current && !userScrolledUpRef.current) {
+			bodyRef.current.scrollTop = bodyRef.current.scrollHeight
+		}
+	}, [thinkingText, isOpen])
+
+	const handleScroll = (e) => {
+		const target = e.currentTarget
+		const atBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 40
+		userScrolledUpRef.current = !atBottom
+	}
 
 	if (!isBusy && !thinkingText && toolCalls.length === 0) {
 		return null
@@ -33,26 +43,26 @@ export default function LiveThinking({
 		setShowSteerModal(false)
 	}
 
+	const displayStatus =
+		status === "thinking"
+			? "Thinking"
+			: status === "running"
+				? "Running"
+				: status === "waiting_for_input" || status === "needs_input"
+					? "Waiting for Input"
+					: status.replace(/_/g, " ")
+
 	return (
 		<div className="live-thinking-card">
 			{/* VS Code Indeterminate Progress Bar */}
-			<VSCodeProgressBar
-				active={isBusy}
-				variant={status === "thinking" ? "thinking" : "running"}
-			/>
+			<VSCodeProgressBar active={isBusy} variant={status === "thinking" ? "thinking" : "running"} />
 
 			{/* Status & Tool Step Header */}
 			<div className="live-thinking-header">
 				<div className="live-thinking-status">
-					<span
-						className={`live-status-badge live-status-badge--${status}`}
-					>
-						<VSCodeWorkingStateIcon
-							status={status}
-							size={13}
-							className="live-status-icon mr-1"
-						/>
-						{status === "thinking" ? "Thinking" : status === "running" ? "Running" : status}
+					<span className={`live-status-badge live-status-badge--${status}`}>
+						<VSCodeWorkingStateIcon status={status} size={13} className="live-status-icon mr-1" />
+						{displayStatus}
 					</span>
 
 					{currentStep && (
@@ -82,12 +92,7 @@ export default function LiveThinking({
 					)}
 
 					{isBusy && onStop && (
-						<button
-							type="button"
-							className="btn-stop"
-							onClick={onStop}
-							title="Interrupt agent"
-						>
+						<button type="button" className="btn-stop" onClick={onStop} title="Interrupt agent">
 							⏹ Stop
 						</button>
 					)}
@@ -132,7 +137,11 @@ export default function LiveThinking({
 				<div className="tool-chips-row">
 					<span className="tool-chips-label">Recent tools:</span>
 					{toolCalls.slice(-5).map((tool, idx) => (
-						<span key={idx} className="tool-chip-item" title={typeof tool === "string" ? tool : JSON.stringify(tool)}>
+						<span
+							key={idx}
+							className="tool-chip-item"
+							title={typeof tool === "string" ? tool : JSON.stringify(tool)}
+						>
 							<VSCodeGearIcon size={11} spin={false} className="inline mr-1 opacity-70" />
 							{typeof tool === "string" ? tool : tool.name || tool.tool || "call"}
 						</span>
@@ -142,7 +151,7 @@ export default function LiveThinking({
 
 			{/* Collapsible Thinking Stream Body */}
 			{isOpen && thinkingText && (
-				<div className="live-thinking-body">
+				<div className="live-thinking-body" ref={bodyRef} onScroll={handleScroll}>
 					<div className="live-thinking-label">Reasoning & Execution Log:</div>
 					<pre className="live-thinking-content">{thinkingText}</pre>
 				</div>

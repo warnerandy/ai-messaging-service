@@ -1,31 +1,39 @@
 import React, { useState } from "react"
-import {
-	VSCodePulseDot,
-	VSCodePassIcon,
-	VSCodeLoadingIcon,
-} from "./VSCodeWorkingIcons.jsx"
+import { VSCodePulseDot, VSCodePassIcon, VSCodeLoadingIcon } from "./VSCodeWorkingIcons.jsx"
+import { formatQuestionAnswer, resolveQuestionId } from "../lib/ahpQuestion.js"
 
-export default function QuestionApprovalCard({
-	question,
-	onAnswer,
-}) {
+export default function QuestionApprovalCard({ question, onAnswer }) {
 	const [customAnswer, setCustomAnswer] = useState("")
 	const [submitting, setSubmitting] = useState(false)
 	const [answeredValue, setAnsweredValue] = useState(null)
 
 	if (!question) return null
 
+	const questionId = resolveQuestionId(question)
+	const firstSubQuestion = Array.isArray(question.questions) && question.questions[0]
+	const effectiveQuestion = firstSubQuestion || question
+
 	const {
-		id: questionId,
 		title = "Action Approval Required",
 		prompt = "",
 		message = "",
+		question: questionText = "",
+		text = "",
 		details = "",
-		options = ["Approve", "Reject"],
 		default_action: defaultAction,
-	} = question
+	} = effectiveQuestion
 
-	const displayText = prompt || message || details || "Please confirm or provide guidance."
+	const rawOptions = effectiveQuestion.options ?? question.options
+	const options =
+		Array.isArray(rawOptions) && rawOptions.length > 0 ? rawOptions : ["Continue", "Cancel"]
+
+	const displayText =
+		prompt ||
+		message ||
+		questionText ||
+		text ||
+		details ||
+		"The agent is waiting for your response or instructions to continue."
 
 	async function handleSelectOption(option) {
 		if (submitting || answeredValue) return
@@ -35,7 +43,13 @@ export default function QuestionApprovalCard({
 			await onAnswer({
 				question_id: questionId,
 				answer: option,
-				approved: option.toLowerCase().includes("approve") || option.toLowerCase().includes("yes"),
+				answers: { [questionId]: option },
+				[questionId]: option,
+				approved:
+					option.toLowerCase().includes("approve") ||
+					option.toLowerCase().includes("yes") ||
+					option.toLowerCase().includes("proceed") ||
+					option.toLowerCase().includes("confirm"),
 				comment: customAnswer.trim() || undefined,
 			})
 		} catch (err) {
@@ -48,16 +62,13 @@ export default function QuestionApprovalCard({
 
 	async function handleCustomSubmit(e) {
 		e.preventDefault()
-		if (!customAnswer.trim() || submitting || answeredValue) return
+		const trimmed = customAnswer.trim()
+		if (!trimmed || submitting || answeredValue) return
 		setSubmitting(true)
-		setAnsweredValue(customAnswer.trim())
+		setAnsweredValue(trimmed)
 		try {
-			await onAnswer({
-				question_id: questionId,
-				answer: customAnswer.trim(),
-				approved: true,
-				comment: customAnswer.trim(),
-			})
+			const payload = formatQuestionAnswer(trimmed, question)
+			await onAnswer(payload)
 		} catch (err) {
 			console.error("Failed to submit custom answer:", err)
 			setAnsweredValue(null)
@@ -87,21 +98,35 @@ export default function QuestionApprovalCard({
 
 			{answeredValue ? (
 				<div className="approval-card-answered">
-					<VSCodePassIcon size={16} className="approval-answered-check text-emerald-400 inline mr-1" />
-					<span>Submitted: <strong>{answeredValue}</strong></span>
+					<VSCodePassIcon
+						size={16}
+						className="approval-answered-check text-emerald-400 inline mr-1"
+					/>
+					<span>
+						Submitted: <strong>{answeredValue}</strong>
+					</span>
 				</div>
 			) : (
 				<div className="approval-card-actions">
 					<div className="approval-options-row">
 						{options.map((opt, i) => {
-							const isDanger =
-								opt.toLowerCase().includes("reject") ||
-								opt.toLowerCase().includes("deny") ||
-								opt.toLowerCase().includes("cancel")
-							const isPrimary =
-								opt.toLowerCase().includes("approve") ||
-								opt.toLowerCase().includes("yes") ||
+							const optLower = opt.toLowerCase()
+							const isRecommended =
+								optLower.includes("recommended") ||
+								optLower.includes("(recommended)") ||
+								optLower.includes("suggested") ||
 								opt === defaultAction
+							const isPrimary =
+								isRecommended ||
+								optLower.includes("approve") ||
+								optLower.includes("yes") ||
+								optLower.includes("confirm")
+							const isDanger =
+								!isRecommended &&
+								(optLower.includes("reject") ||
+									optLower.includes("deny") ||
+									optLower.includes("cancel") ||
+									optLower.includes("delete"))
 
 							return (
 								<button
@@ -109,10 +134,10 @@ export default function QuestionApprovalCard({
 									type="button"
 									disabled={submitting}
 									className={`approval-btn ${
-										isDanger
-											? "approval-btn--danger"
-											: isPrimary
-												? "approval-btn--primary"
+										isPrimary
+											? "approval-btn--primary"
+											: isDanger
+												? "approval-btn--danger"
 												: "approval-btn--secondary"
 									}`}
 									onClick={() => handleSelectOption(opt)}
@@ -127,10 +152,19 @@ export default function QuestionApprovalCard({
 						<input
 							type="text"
 							className="approval-custom-input"
-							placeholder="Or type a custom reply / instructions..."
+							placeholder={
+								/keyed by/i.test(displayText)
+									? "e.g. next: baselining, creds: in shell"
+									: question.isGenericWaiting
+										? "Type your instructions or response..."
+										: "Or type a custom reply / instructions..."
+							}
 							value={customAnswer}
 							onChange={(e) => setCustomAnswer(e.target.value)}
 							disabled={submitting}
+							autoCapitalize="none"
+							autoCorrect="off"
+							spellCheck="false"
 						/>
 						<button
 							type="submit"

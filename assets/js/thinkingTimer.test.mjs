@@ -1,4 +1,4 @@
-import test from "node:test"
+import { test, expect } from "vitest"
 import assert from "node:assert/strict"
 
 import { startThinkingTimer, stopThinkingTimer } from "./thinkingTimer.mjs"

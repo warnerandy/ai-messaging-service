@@ -35,7 +35,7 @@ export default defineConfig(({ command }) => {
       globals: true,
       setupFiles: path.resolve(__dirname, "js/test/setup.js"),
       clearMocks: true,
-      restoreMocks: true,
+      restoreMocks: false,
     },
     resolve: {
       alias: {

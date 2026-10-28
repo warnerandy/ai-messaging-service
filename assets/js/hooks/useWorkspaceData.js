@@ -10,7 +10,13 @@ import {
 	pingApp,
 	refreshBotModels,
 } from "../lib/data.js"
-import { registerServiceWorker, requestNotificationPermission } from "../lib/notifications.js"
+import {
+	registerServiceWorker,
+	requestNotificationPermission,
+	initNotificationListeners,
+	notifySessionCompleted,
+	notifyWaitingForInput,
+} from "../lib/notifications.js"
 
 const STORAGE_KEY = "messaging.user.token"
 const USER_EMAIL_STORAGE_KEY = "messaging.user.email"
@@ -36,10 +42,20 @@ export function useWorkspaceData() {
 	const [loading, setLoading] = useState(false)
 	const [appConnection, setAppConnection] = useState("checking")
 	const botsRef = useRef(bots)
+	const conversationsRef = useRef(conversations)
+	const selectedConvIdRef = useRef(selectedConversationId)
 
 	useEffect(() => {
 		botsRef.current = bots
 	}, [bots])
+
+	useEffect(() => {
+		conversationsRef.current = conversations
+	}, [conversations])
+
+	useEffect(() => {
+		selectedConvIdRef.current = selectedConversationId
+	}, [selectedConversationId])
 
 	const handleLogout = useCallback(() => {
 		setToken(null)
@@ -106,7 +122,10 @@ export function useWorkspaceData() {
 			try {
 				const res = await listConversations(token)
 				const all = res.conversations || []
-				const filtered = all.filter((conversation) => conversation.bot_token_id === botId)
+				const filtered = all.filter(
+					(conversation) =>
+						conversation.bot_token_id === botId && conversation.status !== "archived",
+				)
 				setConversations(filtered)
 				return filtered
 			} catch {
@@ -162,18 +181,35 @@ export function useWorkspaceData() {
 		[loadConversations, loadModels, selectConversation, token],
 	)
 
-	const handleCreateConversation = useCallback(async () => {
-		if (!selectedBotId || !token) return
+	const handleCreateConversation = useCallback(
+		async (customOpts = {}) => {
+			if (!selectedBotId || !token) return
 
-		try {
-			const bot = botsRef.current.find((entry) => entry.id === selectedBotId)
-			const created = await createConversation(token, selectedBotId, bot?.name)
-			setConversations((prev) => [created, ...prev])
-			selectConversation(created.id)
-		} catch (err) {
-			console.error("Create conversation failed:", err)
-		}
-	}, [selectedBotId, selectConversation, token])
+			const opts =
+				customOpts &&
+				!customOpts.nativeEvent &&
+				!customOpts.preventDefault &&
+				typeof customOpts === "object"
+					? customOpts
+					: {}
+
+			try {
+				const bot = botsRef.current.find((entry) => entry.id === selectedBotId)
+				const title = opts.title || (opts.projectName ? `${opts.projectName} Session` : bot?.name)
+				const metadata = opts.metadata || {}
+				const created =
+					metadata && Object.keys(metadata).length > 0
+						? await createConversation(token, selectedBotId, title, metadata)
+						: await createConversation(token, selectedBotId, title)
+				setConversations((prev) => [created, ...prev])
+				selectConversation(created.id)
+				return created
+			} catch (err) {
+				console.error("Create conversation failed:", err)
+			}
+		},
+		[selectedBotId, selectConversation, token],
+	)
 
 	const handleRefreshModels = useCallback(async () => {
 		if (!selectedBotId || !token) return
@@ -277,22 +313,26 @@ export function useWorkspaceData() {
 				setConversations((prev) =>
 					prev.map((c) => (c.id === convId ? { ...c, status: "archived" } : c)),
 				)
-				if (selectedConversationId === convId) {
-					const remaining = conversations.filter(
-						(c) => c.id !== convId && c.status !== "archived" && c.status !== "done" && c.status !== "completed",
-					)
-					if (remaining.length > 0) {
-						selectConversation(remaining[0].id)
-					} else {
-						selectConversation(null)
-					}
-				}
+				// Do not automatically switch context to another session.
+				// Keep current session in view so user sees it is archived and can close it if desired.
 			} catch (err) {
 				console.error("Failed to archive conversation:", err)
 			}
 		},
-		[conversations, selectConversation, selectedConversationId, token],
+		[token],
 	)
+
+	// Listen for native notification clicks to auto-select conversation
+	useEffect(() => {
+		const unsubscribe = initNotificationListeners(({ conversationId, botId }) => {
+			if (botId && botId !== selectedBotId) {
+				selectBot(botId, null, conversationId)
+			} else if (conversationId) {
+				selectConversation(Number(conversationId))
+			}
+		})
+		return unsubscribe
+	}, [selectedBotId, selectBot, selectConversation])
 
 	// Real-time synchronization of session states, updates, and creation for the selected bot
 	useEffect(() => {
@@ -306,6 +346,38 @@ export function useWorkspaceData() {
 
 		channel.on("session_status_changed", (payload) => {
 			if (!payload?.conversation_id || cancelled) return
+			const convId = payload.conversation_id
+			const currentConvs = conversationsRef.current || []
+			const existing = currentConvs.find((c) => c.id === convId)
+			const prevStatus = existing?.status
+			const newStatus = payload.status
+
+			if (
+				(prevStatus === "running" || prevStatus === "thinking") &&
+				(newStatus === "idle" || newStatus === "completed" || newStatus === "done")
+			) {
+				const bot = botsRef.current?.find((b) => b.id === selectedBotId)
+				notifySessionCompleted({
+					botName: bot?.name,
+					conversationTitle: existing?.title,
+					conversationId: convId,
+					activeConversationId: selectedConvIdRef.current,
+					metadata: payload.metadata,
+				})
+			}
+
+			if (newStatus === "waiting_for_input" || newStatus === "needs_input") {
+				const bot = botsRef.current?.find((b) => b.id === selectedBotId)
+				notifyWaitingForInput({
+					botName: bot?.name,
+					conversationTitle: existing?.title,
+					conversationId: convId,
+					activeConversationId: selectedConvIdRef.current,
+					question: payload.metadata?.question,
+					metadata: payload.metadata,
+				})
+			}
+
 			setConversations((prev) =>
 				prev.map((c) => {
 					if (c.id === payload.conversation_id) {
@@ -327,7 +399,14 @@ export function useWorkspaceData() {
 			setConversations((prev) => {
 				const map = new Map(prev.map((c) => [c.id, c]))
 				for (const s of payload.sessions) {
+					if (s.status === "archived") {
+						map.delete(s.id)
+						continue
+					}
 					const existing = map.get(s.id)
+					if (existing?.status === "archived") {
+						continue
+					}
 					map.set(s.id, {
 						...(existing || {}),
 						...s,
@@ -372,7 +451,14 @@ export function useWorkspaceData() {
 					setConversations((prev) => {
 						const map = new Map(prev.map((c) => [c.id, c]))
 						for (const s of resp.sessions) {
+							if (s.status === "archived") {
+								map.delete(s.id)
+								continue
+							}
 							const existing = map.get(s.id)
+							if (existing?.status === "archived") {
+								continue
+							}
 							map.set(s.id, {
 								...(existing || {}),
 								...s,
@@ -424,19 +510,24 @@ export function useWorkspaceData() {
 		}
 	}, [token])
 
-	// Re-fetch bot list when app regains visibility (e.g. switching back to PWA)
+	// Re-fetch bot list and conversations when app regains visibility or focus (e.g. switching back to PWA)
 	useEffect(() => {
 		if (!token) return
 
 		function handleVisibilityChange() {
 			if (document.visibilityState === "visible") {
 				loadBots()
+				loadConversations()
 			}
 		}
 
 		document.addEventListener("visibilitychange", handleVisibilityChange)
-		return () => document.removeEventListener("visibilitychange", handleVisibilityChange)
-	}, [loadBots, token])
+		window.addEventListener("focus", handleVisibilityChange)
+		return () => {
+			document.removeEventListener("visibilitychange", handleVisibilityChange)
+			window.removeEventListener("focus", handleVisibilityChange)
+		}
+	}, [loadBots, loadConversations, token])
 
 	useEffect(() => {
 		if (!token) return

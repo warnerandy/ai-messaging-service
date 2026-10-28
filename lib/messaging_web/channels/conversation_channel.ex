@@ -12,6 +12,20 @@ defmodule MessagingWeb.ConversationChannel do
       topic = "conversation:#{conversation.id}"
       Phoenix.PubSub.subscribe(Messaging.PubSub, topic)
 
+      if conversation.bot_token_id do
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "bot:#{conversation.bot_token_id}",
+          {:request_session_sync,
+           %{
+             "conversation_id" => conversation.id,
+             "external_session_id" => conversation.external_session_id,
+             "metadata" => conversation.metadata,
+             "requested_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+           }}
+        )
+      end
+
       {:ok,
        %{
          conversation_id: conversation.id,
@@ -99,6 +113,7 @@ defmodule MessagingWeb.ConversationChannel do
       forward_payload =
         payload
         |> Map.put("conversation_id", conv_id)
+        |> normalize_answer_payload()
 
       Phoenix.PubSub.broadcast(
         Messaging.PubSub,
@@ -135,27 +150,57 @@ defmodule MessagingWeb.ConversationChannel do
   @impl true
   def handle_in("queue_prompt", payload, socket) do
     conv_id = socket.assigns.conversation_id
-
-    case Chat.queue_prompt(conv_id, payload) do
-      {:ok, item, queue} ->
-        {:reply, {:ok, %{prompt: item, queue: queue}}, socket}
-
-      {:error, reason} ->
-        {:reply, {:error, %{reason: inspect(reason)}}, socket}
-    end
+    {:ok, item, queue} = Chat.queue_prompt(conv_id, payload)
+    {:reply, {:ok, %{prompt: item, queue: queue}}, socket}
   end
 
   # User removes a prompt from the queue
   @impl true
   def handle_in("remove_queued_prompt", %{"prompt_id" => prompt_id}, socket) do
     conv_id = socket.assigns.conversation_id
+    {:ok, queue} = Chat.remove_queued_prompt(conv_id, prompt_id)
+    {:reply, {:ok, %{queue: queue}}, socket}
+  end
 
-    case Chat.remove_queued_prompt(conv_id, prompt_id) do
-      {:ok, queue} ->
-        {:reply, {:ok, %{queue: queue}}, socket}
+  # User requests a sync of session messages (from both DB and bot)
+  @impl true
+  def handle_in("sync_session", _payload, socket) do
+    bot_token_id = socket.assigns[:bot_token_id]
+    conv_id = socket.assigns[:conversation_id]
 
-      {:error, reason} ->
-        {:reply, {:error, %{reason: inspect(reason)}}, socket}
+    if bot_token_id && conv_id do
+      conversation = Chat.get_conversation!(conv_id, [])
+
+      Phoenix.PubSub.broadcast(
+        Messaging.PubSub,
+        "bot:#{bot_token_id}",
+        {:request_session_sync,
+         %{
+           "conversation_id" => conv_id,
+           "external_session_id" => conversation.external_session_id,
+           "metadata" => conversation.metadata,
+           "requested_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+         }}
+      )
+    end
+
+    {:reply, :ok, socket}
+  end
+
+  defp normalize_answer_payload(%{"answer" => answer} = payload) when is_binary(answer) do
+    case Jason.decode(answer) do
+      {:ok, decoded} when is_map(decoded) or is_list(decoded) ->
+        qid = payload["question_id"] || "0"
+
+        payload
+        |> Map.put("answer", decoded)
+        |> Map.put_new("answers", if(is_map(decoded), do: decoded, else: %{qid => decoded}))
+        |> Map.put_new(qid, decoded)
+
+      _ ->
+        payload
     end
   end
+
+  defp normalize_answer_payload(payload), do: payload
 end

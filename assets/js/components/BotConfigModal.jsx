@@ -2,12 +2,7 @@ import React, { useState } from "react"
 import { regenerateBotToken } from "../lib/data.js"
 import { VSCodeGearIcon, VSCodeLoadingIcon } from "./VSCodeWorkingIcons.jsx"
 
-export default function BotConfigModal({
-	token,
-	bot,
-	onClose,
-	onBotUpdated,
-}) {
+export default function BotConfigModal({ token, bot, onClose, onBotUpdated }) {
 	const [regenerating, setRegenerating] = useState(false)
 	const [newKey, setNewKey] = useState(null)
 	const [copiedKey, setCopiedKey] = useState(false)
@@ -52,7 +47,11 @@ export default function BotConfigModal({
 			<div className="modal-card modal-card--config" onClick={(e) => e.stopPropagation()}>
 				<div className="modal-header">
 					<div className="modal-title-row">
-						<VSCodeGearIcon size={18} spin={false} className="modal-gear-icon inline mr-2 text-slate-300" />
+						<VSCodeGearIcon
+							size={18}
+							spin={false}
+							className="modal-gear-icon inline mr-2 text-slate-300"
+						/>
 						<h3 className="modal-title">Bot Configuration</h3>
 					</div>
 					<button type="button" className="modal-close-btn" onClick={onClose} aria-label="Close">
@@ -123,7 +122,8 @@ export default function BotConfigModal({
 					<div className="config-section config-section--danger">
 						<label className="config-section-title">Bot Secret Token</label>
 						<p className="config-section-desc">
-							Regenerating the token immediately revokes the existing key. Any active bridge or agent using the previous key will need to reconnect with the new key.
+							Regenerating the token immediately revokes the existing key. Any active bridge or
+							agent using the previous key will need to reconnect with the new key.
 						</p>
 
 						{newKey ? (
@@ -132,7 +132,12 @@ export default function BotConfigModal({
 									<span>🔑 New Token Generated! Save it now; it won't be shown again.</span>
 								</div>
 								<div className="copy-field">
-									<input type="text" readOnly value={newKey} className="copy-input copy-input--token" />
+									<input
+										type="text"
+										readOnly
+										value={newKey}
+										className="copy-input copy-input--token"
+									/>
 									<button
 										type="button"
 										className="copy-btn"

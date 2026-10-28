@@ -1,4 +1,4 @@
-const CACHE_NAME = "messaging-pwa-v10";
+const CACHE_NAME = "messaging-pwa-v20";
 const APP_SHELL = [
   "/",
   "/manifest.webmanifest",
@@ -42,6 +42,22 @@ self.addEventListener("fetch", event => {
     return;
   }
 
+  // For HTML navigation requests, use Network-First to immediately fetch latest app shell
+  if (event.request.mode === "navigate" || event.request.destination === "document") {
+    event.respondWith(
+      fetch(event.request)
+        .then(response => {
+          if (response.status === 200) {
+            const cloned = response.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(event.request, cloned));
+          }
+          return response;
+        })
+        .catch(() => caches.match(event.request).then(cached => cached || caches.match("/")))
+    );
+    return;
+  }
+
   event.respondWith(
     caches.match(event.request).then(cached => {
       if (cached) return cached;
@@ -73,6 +89,28 @@ self.addEventListener("push", event => {
 
   event.waitUntil(
     self.registration.showNotification(notificationData.title || "New message", options)
+  );
+});
+
+self.addEventListener("notificationclick", event => {
+  event.notification.close();
+  event.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then(clientList => {
+      for (const client of clientList) {
+        if ("focus" in client) {
+          if (event.notification.data) {
+            client.postMessage({
+              type: "NOTIFICATION_CLICK",
+              data: event.notification.data
+            });
+          }
+          return client.focus();
+        }
+      }
+      if (clients.openWindow) {
+        return clients.openWindow("/");
+      }
+    })
   );
 });
 

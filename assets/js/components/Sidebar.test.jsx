@@ -1,7 +1,7 @@
 import React from "react"
-import { render, screen, waitFor } from "@testing-library/react"
+import { render, screen, waitFor, fireEvent } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import Sidebar, {
 	formatCompactRelativeTime,
 	getSessionSubtitle,
@@ -9,6 +9,14 @@ import Sidebar, {
 	isSessionDone,
 	isSessionOlderThanDays,
 	sortConversations,
+	groupSessionsByProject,
+	formatSessionTitle,
+	getConversationUpdatedTimestamp,
+	isSessionNested,
+	getParentSessionId,
+	findParentSession,
+	orderSessionsHierarchically,
+	getSessionDisplayTooltip,
 } from "./Sidebar.jsx"
 import { createBot } from "../lib/data.js"
 
@@ -210,7 +218,12 @@ describe("Sidebar", () => {
 			const sessions = [
 				{ id: 1, title: "Idle Old", status: "idle", updated_at: "2026-10-07T08:00:00Z" },
 				{ id: 2, title: "Running Task", status: "running", updated_at: "2026-10-07T09:00:00Z" },
-				{ id: 3, title: "Needs Input", status: "waiting_for_input", updated_at: "2026-10-07T07:00:00Z" },
+				{
+					id: 3,
+					title: "Needs Input",
+					status: "waiting_for_input",
+					updated_at: "2026-10-07T07:00:00Z",
+				},
 				{ id: 4, title: "Idle Recent", status: "idle", updated_at: "2026-10-07T10:00:00Z" },
 				{ id: 5, title: "Thinking", status: "thinking", updated_at: "2026-10-07T09:30:00Z" },
 			]
@@ -222,7 +235,13 @@ describe("Sidebar", () => {
 		it("sorts unread sessions above idle sessions", () => {
 			const sessions = [
 				{ id: 1, title: "Idle", status: "idle", updated_at: "2026-10-07T10:00:00Z" },
-				{ id: 2, title: "Unread", status: "idle", unread: true, updated_at: "2026-10-07T08:00:00Z" },
+				{
+					id: 2,
+					title: "Unread",
+					status: "idle",
+					unread: true,
+					updated_at: "2026-10-07T08:00:00Z",
+				},
 			]
 
 			const sorted = sortConversations(sessions, true)
@@ -251,11 +270,32 @@ describe("Sidebar", () => {
 	})
 
 	it("renders AHP sessions sorted with active above idle and by last used", () => {
+		const now = Date.now()
 		const sessions = [
-			{ id: "s-1", title: "Idle Earlier", status: "idle", updated_at: "2026-10-07T08:00:00Z" },
-			{ id: "s-2", title: "Running Job", status: "running", updated_at: "2026-10-07T09:00:00Z" },
-			{ id: "s-3", title: "Needs Action", status: "waiting_for_input", updated_at: "2026-10-07T07:00:00Z" },
-			{ id: "s-4", title: "Idle Latest", status: "idle", updated_at: "2026-10-07T11:00:00Z" },
+			{
+				id: "s-1",
+				title: "Idle Earlier",
+				status: "idle",
+				updated_at: new Date(now - 3 * 3600 * 1000).toISOString(),
+			},
+			{
+				id: "s-2",
+				title: "Running Job",
+				status: "running",
+				updated_at: new Date(now - 2 * 3600 * 1000).toISOString(),
+			},
+			{
+				id: "s-3",
+				title: "Needs Action",
+				status: "waiting_for_input",
+				updated_at: new Date(now - 4 * 3600 * 1000).toISOString(),
+			},
+			{
+				id: "s-4",
+				title: "Idle Latest",
+				status: "idle",
+				updated_at: new Date(now - 1 * 3600 * 1000).toISOString(),
+			},
 		]
 
 		render(
@@ -405,9 +445,24 @@ describe("Sidebar", () => {
 	it("renders compact relative timestamp and hides done chats by default", async () => {
 		const user = userEvent.setup()
 		const sessions = [
-			{ id: 1, title: "Active Work", status: "running", updated_at: new Date(Date.now() - 30 * 60 * 1000).toISOString() },
-			{ id: 2, title: "Recent Idle", status: "idle", updated_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() },
-			{ id: 3, title: "Done Task", status: "completed", updated_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString() },
+			{
+				id: 1,
+				title: "Active Work",
+				status: "running",
+				updated_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+			},
+			{
+				id: 2,
+				title: "Recent Idle",
+				status: "idle",
+				updated_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+			},
+			{
+				id: 3,
+				title: "Done Task",
+				status: "completed",
+				updated_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+			},
 		]
 
 		render(
@@ -441,6 +496,43 @@ describe("Sidebar", () => {
 
 		// Now "Done Task" should be visible
 		expect(screen.getByText("Done Task")).toBeInTheDocument()
+	})
+
+	it("never shows archived sessions in the sidebar list, even when completed sessions are shown", async () => {
+		const user = userEvent.setup()
+		const sessions = [
+			{ id: 1, title: "Active Session", status: "idle" },
+			{ id: 2, title: "Done Session", status: "completed" },
+			{ id: 3, title: "Archived Session", status: "archived" },
+		]
+
+		render(
+			<Sidebar
+				token="token-1"
+				bots={[{ id: "bot-1", name: "Worker", bot_type: "ahp", is_connected: true }]}
+				selectedBotId="bot-1"
+				conversations={sessions}
+				selectedConversationId={1}
+				onSelectBot={vi.fn()}
+				onBotsChange={vi.fn()}
+				onDeleteBot={vi.fn()}
+				userEmail="user@example.com"
+				onLogout={vi.fn()}
+				isOpen
+				appConnection="online"
+			/>,
+		)
+
+		expect(screen.getByText("Active Session")).toBeInTheDocument()
+		expect(screen.queryByText("Archived Session")).not.toBeInTheDocument()
+
+		// Toggle to show completed sessions
+		const toggleBtn = screen.getByLabelText(/Show hidden & completed chats/i)
+		await user.click(toggleBtn)
+
+		// Done Session becomes visible, but Archived Session stays hidden
+		expect(screen.getByText("Done Session")).toBeInTheDocument()
+		expect(screen.queryByText("Archived Session")).not.toBeInTheDocument()
 	})
 
 	it("automatically hides idle sessions older than 5 days by default", async () => {
@@ -494,7 +586,7 @@ describe("Sidebar", () => {
 			},
 		]
 
-		render(
+		const { container } = render(
 			<Sidebar
 				token="token-1"
 				bots={[{ id: "bot-1", name: "Worker", bot_type: "ahp", is_connected: true }]}
@@ -511,13 +603,19 @@ describe("Sidebar", () => {
 			/>,
 		)
 
-		expect(screen.getByText("botamus-prime-copilot")).toBeInTheDocument()
+		const pill = container.querySelector(".conv-project-pill")
+		expect(pill).toBeInTheDocument()
+		expect(pill).toHaveTextContent("botamus-prime-copilot")
 	})
 
 	describe("getSessionSubtitle", () => {
 		it("returns step or tool text for running sessions", () => {
-			expect(getSessionSubtitle({ metadata: { step: "Compiling..." } }, "running", false)).toBe("Compiling...")
-			expect(getSessionSubtitle({ metadata: { tool: "view_file" } }, "running", false)).toBe("Running view_file...")
+			expect(getSessionSubtitle({ metadata: { step: "Compiling..." } }, "running", false)).toBe(
+				"Compiling...",
+			)
+			expect(getSessionSubtitle({ metadata: { tool: "view_file" } }, "running", false)).toBe(
+				"Running view_file...",
+			)
 		})
 
 		it("returns question title or step for waiting_for_input sessions", () => {
@@ -538,9 +636,13 @@ describe("Sidebar", () => {
 		})
 
 		it("returns step text for thinking sessions", () => {
-			expect(getSessionSubtitle({ metadata: { step: "Evaluating model response..." } }, "thinking", false)).toBe(
-				"Evaluating model response...",
-			)
+			expect(
+				getSessionSubtitle(
+					{ metadata: { step: "Evaluating model response..." } },
+					"thinking",
+					false,
+				),
+			).toBe("Evaluating model response...")
 		})
 
 		it("returns Completed for done sessions", () => {
@@ -548,6 +650,36 @@ describe("Sidebar", () => {
 			expect(getSessionSubtitle({ metadata: { step: "Finished all tasks" } }, "idle", true)).toBe(
 				"Finished all tasks",
 			)
+		})
+
+		it("does not return raw UUID or internal AHP URIs as subtitles", () => {
+			expect(
+				getSessionSubtitle(
+					{ external_session_id: "4a232034-1e05-4a0f-9fa3-31f04a34f574" },
+					"idle",
+					false,
+					true,
+				),
+			).toBe("")
+			expect(
+				getSessionSubtitle(
+					{ external_session_id: "ahp:copilotUri/session-123" },
+					"idle",
+					false,
+					true,
+				),
+			).toBe("")
+			expect(
+				getSessionSubtitle(
+					{ metadata: { step: "4a232034-1e05-4a0f-9fa3-31f04a34f574" } },
+					"running",
+					false,
+					true,
+				),
+			).toBe("")
+			expect(
+				getSessionSubtitle({ external_session_id: "friendly-session-id" }, "idle", false, true),
+			).toBe("friendly-session-id")
 		})
 	})
 
@@ -589,7 +721,9 @@ describe("Sidebar", () => {
 		// Row 1 contains title and timestamp
 		const rowTop = container.querySelector(".conv-row--top")
 		expect(rowTop).toBeInTheDocument()
-		expect(rowTop.querySelector(".conv-title")).toHaveTextContent("Database Migration for Bot Token Index")
+		expect(rowTop.querySelector(".conv-title")).toHaveTextContent(
+			"Database Migration for Bot Token Index",
+		)
 		expect(rowTop.querySelector(".conv-time")).toHaveTextContent("50m")
 
 		// Row 2 contains project pill, action icon, and step preview text
@@ -600,5 +734,540 @@ describe("Sidebar", () => {
 			"Awaiting human approval before running database migration",
 		)
 		expect(screen.getByLabelText("Needs input")).toBeInTheDocument()
+	})
+
+	it("renders session alarm indicator when session has alarm armed", () => {
+		localStorage.setItem("messaging.session_alarms", JSON.stringify({ "conv-alarm-1": true }))
+
+		const { container } = render(
+			<Sidebar
+				token="token"
+				bots={[{ id: "bot-1", name: "AHP Agent", bot_type: "ahp" }]}
+				selectedBotId="bot-1"
+				conversations={[
+					{
+						id: "conv-alarm-1",
+						title: "Alarmed Session",
+						status: "running",
+					},
+				]}
+				selectedConversationId="conv-alarm-1"
+				onSelectConversation={vi.fn()}
+				onCreateConversation={vi.fn()}
+				onSelectBot={vi.fn()}
+				onBotsChange={vi.fn()}
+				onDeleteBot={vi.fn()}
+				userEmail="user@example.com"
+				onLogout={vi.fn()}
+				isOpen
+				appConnection="online"
+			/>,
+		)
+
+		const alarmIndicator = container.querySelector(".session-alarm-indicator")
+		expect(alarmIndicator).toBeInTheDocument()
+		expect(alarmIndicator).toHaveAttribute("aria-label", "Alarm active")
+	})
+
+	describe("groupSessionsByProject and project groups", () => {
+		beforeEach(() => {
+			localStorage.setItem("messaging.group_by_project", "true")
+		})
+
+		afterEach(() => {
+			localStorage.clear()
+		})
+
+		const sampleConversations = [
+			{
+				id: "s-1",
+				title: "Deploy Production Kubernetes",
+				status: "running",
+				updated_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+				metadata: { project: { name: "infra-k8s" } },
+			},
+			{
+				id: "s-2",
+				title: "Fix Migration Lock",
+				status: "idle",
+				updated_at: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
+				metadata: { project: { name: "backend-api" } },
+			},
+			{
+				id: "s-3",
+				title: "Refactor Authentication",
+				status: "waiting_for_input",
+				updated_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+				metadata: { project: { name: "backend-api" } },
+			},
+			{
+				id: "s-4",
+				title: "General Question",
+				status: "idle",
+				updated_at: new Date(Date.now() - 40 * 60 * 1000).toISOString(),
+			},
+		]
+
+		it("groups sessions by project and marks active groups", () => {
+			const groups = groupSessionsByProject(sampleConversations)
+			expect(groups.length).toBe(3)
+
+			const infra = groups.find((g) => g.name === "infra-k8s")
+			expect(infra).toBeDefined()
+			expect(infra.hasActiveSession).toBe(true)
+			expect(infra.conversations.length).toBe(1)
+
+			const backend = groups.find((g) => g.name === "backend-api")
+			expect(backend).toBeDefined()
+			expect(backend.hasActiveSession).toBe(true)
+			expect(backend.conversations.length).toBe(2)
+
+			const noProj = groups.find((g) => g.name === "No Project")
+			expect(noProj).toBeDefined()
+			expect(noProj.hasActiveSession).toBe(false)
+			expect(noProj.conversations.length).toBe(1)
+		})
+
+		it("renders project headers and expands/collapses sessions on click", async () => {
+			const user = userEvent.setup()
+
+			render(
+				<Sidebar
+					token="token"
+					bots={[{ id: "bot-1", name: "AHP Agent", bot_type: "ahp" }]}
+					selectedBotId="bot-1"
+					conversations={sampleConversations}
+					selectedConversationId="s-1"
+					onSelectConversation={vi.fn()}
+					onCreateConversation={vi.fn()}
+					onSelectBot={vi.fn()}
+					onBotsChange={vi.fn()}
+					onDeleteBot={vi.fn()}
+					userEmail="user@example.com"
+					onLogout={vi.fn()}
+					isOpen
+					appConnection="online"
+				/>,
+			)
+
+			// Project group headers are visible
+			expect(screen.getByRole("button", { name: /Project: infra-k8s/i })).toBeInTheDocument()
+			expect(screen.getByRole("button", { name: /Project: backend-api/i })).toBeInTheDocument()
+			expect(screen.getByRole("button", { name: /Project: No Project/i })).toBeInTheDocument()
+
+			// Sessions are initially visible because groups start expanded
+			expect(screen.getByText("Fix Migration Lock")).toBeInTheDocument()
+			expect(screen.getByText("Refactor Authentication")).toBeInTheDocument()
+
+			// Click backend-api project header to collapse it
+			const backendHeader = screen.getByRole("button", {
+				name: /Project: backend-api, 2 items/i,
+			})
+			expect(backendHeader).toHaveAttribute("aria-expanded", "true")
+			await user.click(backendHeader)
+
+			// backend-api header is now collapsed and its items hidden
+			expect(backendHeader).toHaveAttribute("aria-expanded", "false")
+			expect(screen.queryByText("Fix Migration Lock")).not.toBeInTheDocument()
+			expect(screen.queryByText("Refactor Authentication")).not.toBeInTheDocument()
+
+			// infra-k8s is still expanded
+			expect(screen.getByText("Deploy Production Kubernetes")).toBeInTheDocument()
+
+			// Click backend-api again to expand it
+			await user.click(backendHeader)
+			expect(backendHeader).toHaveAttribute("aria-expanded", "true")
+			expect(screen.getByText("Fix Migration Lock")).toBeInTheDocument()
+		})
+
+		it("toggles between grouped view and flat list view", async () => {
+			const user = userEvent.setup()
+
+			render(
+				<Sidebar
+					token="token"
+					bots={[{ id: "bot-1", name: "AHP Agent", bot_type: "ahp" }]}
+					selectedBotId="bot-1"
+					conversations={sampleConversations}
+					selectedConversationId="s-1"
+					onSelectConversation={vi.fn()}
+					onCreateConversation={vi.fn()}
+					onSelectBot={vi.fn()}
+					onBotsChange={vi.fn()}
+					onDeleteBot={vi.fn()}
+					userEmail="user@example.com"
+					onLogout={vi.fn()}
+					isOpen
+					appConnection="online"
+				/>,
+			)
+
+			// Starts in grouped mode (folder icon has active state or title "View as flat list")
+			const toggleGroupBtn = screen.getByRole("button", { name: "View as flat list" })
+			expect(toggleGroupBtn).toBeInTheDocument()
+			expect(screen.getByRole("button", { name: /Project: infra-k8s/i })).toBeInTheDocument()
+
+			// Click to switch to flat list
+			await user.click(toggleGroupBtn)
+			expect(screen.queryByRole("button", { name: /Project: infra-k8s/i })).not.toBeInTheDocument()
+			expect(screen.getByRole("button", { name: "Group by project" })).toBeInTheDocument()
+
+			// All sessions are still present
+			expect(screen.getByText("Deploy Production Kubernetes")).toBeInTheDocument()
+			expect(screen.getByText("Fix Migration Lock")).toBeInTheDocument()
+		})
+
+		it("sorts sessions within each project group by active status and last updated timestamp descending", () => {
+			const now = Date.now()
+			const projectConversations = [
+				{
+					id: "conv-1",
+					title: "Older Idle Session",
+					status: "idle",
+					updated_at: new Date(now - 50 * 60 * 1000).toISOString(),
+					metadata: { project: { name: "my-service" } },
+				},
+				{
+					id: "conv-2",
+					title: "Newer Idle Session",
+					status: "idle",
+					updated_at: new Date(now - 10 * 60 * 1000).toISOString(),
+					metadata: { project: { name: "my-service" } },
+				},
+				{
+					id: "conv-3",
+					title: "Active Session Earlier",
+					status: "waiting_for_input",
+					updated_at: new Date(now - 30 * 60 * 1000).toISOString(),
+					metadata: { project: { name: "my-service" } },
+				},
+				{
+					id: "conv-4",
+					title: "Active Session Later",
+					status: "running",
+					updated_at: new Date(now - 20 * 60 * 1000).toISOString(),
+					metadata: { project: { name: "my-service" } },
+				},
+			]
+
+			const groups = groupSessionsByProject(projectConversations)
+			expect(groups.length).toBe(1)
+			const myService = groups[0]
+			expect(myService.name).toBe("my-service")
+
+			// Expect active sessions first (sorted by last updated: conv-4 then conv-3)
+			// Then idle sessions (sorted by last updated: conv-2 then conv-1)
+			const ids = myService.conversations.map((c) => c.id)
+			expect(ids).toEqual(["conv-4", "conv-3", "conv-2", "conv-1"])
+		})
+
+		it("does not treat raw UUIDs or workspace hashes as project names", () => {
+			const convs = [
+				{
+					id: "u-1",
+					title: "UUID Project Conv",
+					status: "idle",
+					metadata: {
+						project: { name: "4a232034-1e05-4a0f-9fa3-31f04a34f574" },
+					},
+				},
+			]
+			const groups = groupSessionsByProject(convs)
+			expect(groups.length).toBe(1)
+			expect(groups[0].name).toBe("No Project")
+		})
+
+		it("formats raw UUID titles into clean session labels in the sidebar", () => {
+			const convs = [
+				{
+					id: "u-1",
+					title: "4a232034-1e05-4a0f-9fa3-31f04a34f574",
+					status: "idle",
+				},
+				{
+					id: "u-2",
+					title: "Session 05e927fa-e4aa-49fa-9860-2ff586202ba3",
+					status: "idle",
+				},
+			]
+			render(
+				<Sidebar
+					token="token"
+					bots={[{ id: "bot-1", name: "AHP Agent", bot_type: "ahp" }]}
+					selectedBotId="bot-1"
+					conversations={convs}
+					selectedConversationId="u-1"
+					onSelectConversation={vi.fn()}
+					isOpen
+				/>,
+			)
+
+			expect(screen.getByText("Session (4a232034)")).toBeInTheDocument()
+			expect(screen.getByText("Session (05e927fa)")).toBeInTheDocument()
+			expect(screen.queryByText("4a232034-1e05-4a0f-9fa3-31f04a34f574")).not.toBeInTheDocument()
+		})
+
+		it("adds a new session directly to that project by clicking the plus button on the project header", async () => {
+			const user = userEvent.setup()
+			const onCreateConversation = vi.fn()
+
+			render(
+				<Sidebar
+					token="token"
+					bots={[{ id: "bot-1", name: "AHP Agent", bot_type: "ahp" }]}
+					selectedBotId="bot-1"
+					conversations={sampleConversations}
+					selectedConversationId="s-1"
+					onSelectConversation={vi.fn()}
+					onCreateConversation={onCreateConversation}
+					isOpen
+				/>,
+			)
+
+			// Find plus button for backend-api
+			const addBtn = screen.getByRole("button", { name: "New session in backend-api" })
+			expect(addBtn).toBeInTheDocument()
+
+			await user.click(addBtn)
+
+			expect(onCreateConversation).toHaveBeenCalledTimes(1)
+			expect(onCreateConversation).toHaveBeenCalledWith(
+				expect.objectContaining({
+					projectName: "backend-api",
+					title: "backend-api Session",
+					metadata: expect.objectContaining({
+						project: expect.objectContaining({ name: "backend-api" }),
+					}),
+				}),
+			)
+		})
+
+		it("auto-expands collapsed project group when plus button is clicked", async () => {
+			const user = userEvent.setup()
+			const onCreateConversation = vi.fn()
+
+			// Start with backend-api collapsed
+			localStorage.setItem("messaging.collapsed_projects", JSON.stringify(["backend-api"]))
+
+			render(
+				<Sidebar
+					token="token"
+					bots={[{ id: "bot-1", name: "AHP Agent", bot_type: "ahp" }]}
+					selectedBotId="bot-1"
+					conversations={sampleConversations}
+					selectedConversationId="s-1"
+					onSelectConversation={vi.fn()}
+					onCreateConversation={onCreateConversation}
+					isOpen
+				/>,
+			)
+
+			// Verify backend-api is collapsed initially
+			const backendHeader = screen.getByRole("button", {
+				name: /Project: backend-api, 2 items/i,
+			})
+			expect(backendHeader).toHaveAttribute("aria-expanded", "false")
+			expect(screen.queryByText("Fix Migration Lock")).not.toBeInTheDocument()
+
+			// Click plus button on backend-api
+			const addBtn = screen.getByRole("button", { name: "New session in backend-api" })
+			await user.click(addBtn)
+
+			// Verify onCreateConversation was called
+			expect(onCreateConversation).toHaveBeenCalledTimes(1)
+
+			// Verify project group is now expanded and items are visible
+			expect(backendHeader).toHaveAttribute("aria-expanded", "true")
+			expect(screen.getByText("Fix Migration Lock")).toBeInTheDocument()
+		})
+	})
+
+	it("dispatches sync-active-conversation event when clicking already active conversation", async () => {
+		const user = userEvent.setup()
+		const onSelectConversation = vi.fn()
+		const dispatchSpy = vi.spyOn(window, "dispatchEvent")
+
+		const sessions = [
+			{
+				id: 42,
+				title: "Active Coding Task",
+				status: "running",
+				bot_token_id: 1,
+			},
+		]
+
+		render(
+			<Sidebar
+				bots={[{ id: 1, name: "Bot 1", bot_type: "ahp" }]}
+				selectedBotId={1}
+				conversations={sessions}
+				selectedConversationId={42}
+				onSelectBot={vi.fn()}
+				onSelectConversation={onSelectConversation}
+				onCreateConversation={vi.fn()}
+				onBotsChange={vi.fn()}
+				onDeleteBot={vi.fn()}
+				onArchiveConversation={vi.fn()}
+				userEmail="user@example.com"
+				onLogout={vi.fn()}
+				isOpen={true}
+				appConnection="connected"
+			/>,
+		)
+
+		const sessionBtn = screen.getByText("Active Coding Task").closest(".conv-item")
+		expect(sessionBtn).toBeInTheDocument()
+
+		await user.click(sessionBtn)
+		expect(onSelectConversation).toHaveBeenCalledWith(42)
+
+		const dispatchedEvent = dispatchSpy.mock.calls.find(
+			(call) => call[0]?.type === "sync-active-conversation",
+		)
+		expect(dispatchedEvent).toBeDefined()
+		expect(dispatchedEvent[0].detail).toEqual({ conversationId: 42 })
+
+		dispatchSpy.mockRestore()
+	})
+
+	it("selects conversation on single click or tap", async () => {
+		const user = userEvent.setup()
+		const onSelectConversation = vi.fn()
+		const sessions = [{ id: 99, title: "Mobile Task", status: "idle", bot_token_id: 1 }]
+
+		render(
+			<Sidebar
+				bots={[{ id: 1, name: "Bot 1" }]}
+				selectedBotId={1}
+				conversations={sessions}
+				selectedConversationId={null}
+				onSelectBot={vi.fn()}
+				onSelectConversation={onSelectConversation}
+				onCreateConversation={vi.fn()}
+				onBotsChange={vi.fn()}
+				onDeleteBot={vi.fn()}
+				userEmail="user@example.com"
+				onLogout={vi.fn()}
+				isOpen={true}
+				appConnection="connected"
+			/>,
+		)
+
+		const item = screen.getByText("Mobile Task").closest(".conv-item")
+		await user.click(item)
+
+		expect(onSelectConversation).toHaveBeenCalledWith(99)
+	})
+
+	describe("Nested sessions in sidebar", () => {
+		it("renders nested indicator icon and '↳ Nested' pill for nested sub-sessions", () => {
+			const sessions = [
+				{
+					id: 101,
+					title: "Main Orchestrator Task",
+					status: "running",
+					external_session_id: "parent-main",
+					bot_token_id: "ahp-1",
+				},
+				{
+					id: 102,
+					title: "Sub-task: Compiling Code",
+					status: "running",
+					external_session_id: "child-compile",
+					parent_session_id: "parent-main",
+					bot_token_id: "ahp-1",
+				},
+			]
+
+			render(
+				<Sidebar
+					bots={[{ id: "ahp-1", name: "AHP Agent", bot_type: "ahp" }]}
+					selectedBotId="ahp-1"
+					conversations={sessions}
+					selectedConversationId={null}
+					onSelectBot={vi.fn()}
+					onSelectConversation={vi.fn()}
+					onCreateConversation={vi.fn()}
+					onBotsChange={vi.fn()}
+					onDeleteBot={vi.fn()}
+					userEmail="user@example.com"
+					onLogout={vi.fn()}
+					isOpen={true}
+					appConnection="connected"
+				/>,
+			)
+
+			// Sub-task should show the Nested pill
+			const nestedPill = screen.getByTestId("nested-pill")
+			expect(nestedPill).toBeInTheDocument()
+			expect(nestedPill).toHaveTextContent("↳ Nested")
+			expect(nestedPill).toHaveAttribute("title", expect.stringContaining("Main Orchestrator Task"))
+
+			// Sub-task should show the nested branch icon
+			const nestedIcon = screen.getByTestId("nested-icon")
+			expect(nestedIcon).toBeInTheDocument()
+
+			// Check container and button classes and attributes
+			const childButton = screen.getByText("Sub-task: Compiling Code").closest(".conv-item")
+			expect(childButton).toHaveClass("conv-item--nested")
+			expect(childButton).toHaveAttribute("data-nested", "true")
+			expect(childButton).toHaveAttribute("data-parent-id", "parent-main")
+
+			const childWrapper = childButton.closest(".conv-item-wrapper")
+			expect(childWrapper).toHaveClass("conv-item-wrapper--nested")
+
+			// Parent should NOT have nested class or pill
+			const parentButton = screen.getByText("Main Orchestrator Task").closest(".conv-item")
+			expect(parentButton).not.toHaveClass("conv-item--nested")
+			expect(parentButton).not.toHaveAttribute("data-nested")
+		})
+
+		it("places nested sessions directly under their parent session in project groups", () => {
+			const parentA = {
+				id: 1,
+				external_session_id: "p-a",
+				title: "Parent Alpha",
+				status: "idle",
+				metadata: { project: { name: "my-proj" } },
+			}
+			const parentB = {
+				id: 2,
+				external_session_id: "p-b",
+				title: "Parent Beta",
+				status: "idle",
+				metadata: { project: { name: "my-proj" } },
+			}
+			const childA = {
+				id: 3,
+				external_session_id: "c-a",
+				parent_session_id: "p-a",
+				title: "Child of Alpha",
+				status: "idle",
+				metadata: { project: { name: "my-proj" } },
+			}
+
+			const groups = groupSessionsByProject([parentB, childA, parentA])
+			expect(groups.length).toBe(1)
+			const groupConvs = groups[0].conversations
+
+			// Child of Alpha should appear right after Parent Alpha
+			const pAIdx = groupConvs.findIndex((c) => c.id === 1)
+			const cAIdx = groupConvs.findIndex((c) => c.id === 3)
+			expect(cAIdx).toBe(pAIdx + 1)
+		})
+
+		it("formats tooltip with parent session information for nested sessions", () => {
+			const parent = { id: 1, external_session_id: "root-1", title: "Root Architecture" }
+			const child = {
+				id: 2,
+				external_session_id: "sub-1",
+				parent_session_id: "root-1",
+				title: "Child Sub",
+				last_modified_time: "2026-10-28T12:00:00Z",
+			}
+
+			const tooltip = getSessionDisplayTooltip(child, [parent, child])
+			expect(tooltip).toContain('Nested under: "Root Architecture"')
+		})
 	})
 })

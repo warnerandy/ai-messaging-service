@@ -22,6 +22,10 @@ defmodule MessagingWeb.BotSessionsChannel do
             title: c.title,
             status: c.status,
             metadata: c.metadata,
+            parent_session_id:
+              c.metadata &&
+                (c.metadata["parent_session_id"] || c.metadata["parentSessionId"] ||
+                   c.metadata["parent_id"] || c.metadata["parentId"]),
             last_user_input_time: c.last_user_input_time,
             last_modified_time: c.last_modified_time,
             last_message_at: c.last_message_at,
@@ -42,16 +46,22 @@ defmodule MessagingWeb.BotSessionsChannel do
 
   @impl true
   def handle_info({:bot_sessions_updated, bot_id, sessions}, socket) do
+    active_sessions = Enum.reject(sessions, &(&1.status == "archived"))
+
     push(socket, "bot_sessions_updated", %{
       bot_token_id: bot_id,
       sessions:
-        Enum.map(sessions, fn c ->
+        Enum.map(active_sessions, fn c ->
           %{
             id: c.id,
             external_session_id: c.external_session_id,
             title: c.title,
             status: c.status,
             metadata: c.metadata,
+            parent_session_id:
+              c.metadata &&
+                (c.metadata["parent_session_id"] || c.metadata["parentSessionId"] ||
+                   c.metadata["parent_id"] || c.metadata["parentId"]),
             last_user_input_time: c.last_user_input_time,
             last_modified_time: c.last_modified_time,
             last_message_at: c.last_message_at,

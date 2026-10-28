@@ -16,12 +16,7 @@ describe("CreateBotModal", () => {
 
 	it("renders title, inputs, bot type options, and action buttons", () => {
 		render(
-			<CreateBotModal
-				token="test-token"
-				isOpen={true}
-				onClose={vi.fn()}
-				onBotCreated={vi.fn()}
-			/>,
+			<CreateBotModal token="test-token" isOpen={true} onClose={vi.fn()} onBotCreated={vi.fn()} />,
 		)
 
 		expect(screen.getByRole("dialog")).toBeInTheDocument()
@@ -88,12 +83,7 @@ describe("CreateBotModal", () => {
 		const onClose = vi.fn()
 
 		render(
-			<CreateBotModal
-				token="test-token"
-				isOpen={true}
-				onClose={onClose}
-				onBotCreated={vi.fn()}
-			/>,
+			<CreateBotModal token="test-token" isOpen={true} onClose={onClose} onBotCreated={vi.fn()} />,
 		)
 
 		await user.keyboard("{Escape}")
@@ -105,12 +95,7 @@ describe("CreateBotModal", () => {
 		createBot.mockRejectedValue(new Error("Network error creating bot"))
 
 		render(
-			<CreateBotModal
-				token="test-token"
-				isOpen={true}
-				onClose={vi.fn()}
-				onBotCreated={vi.fn()}
-			/>,
+			<CreateBotModal token="test-token" isOpen={true} onClose={vi.fn()} onBotCreated={vi.fn()} />,
 		)
 
 		await user.type(screen.getByLabelText("Bot Name"), "Failed Bot")

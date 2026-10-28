@@ -3,9 +3,10 @@ defmodule MessagingWeb.API.ConversationController do
 
   alias Messaging.{Chat, Bots}
 
-  def index(conn, _params) do
+  def index(conn, params) do
     user = conn.assigns.current_user
-    conversations = Chat.list_conversations(user.id)
+    include_archived = params["include_archived"] in ["true", true, "1"]
+    conversations = Chat.list_conversations(user.id, include_archived: include_archived)
 
     json(conn, %{
       conversations:
@@ -16,6 +17,10 @@ defmodule MessagingWeb.API.ConversationController do
             external_session_id: c.external_session_id,
             status: c.status,
             metadata: c.metadata,
+            parent_session_id:
+              c.metadata &&
+                (c.metadata["parent_session_id"] || c.metadata["parentSessionId"] ||
+                   c.metadata["parent_id"] || c.metadata["parentId"]),
             bot_token_id: c.bot_token_id,
             bot_name: c.bot_token.name,
             bot_type: c.bot_token.bot_type,
@@ -35,13 +40,23 @@ defmodule MessagingWeb.API.ConversationController do
 
     bot_token = Bots.get_bot_token!(bot_token_id, user.id)
 
+    raw_meta = params["metadata"] || %{}
+    parent_id = params["parent_session_id"] || params["parentSessionId"]
+
+    meta =
+      if parent_id do
+        Map.put(raw_meta, "parent_session_id", parent_id)
+      else
+        raw_meta
+      end
+
     case Chat.create_conversation(%{
            user_id: user.id,
            bot_token_id: bot_token.id,
            title: params["title"] || bot_token.name,
            external_session_id: params["external_session_id"],
            status: params["status"] || "idle",
-           metadata: params["metadata"] || %{}
+           metadata: meta
          }) do
       {:ok, conversation} ->
         conn
@@ -52,6 +67,11 @@ defmodule MessagingWeb.API.ConversationController do
           external_session_id: conversation.external_session_id,
           status: conversation.status,
           metadata: conversation.metadata,
+          parent_session_id:
+            conversation.metadata &&
+              (conversation.metadata["parent_session_id"] ||
+                 conversation.metadata["parentSessionId"] ||
+                 conversation.metadata["parent_id"] || conversation.metadata["parentId"]),
           bot_token_id: conversation.bot_token_id,
           last_user_input_time: conversation.last_user_input_time,
           last_modified_time: conversation.last_modified_time,
@@ -84,6 +104,11 @@ defmodule MessagingWeb.API.ConversationController do
         external_session_id: conversation.external_session_id,
         status: conversation.status,
         metadata: conversation.metadata,
+        parent_session_id:
+          conversation.metadata &&
+            (conversation.metadata["parent_session_id"] ||
+               conversation.metadata["parentSessionId"] ||
+               conversation.metadata["parent_id"] || conversation.metadata["parentId"]),
         bot_token_id: conversation.bot_token_id,
         bot_name: conversation.bot_token.name,
         bot_type: conversation.bot_token.bot_type,

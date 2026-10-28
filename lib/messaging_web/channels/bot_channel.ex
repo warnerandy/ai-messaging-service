@@ -100,13 +100,24 @@ defmodule MessagingWeb.BotChannel do
     {:noreply, socket}
   end
 
+  @impl true
+  def handle_info({:request_session_sync, payload}, socket) do
+    Logger.info(
+      "[BotChannel] pushing request_session_sync session_id=#{payload["external_session_id"]} conv_id=#{payload["conversation_id"]} bot_token_id=#{socket.assigns.bot_token.id}"
+    )
+
+    push(socket, "request_session_sync", payload)
+    {:noreply, socket}
+  end
+
   # Bot sends a message reply
   @impl true
   def handle_in("send_message", payload, socket) do
     bot_token = socket.assigns.bot_token
+    conversation = Chat.resolve_bot_conversation(bot_token, payload)
 
     Logger.info(
-      "[BotChannel] received send_message conversation_id=#{payload["conversation_id"]} bot_token_id=#{bot_token.id}"
+      "[BotChannel] received send_message conversation_id=#{conversation.id} bot_token_id=#{bot_token.id}"
     )
 
     attrs = %{
@@ -115,12 +126,10 @@ defmodule MessagingWeb.BotChannel do
       body: payload["body"],
       metadata: payload["metadata"] || %{},
       is_suggestion: payload["is_suggestion"] || false,
-      conversation_id: payload["conversation_id"]
+      conversation_id: conversation.id
     }
 
-    conversation = Chat.get_conversation!(attrs.conversation_id, bot_token_id: bot_token.id)
-
-    case Chat.create_message(%{attrs | conversation_id: conversation.id}) do
+    case Chat.create_message(attrs) do
       {:ok, message} ->
         Logger.info("[BotChannel] send_message saved message_id=#{message.id}")
         {:reply, {:ok, %{id: message.id}}, socket}
@@ -135,13 +144,10 @@ defmodule MessagingWeb.BotChannel do
   end
 
   # Bot acknowledges receipt of a user message (shows thinking animation)
-  def handle_in(
-        "acknowledge_message",
-        %{"message_id" => message_id, "conversation_id" => conversation_id},
-        socket
-      ) do
+  def handle_in("acknowledge_message", payload, socket) do
     bot_token = socket.assigns.bot_token
-    conversation = Chat.get_conversation!(conversation_id, bot_token_id: bot_token.id)
+    conversation = Chat.resolve_bot_conversation(bot_token, payload)
+    message_id = payload["message_id"]
 
     Logger.info(
       "[BotChannel] acknowledge_message message_id=#{message_id} conversation_id=#{conversation.id} bot_token_id=#{bot_token.id}"
@@ -174,43 +180,67 @@ defmodule MessagingWeb.BotChannel do
       "[BotChannel] sync_sessions count=#{length(sessions)} bot_token_id=#{bot_token.id}"
     )
 
-    case Chat.sync_bot_sessions(bot_token, sessions) do
-      {:ok, synced} ->
-        serialized =
-          Enum.map(synced, fn c ->
-            %{
-              id: c.id,
-              external_session_id: c.external_session_id,
-              title: c.title,
-              status: c.status,
-              metadata: c.metadata,
-              last_user_input_time: c.last_user_input_time,
-              last_modified_time: c.last_modified_time,
-              last_message_at: c.last_message_at,
-              inserted_at: c.inserted_at,
-              updated_at: c.updated_at
-            }
-          end)
+    {:ok, synced} = Chat.sync_bot_sessions(bot_token, sessions)
 
-        {:reply, {:ok, %{sessions: serialized}}, socket}
+    serialized =
+      Enum.map(synced, fn c ->
+        %{
+          id: c.id,
+          external_session_id: c.external_session_id,
+          title: c.title,
+          status: c.status,
+          metadata: c.metadata,
+          parent_session_id:
+            c.metadata &&
+              (c.metadata["parent_session_id"] || c.metadata["parentSessionId"] ||
+                 c.metadata["parent_id"] || c.metadata["parentId"]),
+          last_user_input_time: c.last_user_input_time,
+          last_modified_time: c.last_modified_time,
+          last_message_at: c.last_message_at,
+          inserted_at: c.inserted_at,
+          updated_at: c.updated_at
+        }
+      end)
 
-      {:error, reason} ->
-        {:reply, {:error, %{reason: inspect(reason)}}, socket}
-    end
+    {:reply, {:ok, %{sessions: serialized}}, socket}
   end
 
   # Bot updates sub-chat / session status (e.g. idle, running, waiting_for_input)
   def handle_in("session_status", payload, socket) do
     bot_token = socket.assigns.bot_token
-    conv = resolve_conversation(bot_token, payload)
+    conv = Chat.resolve_bot_conversation(bot_token, payload)
     status = payload["status"] || "idle"
-    metadata = payload["metadata"] || %{}
+    raw_metadata = payload["metadata"] || %{}
+
+    extra_meta =
+      payload
+      |> Map.take([
+        "question",
+        "questions",
+        "prompt",
+        "step",
+        "action",
+        "data",
+        "tool",
+        "input_request",
+        "parent_session_id",
+        "parentSessionId",
+        "parent_id",
+        "parentId",
+        "nested",
+        "is_nested"
+      ])
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+      |> Map.new()
+
+    metadata = Map.merge(extra_meta, raw_metadata)
 
     Logger.info(
       "[BotChannel] session_status conversation_id=#{conv.id} status=#{status} bot_token_id=#{bot_token.id}"
     )
 
     Chat.update_session_status(conv.id, status, metadata)
+    maybe_create_status_message(conv, payload, metadata, status)
     maybe_dispatch_queued_prompt(conv.id, status, socket)
 
     {:reply, :ok, socket}
@@ -222,15 +252,32 @@ defmodule MessagingWeb.BotChannel do
   # Bot ferrys raw AHP event (thinking, step, question, status, plan, etc.)
   def handle_in("ahp_event", payload, socket) do
     bot_token = socket.assigns.bot_token
-    conv = resolve_conversation(bot_token, payload)
+    conv = Chat.resolve_bot_conversation(bot_token, payload)
     event_type = payload["event_type"] || payload["type"]
     data = payload["data"] || %{}
 
-    if event_type == "status" or Map.has_key?(data, "status") do
-      new_status = data["status"] || event_type
-      Chat.update_session_status(conv.id, new_status, data)
-      maybe_dispatch_queued_prompt(conv.id, new_status, socket)
+    cond do
+      event_type == "question" ->
+        question_data = if is_map(data), do: data, else: %{"prompt" => to_string(data)}
+        meta = %{"question" => question_data}
+
+        meta =
+          if Map.has_key?(question_data, "step"),
+            do: Map.put(meta, "step", question_data["step"]),
+            else: meta
+
+        Chat.update_session_status(conv.id, "waiting_for_input", meta)
+
+      event_type == "status" or Map.has_key?(data, "status") ->
+        new_status = data["status"] || event_type
+        Chat.update_session_status(conv.id, new_status, data)
+        maybe_dispatch_queued_prompt(conv.id, new_status, socket)
+
+      true ->
+        :ok
     end
+
+    maybe_create_ahp_message(conv, event_type, data)
 
     Phoenix.PubSub.broadcast(
       Messaging.PubSub,
@@ -274,31 +321,76 @@ defmodule MessagingWeb.BotChannel do
     end
   end
 
-  defp resolve_conversation(bot_token, payload) do
-    cond do
-      conv_id = payload["conversation_id"] ->
-        Chat.get_conversation!(conv_id, bot_token_id: bot_token.id)
-
-      ext_id = payload["session_id"] || payload["external_session_id"] ->
-        case Chat.get_conversation_by_external_session(bot_token.id, ext_id) do
-          nil ->
-            {:ok, conv} =
-              Chat.create_conversation(%{
-                user_id: bot_token.user_id,
-                bot_token_id: bot_token.id,
-                external_session_id: to_string(ext_id),
-                title: "Session #{ext_id}",
-                status: "idle"
-              })
-
-            conv
-
-          conv ->
-            conv
+  defp maybe_create_status_message(conv, payload, metadata, status) do
+    body =
+      payload["final_message"] || metadata["final_message"] ||
+        if status in ["idle", "completed", "done", "waiting_for_input"] do
+          payload["message"] || metadata["message"] || payload["response"] || metadata["response"]
         end
 
-      true ->
-        raise Ecto.NoResultsError, queryable: Messaging.Chat.Conversation
+    if is_binary(body) and String.trim(body) != "" do
+      trimmed = String.trim(body)
+      last_msg = Chat.get_last_message(conv.id)
+
+      unless last_msg && last_msg.role == "bot" && String.trim(last_msg.body || "") == trimmed do
+        Chat.create_message(%{
+          conversation_id: conv.id,
+          role: "bot",
+          content_type: "text",
+          body: trimmed,
+          metadata: metadata
+        })
+      end
+    end
+  end
+
+  defp maybe_create_ahp_message(conv, event_type, data) do
+    msg_body =
+      cond do
+        event_type in [
+          "message",
+          "response",
+          "completion",
+          "result",
+          "turn_completed",
+          "final_message",
+          "text"
+        ] ->
+          cond do
+            is_binary(data) ->
+              data
+
+            is_map(data) ->
+              data["body"] || data["message"] || data["response"] || data["content"] ||
+                data["text"] || data["output"] || data["summary"]
+
+            true ->
+              nil
+          end
+
+        is_map(data) and
+          (Map.has_key?(data, "final_message") or Map.has_key?(data, "message") or
+             Map.has_key?(data, "response")) and
+            event_type not in ["thinking", "step", "tool_call", "question"] ->
+          data["final_message"] || data["message"] || data["response"] || data["body"]
+
+        true ->
+          nil
+      end
+
+    if is_binary(msg_body) and String.trim(msg_body) != "" do
+      trimmed = String.trim(msg_body)
+      last_msg = Chat.get_last_message(conv.id)
+
+      unless last_msg && last_msg.role == "bot" && String.trim(last_msg.body || "") == trimmed do
+        Chat.create_message(%{
+          conversation_id: conv.id,
+          role: "bot",
+          content_type: "text",
+          body: trimmed,
+          metadata: if(is_map(data), do: data, else: %{})
+        })
+      end
     end
   end
 

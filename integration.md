@@ -15,6 +15,11 @@
 2. **Agent Host Protocol (`bot_type: "ahp"`)**:
    - Autonomous coding and programming agents
    - Multi-session sub-chats synchronized via `sync_sessions`
+   - **Nested Sessions & Hierarchies**: Sub-agent or child sessions linked via `parent_session_id` (or `parentSessionId`), rendered with:
+     - `↳ Nested` badge pill and branch elbow icon (`↳`) in the sidebar
+     - Hierarchical tree indentation with connecting lines (`└─`) under parent sessions
+     - Hover tooltips displaying parent context (`Nested under: "<Parent Title>"`)
+     - Active sub-session topbar badge (`Nested Session`) in the chat view
    - Real-time session statuses (`idle`, `running`, `thinking`, `waiting_for_input`, `archived`) via `session_status`
    - Streaming reasoning and thinking tokens
    - Human-in-the-loop interactive approvals (`question` and `answer_question`)

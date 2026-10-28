@@ -2,12 +2,7 @@ import React, { useEffect, useState } from "react"
 import { createBot } from "../lib/data.js"
 import { VSCodeLoadingIcon } from "./VSCodeWorkingIcons.jsx"
 
-export default function CreateBotModal({
-	token,
-	isOpen,
-	onClose,
-	onBotCreated,
-}) {
+export default function CreateBotModal({ token, isOpen, onClose, onBotCreated }) {
 	const [name, setName] = useState("")
 	const [botType, setBotType] = useState("chat")
 	const [creating, setCreating] = useState(false)
@@ -82,12 +77,7 @@ export default function CreateBotModal({
 							</p>
 						</div>
 					</div>
-					<button
-						type="button"
-						className="modal-close-btn"
-						onClick={onClose}
-						aria-label="Close"
-					>
+					<button type="button" className="modal-close-btn" onClick={onClose} aria-label="Close">
 						✕
 					</button>
 				</div>
@@ -132,9 +122,7 @@ export default function CreateBotModal({
 									</div>
 									<div className="bot-type-card-title-group">
 										<span className="bot-type-card-title">Chat Bot</span>
-										<span className="config-type-badge config-type-badge--chat">
-											CHAT
-										</span>
+										<span className="config-type-badge config-type-badge--chat">CHAT</span>
 									</div>
 								</div>
 								<p className="bot-type-card-desc">
@@ -162,9 +150,7 @@ export default function CreateBotModal({
 									</div>
 									<div className="bot-type-card-title-group">
 										<span className="bot-type-card-title">AHP Agent</span>
-										<span className="config-type-badge config-type-badge--ahp">
-											AHP
-										</span>
+										<span className="config-type-badge config-type-badge--ahp">AHP</span>
 									</div>
 								</div>
 								<p className="bot-type-card-desc">

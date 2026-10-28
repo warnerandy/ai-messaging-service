@@ -6,11 +6,20 @@ import LiveThinking from "./LiveThinking.jsx"
 import QuestionApprovalCard from "./QuestionApprovalCard.jsx"
 import PromptQueue from "./PromptQueue.jsx"
 import BotConfigModal from "./BotConfigModal.jsx"
+import SettingsModal from "./SettingsModal.jsx"
+import ProjectInfoModal from "./ProjectInfoModal.jsx"
+import {
+	getProjectInfo,
+	formatSessionTitle,
+	isSessionNested,
+	findParentSession,
+	getParentSessionId,
+} from "../lib/projectInfo.js"
+import { formatQuestionAnswer, resolvePendingQuestion } from "../lib/ahpQuestion.js"
 import {
 	VSCodeWorkingStateIcon,
 	VSCodeProgressBar,
 	VSCodeSparkleIcon,
-	VSCodeIconsShowcase,
 } from "./VSCodeWorkingIcons.jsx"
 import {
 	createConversationTimeoutMessage,
@@ -19,7 +28,20 @@ import {
 	getConversationChannel,
 	uploadConversationAsset,
 } from "../lib/data.js"
-import { showNotificationIfBackgrounded } from "../lib/notifications.js"
+import {
+	notifyBotResponse,
+	notifySessionCompleted,
+	notifyWaitingForInput,
+	requestNotificationPermission,
+	getNotificationPermission,
+	isNotificationSupported,
+	showNotificationIfBackgrounded,
+	isSessionAlarmEnabled,
+	toggleSessionAlarm,
+	unlockAudio,
+	playConfirmationPing,
+	triggerConfirmationVibration,
+} from "../lib/notifications.js"
 import { startThinkingTimer, stopThinkingTimer } from "../thinkingTimer.mjs"
 
 const BOT_RESPONSE_TIMEOUT_MS = 10 * 60 * 1000
@@ -116,6 +138,7 @@ export default function ChatView({
 	onConversationTouch,
 	onSessionsUpdated,
 	onArchiveConversation,
+	onSelectConversation,
 	onToggleSidebar,
 }) {
 	const [messages, setMessages] = useState([])
@@ -135,7 +158,18 @@ export default function ChatView({
 	const [pendingQuestion, setPendingQuestion] = useState(null)
 	const [promptQueue, setPromptQueue] = useState([])
 	const [showConfigModal, setShowConfigModal] = useState(false)
-	const [showShowcaseModal, setShowShowcaseModal] = useState(false)
+	const [showSettingsModal, setShowSettingsModal] = useState(false)
+	const [settingsInitialTab, setSettingsInitialTab] = useState("alerts")
+	const [showProjectModal, setShowProjectModal] = useState(false)
+
+	useEffect(() => {
+		const handleOpenSettings = (e) => {
+			setSettingsInitialTab(e?.detail?.tab || "alerts")
+			setShowSettingsModal(true)
+		}
+		window.addEventListener("open-settings", handleOpenSettings)
+		return () => window.removeEventListener("open-settings", handleOpenSettings)
+	}, [])
 	const messagesEndRef = useRef(null)
 	const socketRef = useRef(null)
 	const channelRef = useRef(null)
@@ -146,6 +180,68 @@ export default function ChatView({
 	const responseTimeoutsRef = useRef(new Map())
 	const timeoutRequestsRef = useRef(new Set())
 	const inputRef = useRef(null)
+
+	const [notificationPermission, setNotificationPermission] = useState(() =>
+		getNotificationPermission(),
+	)
+	const [alarmArmed, setAlarmArmed] = useState(() => isSessionAlarmEnabled(selectedConversationId))
+	const [alarmBanner, setAlarmBanner] = useState(null)
+
+	useEffect(() => {
+		setAlarmArmed(isSessionAlarmEnabled(selectedConversationId))
+	}, [selectedConversationId])
+
+	useEffect(() => {
+		const handleAlarmChange = (e) => {
+			if (e.detail?.conversationId === selectedConversationId) {
+				setAlarmArmed(!!e.detail.enabled)
+			}
+		}
+		window.addEventListener("session-alarm-changed", handleAlarmChange)
+		return () => window.removeEventListener("session-alarm-changed", handleAlarmChange)
+	}, [selectedConversationId])
+
+	useEffect(() => {
+		const handleAlarmFired = (e) => {
+			const { conversationId, botName, title, type, question } = e.detail || {}
+			const bannerTitle = title || botName || "Session"
+			const bannerMessage =
+				type === "waiting_for_input"
+					? question?.prompt || question?.title || "Waiting for your answer / approval"
+					: type === "session_completed"
+						? "Session turn completed"
+						: "New response received"
+
+			setAlarmBanner({
+				conversationId,
+				title: bannerTitle,
+				message: bannerMessage,
+			})
+
+			const timer = setTimeout(() => {
+				setAlarmBanner(null)
+			}, 8000)
+			return () => clearTimeout(timer)
+		}
+
+		window.addEventListener("session-alarm-fired", handleAlarmFired)
+		return () => window.removeEventListener("session-alarm-fired", handleAlarmFired)
+	}, [])
+
+	const prevSessionStatusRef = useRef(sessionStatus)
+
+	useEffect(() => {
+		prevSessionStatusRef.current = sessionStatus
+	}, [sessionStatus])
+
+	const activeConv = conversations?.find((c) => c.id === selectedConversationId)
+	const isArchived = Boolean(
+		activeConv &&
+		(activeConv.status === "archived" ||
+			activeConv.status === "done" ||
+			activeConv.status === "completed"),
+	)
+	const projectInfo = getProjectInfo(activeConv, sessionMetadata)
 
 	function startBotThinking(timeoutMs = null) {
 		startThinkingTimer(typingTimeoutRef, setBotIsTyping, timeoutMs)
@@ -215,6 +311,168 @@ export default function ChatView({
 		messagesRef.current = messages
 	}, [messages])
 
+	const extractLastMessageId = useCallback((items) => {
+		if (!Array.isArray(items)) return null
+		for (let index = items.length - 1; index >= 0; index -= 1) {
+			const message = items[index]
+			if (!message || message.pending) continue
+			if (typeof message.id === "number") return message.id
+			if (typeof message.id === "string" && /^\d+$/.test(message.id)) {
+				return parseInt(message.id, 10)
+			}
+		}
+		return null
+	}, [])
+
+	const refetchMissedMessages = useCallback(async () => {
+		if (!selectedConversationId || !token) return
+		const afterId = extractLastMessageId(messagesRef.current)
+		const params = afterId ? { afterId, limit: 50 } : { limit: 50 }
+
+		try {
+			const res = await getConversation(token, selectedConversationId, params)
+			const fetched = (res.messages || []).map((message) => normalizeMessage(message))
+			if (fetched.length === 0) return
+
+			fetched.forEach((message) => renderedIdsRef.current.add(message.id))
+			setMessages((prev) => {
+				const byId = new Map()
+				const next = [...prev]
+
+				next.forEach((message, index) => {
+					if (!message.pending && message.id != null) {
+						byId.set(String(message.id), index)
+					}
+				})
+
+				fetched.forEach((incoming) => {
+					const key = String(incoming.id)
+					const existingIndex = byId.get(key)
+
+					if (existingIndex === undefined) {
+						byId.set(key, next.length)
+						next.push(incoming)
+						return
+					}
+
+					next[existingIndex] = normalizeMessage(incoming, {
+						...next[existingIndex],
+						pending: false,
+						failed: false,
+					})
+				})
+
+				const state = deriveConversationState(next)
+				setBotIsTyping(state.botIsTyping)
+				return state.messages
+			})
+		} catch (err) {
+			console.error("Missed message refetch failed:", err)
+		}
+	}, [extractLastMessageId, selectedConversationId, token])
+
+	const [isSyncing, setIsSyncing] = useState(false)
+
+	const syncSession = useCallback(
+		async (opts = { forceFull: false, notifyBot: true }) => {
+			if (!selectedConversationId || !token) return
+			setIsSyncing(true)
+
+			if (opts.notifyBot && channelRef.current) {
+				try {
+					channelRef.current.push("sync_session", {})
+				} catch {
+					// socket or channel may still be connecting
+				}
+			}
+
+			try {
+				if (opts.forceFull) {
+					const res = await getConversation(token, selectedConversationId)
+					const msgs = (res?.messages || []).map((message) => normalizeMessage(message))
+					msgs.forEach((m) => renderedIdsRef.current.add(m.id))
+					const nextState = deriveConversationState(msgs)
+					setMessages(nextState.messages)
+
+					if (res?.conversation) {
+						const convStatus = res.conversation.status || "idle"
+						setSessionStatus(convStatus)
+						if (res.conversation.metadata) {
+							setSessionMetadata(res.conversation.metadata)
+							if (res.conversation.metadata.prompt_queue) {
+								setPromptQueue(res.conversation.metadata.prompt_queue)
+							}
+							if (res.conversation.metadata.thinking) {
+								setThinkingText(res.conversation.metadata.thinking)
+							}
+							if (res.conversation.metadata.tool_calls) {
+								setToolCalls(res.conversation.metadata.tool_calls)
+							}
+						}
+						const resolvedQ = resolvePendingQuestion(
+							convStatus,
+							res.conversation.metadata || {},
+							res.conversation.metadata?.question,
+						)
+						if (resolvedQ) {
+							setPendingQuestion(resolvedQ)
+							setTimeout(() => inputRef.current?.focus(), 50)
+						} else if (
+							convStatus === "idle" ||
+							convStatus === "running" ||
+							convStatus === "completed" ||
+							convStatus === "done"
+						) {
+							setPendingQuestion(null)
+						}
+					}
+				} else {
+					await refetchMissedMessages()
+				}
+			} catch (err) {
+				console.error("Session sync failed:", err)
+			} finally {
+				setTimeout(() => {
+					setIsSyncing(false)
+				}, 600)
+			}
+		},
+		[refetchMissedMessages, selectedConversationId, token],
+	)
+
+	const handleManualSync = useCallback(() => {
+		syncSession({ forceFull: true, notifyBot: true })
+	}, [syncSession])
+
+	useEffect(() => {
+		const handleSyncActive = (e) => {
+			if (!e.detail?.conversationId || e.detail.conversationId === selectedConversationId) {
+				handleManualSync()
+			}
+		}
+		window.addEventListener("sync-active-conversation", handleSyncActive)
+		return () => window.removeEventListener("sync-active-conversation", handleSyncActive)
+	}, [handleManualSync, selectedConversationId])
+
+	// Automatically refetch missed messages when PWA regains visibility or focus
+	useEffect(() => {
+		if (!selectedConversationId || !token) return
+
+		function handleVisibilityOrFocus() {
+			if (document.visibilityState === "visible") {
+				refetchMissedMessages()
+			}
+		}
+
+		document.addEventListener("visibilitychange", handleVisibilityOrFocus)
+		window.addEventListener("focus", handleVisibilityOrFocus)
+
+		return () => {
+			document.removeEventListener("visibilitychange", handleVisibilityOrFocus)
+			window.removeEventListener("focus", handleVisibilityOrFocus)
+		}
+	}, [refetchMissedMessages, selectedConversationId, token])
+
 	useEffect(() => {
 		if (!selectedConversationId || !token) return
 
@@ -270,64 +528,6 @@ export default function ChatView({
 		let cancelled = false
 		let sessionsCh = null
 
-		function extractLastMessageId(items) {
-			for (let index = items.length - 1; index >= 0; index -= 1) {
-				const message = items[index]
-				if (!message || message.pending) continue
-				if (typeof message.id === "number") return message.id
-			}
-			return null
-		}
-
-		async function refetchMissedMessages() {
-			const afterId = extractLastMessageId(messagesRef.current)
-			if (!afterId) return
-
-			try {
-				const res = await getConversation(token, selectedConversationId, {
-					afterId,
-					limit: 25,
-				})
-				const fetched = (res.messages || []).map((message) => normalizeMessage(message))
-				if (fetched.length === 0) return
-
-				fetched.forEach((message) => renderedIdsRef.current.add(message.id))
-				setMessages((prev) => {
-					const byId = new Map()
-					const next = [...prev]
-
-					next.forEach((message, index) => {
-						if (!message.pending && message.id != null) {
-							byId.set(String(message.id), index)
-						}
-					})
-
-					fetched.forEach((incoming) => {
-						const key = String(incoming.id)
-						const existingIndex = byId.get(key)
-
-						if (existingIndex === undefined) {
-							byId.set(key, next.length)
-							next.push(incoming)
-							return
-						}
-
-						next[existingIndex] = normalizeMessage(incoming, {
-							...next[existingIndex],
-							pending: false,
-							failed: false,
-						})
-					})
-
-					const state = deriveConversationState(next)
-					setBotIsTyping(state.botIsTyping)
-					return state.messages
-				})
-			} catch (err) {
-				console.error("Missed message refetch failed:", err)
-			}
-		}
-
 		async function joinChannel() {
 			try {
 				const info = await getConversationChannel(token, selectedConversationId)
@@ -347,6 +547,13 @@ export default function ChatView({
 					// When a bot message arrives, immediately stop the thinking indicator
 					if (incoming.role === "bot") {
 						stopBotThinking()
+						notifyBotResponse({
+							botName: bot?.name,
+							conversationTitle: activeConv?.title,
+							conversationId: selectedConversationId,
+							activeConversationId: selectedConversationId,
+							message: incoming,
+						})
 					}
 
 					if (onConversationTouch) {
@@ -379,7 +586,12 @@ export default function ChatView({
 						return state.messages
 					})
 
-					showNotificationIfBackgrounded(payload.message)
+					showNotificationIfBackgrounded(payload.message, {
+						botName: bot?.name,
+						conversationTitle: activeConv?.title,
+						conversationId: selectedConversationId,
+						activeConversationId: selectedConversationId,
+					})
 				})
 
 				ch.on("message_acknowledged", (payload) => {
@@ -413,21 +625,70 @@ export default function ChatView({
 
 				ch.on("session_status_changed", (payload) => {
 					if (!payload) return
-					setSessionStatus(payload.status || "idle")
+					const newStatus = payload.status || "idle"
+					const prevStatus = prevSessionStatusRef.current
+					setSessionStatus(newStatus)
 					const meta = payload.metadata || {}
 					setSessionMetadata(meta)
 					if (meta.prompt_queue) setPromptQueue(meta.prompt_queue)
-					if (meta.question) setPendingQuestion(meta.question)
-					if (payload.status === "idle") {
+					const resolvedQ = resolvePendingQuestion(newStatus, meta, payload.question)
+					if (resolvedQ) {
+						setPendingQuestion(resolvedQ)
+						setTimeout(() => inputRef.current?.focus(), 50)
+					} else if (
+						newStatus === "idle" ||
+						newStatus === "running" ||
+						newStatus === "completed" ||
+						newStatus === "done"
+					) {
+						setPendingQuestion(null)
+					}
+					if (newStatus === "idle") {
 						setThinkingText("")
 						stopBotThinking()
-					} else if (payload.status === "thinking" || payload.status === "running") {
-						startBotThinking()
 					}
+
+					if (
+						newStatus === "idle" ||
+						newStatus === "completed" ||
+						newStatus === "done" ||
+						newStatus === "waiting_for_input" ||
+						newStatus === "needs_input"
+					) {
+						refetchMissedMessages()
+						setTimeout(() => refetchMissedMessages(), 400)
+					}
+
+					// Active session completes (waiting on next user input)
+					if (
+						(prevStatus === "running" || prevStatus === "thinking") &&
+						(newStatus === "idle" || newStatus === "completed" || newStatus === "done")
+					) {
+						notifySessionCompleted({
+							botName: bot?.name,
+							conversationTitle: activeConv?.title,
+							conversationId: selectedConversationId,
+							activeConversationId: selectedConversationId,
+							metadata: meta,
+						})
+					}
+
+					// Active session wants info / approval
+					if (newStatus === "waiting_for_input" || newStatus === "needs_input") {
+						notifyWaitingForInput({
+							botName: bot?.name,
+							conversationTitle: activeConv?.title,
+							conversationId: selectedConversationId,
+							activeConversationId: selectedConversationId,
+							question: resolvedQ,
+							metadata: meta,
+						})
+					}
+
 					if (onConversationStatusChange) {
 						onConversationStatusChange(
 							payload.conversation_id || selectedConversationId,
-							payload.status || "idle",
+							newStatus,
 							meta,
 						)
 					}
@@ -440,7 +701,6 @@ export default function ChatView({
 						const chunk = data?.chunk ?? data?.text ?? data?.thought ?? ""
 						setThinkingText((prev) => prev + chunk)
 						setSessionStatus("thinking")
-						startBotThinking()
 						if (onConversationStatusChange) {
 							onConversationStatusChange(selectedConversationId, "thinking")
 						}
@@ -460,17 +720,84 @@ export default function ChatView({
 							}
 						}
 					} else if (event_type === "question") {
-						setPendingQuestion(data)
+						const resolvedQ = resolvePendingQuestion("waiting_for_input", {}, data)
+						setPendingQuestion(resolvedQ)
 						setSessionStatus("waiting_for_input")
+						setTimeout(() => inputRef.current?.focus(), 50)
+						notifyWaitingForInput({
+							botName: bot?.name,
+							conversationTitle: activeConv?.title,
+							conversationId: selectedConversationId,
+							activeConversationId: selectedConversationId,
+							question: resolvedQ,
+							metadata: data,
+						})
 						if (onConversationStatusChange) {
-							onConversationStatusChange(selectedConversationId, "waiting_for_input", { question: data })
+							onConversationStatusChange(selectedConversationId, "waiting_for_input", {
+								question: resolvedQ,
+							})
 						}
 					} else if (event_type === "status") {
 						const st = data?.status || "running"
+						const prevStatus = prevSessionStatusRef.current
 						setSessionStatus(st)
-						if (onConversationStatusChange) {
-							onConversationStatusChange(selectedConversationId, st)
+						const resolvedQ = resolvePendingQuestion(st, data, data?.question)
+						if (resolvedQ) {
+							setPendingQuestion(resolvedQ)
+							setTimeout(() => inputRef.current?.focus(), 50)
+						} else if (st === "idle" || st === "running" || st === "completed" || st === "done") {
+							setPendingQuestion(null)
 						}
+
+						if (
+							st === "idle" ||
+							st === "completed" ||
+							st === "done" ||
+							st === "waiting_for_input" ||
+							st === "needs_input"
+						) {
+							refetchMissedMessages()
+							setTimeout(() => refetchMissedMessages(), 400)
+						}
+
+						if (
+							(prevStatus === "running" || prevStatus === "thinking") &&
+							(st === "idle" || st === "completed" || st === "done")
+						) {
+							notifySessionCompleted({
+								botName: bot?.name,
+								conversationTitle: activeConv?.title,
+								conversationId: selectedConversationId,
+								activeConversationId: selectedConversationId,
+								metadata: data,
+							})
+						}
+
+						if (st === "waiting_for_input" || st === "needs_input") {
+							notifyWaitingForInput({
+								botName: bot?.name,
+								conversationTitle: activeConv?.title,
+								conversationId: selectedConversationId,
+								activeConversationId: selectedConversationId,
+								question: resolvedQ,
+								metadata: data,
+							})
+						}
+
+						if (onConversationStatusChange) {
+							onConversationStatusChange(selectedConversationId, st, data)
+						}
+					} else if (
+						event_type === "message" ||
+						event_type === "response" ||
+						event_type === "completion" ||
+						event_type === "result" ||
+						event_type === "turn_completed" ||
+						event_type === "final_message" ||
+						event_type === "text"
+					) {
+						refetchMissedMessages()
+						setTimeout(() => refetchMissedMessages(), 400)
 					}
 				})
 
@@ -486,8 +813,90 @@ export default function ChatView({
 					sessionsCh.on("session_status_changed", (payload) => {
 						if (!payload) return
 						if (payload.conversation_id === selectedConversationId) {
-							setSessionStatus(payload.status || "idle")
-							if (payload.metadata) setSessionMetadata(payload.metadata)
+							const newStatus = payload.status || "idle"
+							const prevStatus = prevSessionStatusRef.current
+							setSessionStatus(newStatus)
+							const meta = payload.metadata || {}
+							if (payload.metadata) {
+								setSessionMetadata((prev) => ({ ...prev, ...payload.metadata }))
+								if (payload.metadata.thinking) setThinkingText(payload.metadata.thinking)
+								if (payload.metadata.tool_calls) setToolCalls(payload.metadata.tool_calls)
+							}
+							const resolvedQ = resolvePendingQuestion(newStatus, meta, payload.question)
+							if (resolvedQ) {
+								setPendingQuestion(resolvedQ)
+								setTimeout(() => inputRef.current?.focus(), 50)
+							} else if (
+								newStatus === "idle" ||
+								newStatus === "running" ||
+								newStatus === "completed" ||
+								newStatus === "done"
+							) {
+								setPendingQuestion(null)
+							}
+
+							if (
+								newStatus === "idle" ||
+								newStatus === "completed" ||
+								newStatus === "done" ||
+								newStatus === "waiting_for_input" ||
+								newStatus === "needs_input"
+							) {
+								refetchMissedMessages()
+								setTimeout(() => refetchMissedMessages(), 400)
+							}
+
+							if (
+								(prevStatus === "running" || prevStatus === "thinking") &&
+								(newStatus === "idle" || newStatus === "completed" || newStatus === "done")
+							) {
+								notifySessionCompleted({
+									botName: bot?.name,
+									conversationTitle: activeConv?.title,
+									conversationId: selectedConversationId,
+									activeConversationId: selectedConversationId,
+									metadata: payload.metadata,
+								})
+							}
+
+							if (newStatus === "waiting_for_input" || newStatus === "needs_input") {
+								notifyWaitingForInput({
+									botName: bot?.name,
+									conversationTitle: activeConv?.title,
+									conversationId: selectedConversationId,
+									activeConversationId: selectedConversationId,
+									question: resolvedQ,
+									metadata: payload.metadata,
+								})
+							}
+						} else if (payload.conversation_id) {
+							const otherConv = conversations?.find((c) => c.id === payload.conversation_id)
+							const otherStatus = payload.status
+							const prevOtherStatus = otherConv?.status
+
+							if (
+								(prevOtherStatus === "running" || prevOtherStatus === "thinking") &&
+								(otherStatus === "idle" || otherStatus === "completed" || otherStatus === "done")
+							) {
+								notifySessionCompleted({
+									botName: bot?.name,
+									conversationTitle: otherConv?.title,
+									conversationId: payload.conversation_id,
+									activeConversationId: selectedConversationId,
+									metadata: payload.metadata,
+								})
+							}
+
+							if (otherStatus === "waiting_for_input" || otherStatus === "needs_input") {
+								notifyWaitingForInput({
+									botName: bot?.name,
+									conversationTitle: otherConv?.title,
+									conversationId: payload.conversation_id,
+									activeConversationId: selectedConversationId,
+									question: payload.metadata?.question,
+									metadata: payload.metadata,
+								})
+							}
 						}
 						if (onConversationStatusChange && payload.conversation_id) {
 							onConversationStatusChange(payload.conversation_id, payload.status, payload.metadata)
@@ -506,18 +915,52 @@ export default function ChatView({
 						if (cancelled) return
 						channelRef.current = ch
 
+						// Catch up on any missed messages immediately on channel join
+						refetchMissedMessages()
+						setTimeout(() => refetchMissedMessages(), 350)
+
 						if (resp?.status) {
-							setSessionStatus(resp.status)
+							setSessionStatus((prevStatus) => {
+								if (
+									(prevStatus === "thinking" ||
+										prevStatus === "running" ||
+										prevStatus === "waiting_for_input") &&
+									resp.status === "idle"
+								) {
+									return prevStatus
+								}
+								return resp.status
+							})
 							if (onConversationStatusChange) {
 								onConversationStatusChange(selectedConversationId, resp.status, resp.metadata)
 							}
 						}
+						const respMeta = resp?.metadata || {}
 						if (resp?.metadata) {
-							setSessionMetadata(resp.metadata)
+							setSessionMetadata((prev) => ({
+								...resp.metadata,
+								...prev,
+							}))
 							if (resp.metadata.prompt_queue) setPromptQueue(resp.metadata.prompt_queue)
-							if (resp.metadata.question) setPendingQuestion(resp.metadata.question)
-							if (resp.metadata.thinking) setThinkingText(resp.metadata.thinking)
-							if (resp.metadata.tool_calls) setToolCalls(resp.metadata.tool_calls)
+							if (resp.metadata.thinking) {
+								setThinkingText((prev) => prev || resp.metadata.thinking)
+							}
+							if (resp.metadata.tool_calls) {
+								setToolCalls((prev) => (prev.length > 0 ? prev : resp.metadata.tool_calls))
+							}
+						}
+						const targetStatus = resp?.status || sessionStatus
+						const resolvedQ = resolvePendingQuestion(targetStatus, respMeta, respMeta.question)
+						if (resolvedQ) {
+							setPendingQuestion(resolvedQ)
+							setTimeout(() => inputRef.current?.focus(), 50)
+						} else if (
+							targetStatus === "idle" ||
+							targetStatus === "running" ||
+							targetStatus === "completed" ||
+							targetStatus === "done"
+						) {
+							setPendingQuestion(null)
 						}
 
 						if (hasJoinedConversationRef.current) {
@@ -552,7 +995,11 @@ export default function ChatView({
 		if (!selectedConversationId || !token) return
 		hasJoinedConversationRef.current = false
 		renderedIdsRef.current.clear()
-		stopBotThinking()
+		setMessages([])
+		messagesRef.current = []
+		if (activeConv?.status !== "thinking" && activeConv?.status !== "running") {
+			stopBotThinking()
+		}
 		Array.from(responseTimeoutsRef.current.keys()).forEach((messageId) =>
 			clearResponseTimeout(messageId),
 		)
@@ -562,19 +1009,56 @@ export default function ChatView({
 		async function loadMessages() {
 			try {
 				const res = await getConversation(token, selectedConversationId)
-				const msgs = (res.messages || []).map((message) => normalizeMessage(message))
+				const msgs = (res?.messages || []).map((message) => normalizeMessage(message))
 				msgs.forEach((m) => renderedIdsRef.current.add(m.id))
 				const nextState = deriveConversationState(msgs)
 				setMessages(nextState.messages)
-				setBotIsTyping(nextState.botIsTyping)
-				if (res.conversation) {
-					if (res.conversation.status) setSessionStatus(res.conversation.status)
+				if (activeConv?.status !== "thinking" && activeConv?.status !== "running") {
+					setBotIsTyping(nextState.botIsTyping)
+				}
+				if (res?.conversation) {
+					const convStatus = res.conversation.status || "idle"
+					if (res.conversation.status) {
+						setSessionStatus((prevStatus) => {
+							if (
+								(prevStatus === "thinking" ||
+									prevStatus === "running" ||
+									prevStatus === "waiting_for_input") &&
+								res.conversation.status === "idle"
+							) {
+								return prevStatus
+							}
+							return res.conversation.status
+						})
+					}
+					const convMeta = res.conversation.metadata || {}
 					if (res.conversation.metadata) {
-						setSessionMetadata(res.conversation.metadata)
-						if (res.conversation.metadata.prompt_queue) setPromptQueue(res.conversation.metadata.prompt_queue)
-						if (res.conversation.metadata.question) setPendingQuestion(res.conversation.metadata.question)
-						if (res.conversation.metadata.thinking) setThinkingText(res.conversation.metadata.thinking)
-						if (res.conversation.metadata.tool_calls) setToolCalls(res.conversation.metadata.tool_calls)
+						setSessionMetadata((prev) => ({
+							...res.conversation.metadata,
+							...prev,
+						}))
+						if (res.conversation.metadata.prompt_queue)
+							setPromptQueue(res.conversation.metadata.prompt_queue)
+						if (res.conversation.metadata.thinking) {
+							setThinkingText((prev) => prev || res.conversation.metadata.thinking)
+						}
+						if (res.conversation.metadata.tool_calls) {
+							setToolCalls((prev) =>
+								prev.length > 0 ? prev : res.conversation.metadata.tool_calls,
+							)
+						}
+					}
+					const resolvedQ = resolvePendingQuestion(convStatus, convMeta, convMeta.question)
+					if (resolvedQ) {
+						setPendingQuestion(resolvedQ)
+						setTimeout(() => inputRef.current?.focus(), 50)
+					} else if (
+						convStatus === "idle" ||
+						convStatus === "running" ||
+						convStatus === "completed" ||
+						convStatus === "done"
+					) {
+						setPendingQuestion(null)
 					}
 				}
 			} catch (err) {
@@ -582,7 +1066,7 @@ export default function ChatView({
 			}
 		}
 		loadMessages()
-	}, [selectedConversationId, token])
+	}, [selectedConversationId, token, activeConv?.status])
 
 	useEffect(() => {
 		if (models.length === 0) {
@@ -761,6 +1245,17 @@ export default function ChatView({
 		if (!body || !selectedConversationId) return
 
 		setInputValue("")
+
+		// If an interactive question is awaiting input, route the message to answer the question
+		if (pendingQuestion) {
+			const formattedAnswer = formatQuestionAnswer(body, pendingQuestion)
+			handleAnswerQuestion(formattedAnswer)
+			if (pendingQuestion.isGenericWaiting) {
+				await sendMessage(body)
+			}
+			return
+		}
+
 		await sendMessage(body)
 	}
 
@@ -777,16 +1272,27 @@ export default function ChatView({
 		}
 	}
 
-	const activeConv = conversations?.find((c) => c.id === selectedConversationId)
-
 	useEffect(() => {
 		if (activeConv) {
-			setSessionStatus(activeConv.status || "idle")
-			setSessionMetadata(activeConv.metadata || {})
-			setPromptQueue(activeConv.metadata?.prompt_queue || [])
-			setPendingQuestion(activeConv.metadata?.question || null)
-			setThinkingText(activeConv.metadata?.thinking || "")
-			setToolCalls(activeConv.metadata?.tool_calls || [])
+			const st = activeConv.status || "idle"
+			const meta = activeConv.metadata || {}
+			setSessionStatus(st)
+			setSessionMetadata((prev) => ({
+				...prev,
+				...meta,
+			}))
+			setPromptQueue(meta.prompt_queue || [])
+			const resolvedQ = resolvePendingQuestion(st, meta, meta.question)
+			setPendingQuestion(resolvedQ)
+			if (meta.thinking) {
+				setThinkingText(meta.thinking)
+			}
+			if (meta.tool_calls) {
+				setToolCalls(meta.tool_calls)
+			}
+			if (st === "waiting_for_input" || st === "needs_input") {
+				setTimeout(() => inputRef.current?.focus(), 50)
+			}
 		}
 	}, [activeConv, selectedConversationId])
 
@@ -800,10 +1306,23 @@ export default function ChatView({
 
 	function handleAnswerQuestion(answerData) {
 		channelRef.current?.push("answer_question", answerData)
+
+		const textAnswer =
+			typeof answerData === "string"
+				? answerData
+				: answerData?.comment ||
+					answerData?.raw_answer ||
+					(typeof answerData?.answer === "string" ? answerData.answer : null)
+		if (textAnswer && pendingQuestion?.isGenericWaiting) {
+			sendMessage(textAnswer).catch(() => {})
+		}
+
 		setPendingQuestion(null)
 		setSessionStatus("running")
+		if (onConversationStatusChange) {
+			onConversationStatusChange(selectedConversationId, "running")
+		}
 	}
-
 
 	function handleRemovePrompt(promptId) {
 		channelRef.current?.push("remove_queued_prompt", { prompt_id: promptId })
@@ -858,8 +1377,72 @@ export default function ChatView({
 		)
 	}
 
+	const handleToggleAlarm = async () => {
+		unlockAudio()
+		let perm = notificationPermission
+		if (isNotificationSupported()) {
+			perm = await requestNotificationPermission()
+			setNotificationPermission(perm)
+		}
+		if (selectedConversationId) {
+			const next = toggleSessionAlarm(selectedConversationId)
+			setAlarmArmed(next)
+			if (next) {
+				playConfirmationPing()
+				triggerConfirmationVibration()
+			}
+		}
+	}
+
 	return (
 		<main className="chat-main">
+			{alarmBanner && (
+				<div
+					className="session-alarm-toast"
+					onClick={() => {
+						if (
+							alarmBanner.conversationId &&
+							alarmBanner.conversationId !== selectedConversationId &&
+							onSelectConversation
+						) {
+							onSelectConversation(alarmBanner.conversationId)
+						}
+						setAlarmBanner(null)
+					}}
+				>
+					<span className="session-alarm-toast__icon inline-flex items-center">
+						<svg
+							width="16"
+							height="16"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="#f59e0b"
+							strokeWidth="2"
+							strokeLinecap="round"
+							strokeLinejoin="round"
+							aria-hidden="true"
+						>
+							<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+							<path d="M13.73 21a2 2 0 0 1-3.46 0" />
+						</svg>
+					</span>
+					<div className="session-alarm-toast__content">
+						<strong>{alarmBanner.title}</strong>
+						<span>{alarmBanner.message}</span>
+					</div>
+					<button
+						type="button"
+						className="session-alarm-toast__close"
+						onClick={(e) => {
+							e.stopPropagation()
+							setAlarmBanner(null)
+						}}
+						aria-label="Dismiss alarm toast"
+					>
+						✕
+					</button>
+				</div>
+			)}
 			{/* Top bar */}
 			<div className="chat-topbar">
 				<div className="chat-topbar-primary">
@@ -880,8 +1463,10 @@ export default function ChatView({
 							</svg>
 						</button>
 						<div className="chat-title-group">
-							<h2 className="chat-title" title={bot.name}>{bot.name}</h2>
-							{bot.bot_type === "ahp" && (
+							<h2 className="chat-title" title={bot?.name || "Botamus Prime"}>
+								{bot?.name || "Botamus Prime"}
+							</h2>
+							{bot?.bot_type === "ahp" && sessionStatus && sessionStatus !== "idle" && (
 								<span
 									className={`session-status-badge session-status-badge--${sessionStatus}`}
 									title={sessionStatus === "waiting_for_input" ? "Needs Input" : sessionStatus}
@@ -898,39 +1483,126 @@ export default function ChatView({
 					</div>
 
 					<div className="chat-topbar-right">
-						{activeConv && onArchiveConversation && (
+						{activeConv &&
+							(isArchived ? (
+								<div className="chat-archived-actions">
+									<span className="chat-archived-pill" title="This session is archived">
+										✓ Archived
+									</span>
+									<button
+										type="button"
+										className="chat-close-session-btn"
+										onClick={() => onSelectConversation && onSelectConversation(null)}
+										title="Close session"
+										aria-label="Close session"
+									>
+										✕ Close
+									</button>
+								</div>
+							) : (
+								onArchiveConversation && (
+									<button
+										type="button"
+										className="chat-archive-btn"
+										onClick={() => onArchiveConversation(activeConv.id)}
+										title="Archive / mark chat as done"
+										aria-label="Archive / mark chat as done"
+									>
+										<svg
+											width="13"
+											height="13"
+											viewBox="0 0 24 24"
+											fill="none"
+											stroke="currentColor"
+											strokeWidth="2"
+											strokeLinecap="round"
+											strokeLinejoin="round"
+										>
+											<rect x="2" y="3" width="20" height="5" rx="1" />
+											<path d="M4 8v11a2 2 0 002 2h12a2 2 0 002-2V8" />
+											<path d="M10 12h4" />
+										</svg>
+										<span className="chat-archive-btn-text">Archive</span>
+									</button>
+								)
+							))}
+						<span className={`connection-dot ${bot?.is_connected ? "connection-dot--on" : ""}`} />
+						<span className="connection-label">{bot?.is_connected ? "Online" : "Offline"}</span>
+						<button
+							type="button"
+							className={`bot-config-btn sync-btn ${isSyncing ? "sync-btn--spinning" : ""}`}
+							onClick={handleManualSync}
+							disabled={isSyncing}
+							title={
+								isSyncing ? "Syncing session messages..." : "Sync session & fetch missing messages"
+							}
+							aria-label="Sync session & fetch missing messages"
+						>
+							<svg
+								width="17"
+								height="17"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="2"
+								strokeLinecap="round"
+								strokeLinejoin="round"
+							>
+								<path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
+							</svg>
+						</button>
+						{isNotificationSupported() && (
 							<button
 								type="button"
-								className="chat-archive-btn"
-								onClick={() => onArchiveConversation(activeConv.id)}
-								title="Archive / mark chat as done"
-								aria-label="Archive / mark chat as done"
+								className={`bot-config-btn notification-toggle-btn ${alarmArmed ? "notification-toggle-btn--armed" : "notification-toggle-btn--disarmed"} ${notificationPermission === "granted" ? "notification-toggle-btn--granted" : ""}`}
+								onClick={handleToggleAlarm}
+								title={
+									alarmArmed
+										? "Alarm active for this session (will ring and notify when bot responds, completes, or needs input). Click to disarm."
+										: "Set alarm for this session (notify and ring when bot responds, completes, or needs input)"
+								}
+								aria-label={
+									alarmArmed
+										? "Disable session alarm and notifications"
+										: "Enable session alarm and notifications"
+								}
 							>
-								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-									<rect x="2" y="3" width="20" height="5" rx="1" />
-									<path d="M4 8v11a2 2 0 002 2h12a2 2 0 002-2V8" />
-									<path d="M10 12h4" />
+								<svg
+									width="17"
+									height="17"
+									viewBox="0 0 24 24"
+									fill={alarmArmed ? "currentColor" : "none"}
+									stroke="currentColor"
+									strokeWidth="1.8"
+									strokeLinecap="round"
+									strokeLinejoin="round"
+								>
+									<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+									<path d="M13.73 21a2 2 0 0 1-3.46 0" />
+									{alarmArmed && <circle cx="18" cy="6" r="3" fill="#f59e0b" stroke="none" />}
+									{!alarmArmed &&
+										notificationPermission !== "granted" &&
+										notificationPermission !== "denied" && (
+											<circle cx="18" cy="6" r="2.5" fill="#f59e0b" stroke="none" />
+										)}
 								</svg>
-								<span className="chat-archive-btn-text">Archive</span>
 							</button>
 						)}
-						<span className={`connection-dot ${bot.is_connected ? "connection-dot--on" : ""}`} />
-						<span className="connection-label">{bot.is_connected ? "Online" : "Offline"}</span>
 						<button
 							type="button"
 							className="bot-config-btn"
-							onClick={() => setShowShowcaseModal(true)}
-							title="VS Code Working States Gallery"
-							aria-label="VS Code Working States Gallery"
-						>
-							<VSCodeSparkleIcon size={16} animated={false} className="text-purple-400" />
-						</button>
-						<button
-							type="button"
-							className="bot-config-btn"
-							onClick={() => setShowConfigModal(true)}
-							title="Bot Configuration & Keys"
-							aria-label="Bot Configuration & Keys"
+							onClick={() => {
+								if (bot) {
+									setShowConfigModal(true)
+								} else {
+									setSettingsInitialTab("states")
+									setShowSettingsModal(true)
+								}
+							}}
+							title={bot ? "Bot Configuration & Connection Details" : "Settings & Working States"}
+							aria-label={
+								bot ? "Bot Configuration & Connection Details" : "Settings & Working States"
+							}
 						>
 							<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
 								<path
@@ -946,37 +1618,155 @@ export default function ChatView({
 					</div>
 				</div>
 
-				{(bot.bot_type || activeConv) && (
+				{(bot?.bot_type || activeConv) && (
 					<div className="chat-topbar-secondary">
 						<span
-							className={`bot-protocol-badge bot-protocol-badge--${bot.bot_type === "ahp" ? "ahp" : "chat"}`}
+							className={`bot-protocol-badge bot-protocol-badge--${bot?.bot_type === "ahp" ? "ahp" : "chat"}`}
 							title={
-								bot.bot_type === "ahp"
+								bot?.bot_type === "ahp"
 									? "Integrated via Agent Host Protocol (AHP)"
 									: "Integrated via Chat Protocol"
 							}
 						>
-							{bot.bot_type === "ahp" ? "AHP Protocol" : "Chat Protocol"}
+							{bot?.bot_type === "ahp" ? "AHP Protocol" : "Chat Protocol"}
 						</span>
-						{(sessionMetadata?.project?.name || activeConv?.metadata?.project?.name) && (
+						{isSessionNested(activeConv, conversations) && (
 							<span
-								className="chat-project-badge"
-								title={
-									sessionMetadata?.project?.uri ||
-									activeConv?.metadata?.project?.uri ||
-									sessionMetadata?.project?.name ||
-									activeConv?.metadata?.project?.name
-								}
+								className="chat-nested-badge"
+								title={(() => {
+									const parent = findParentSession(activeConv, conversations)
+									const parentId = getParentSessionId(activeConv)
+									const parentTitle = parent
+										? formatSessionTitle(parent.title || parent.external_session_id)
+										: parentId
+									return parentTitle
+										? `Nested sub-session under: ${parentTitle}`
+										: "Nested sub-session"
+								})()}
 							>
-								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-									<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+								<svg
+									width="11"
+									height="11"
+									viewBox="0 0 16 16"
+									fill="none"
+									stroke="currentColor"
+									strokeWidth="2.2"
+									strokeLinecap="round"
+									strokeLinejoin="round"
+									aria-hidden="true"
+								>
+									<polyline points="4 2 4 10 12 10" />
+									<polyline points="9 7 12 10 9 13" />
 								</svg>
-								{sessionMetadata?.project?.name || activeConv?.metadata?.project?.name}
+								Nested Session
 							</span>
 						)}
+						{/* Project & Workspace Badge */}
+						{projectInfo.hasProject ? (
+							<button
+								type="button"
+								className="chat-project-badge"
+								onClick={() => setShowProjectModal(true)}
+								title={
+									projectInfo.path ||
+									projectInfo.uri ||
+									projectInfo.name ||
+									"Click to view project details"
+								}
+								aria-label={`Project: ${projectInfo.name}. Click to view details.`}
+							>
+								<svg
+									className="chat-project-icon"
+									width="13"
+									height="13"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									strokeWidth="2"
+									strokeLinecap="round"
+									strokeLinejoin="round"
+								>
+									<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+								</svg>
+								<span className="chat-project-name">{projectInfo.name}</span>
+								{projectInfo.branch && (
+									<span
+										className="chat-project-branch-chip"
+										title={`Git branch: ${projectInfo.branch}`}
+									>
+										<svg
+											width="10"
+											height="10"
+											viewBox="0 0 24 24"
+											fill="none"
+											stroke="currentColor"
+											strokeWidth="2.2"
+											strokeLinecap="round"
+											strokeLinejoin="round"
+										>
+											<line x1="6" y1="3" x2="6" y2="15" />
+											<circle cx="18" cy="6" r="3" />
+											<circle cx="6" cy="18" r="3" />
+											<path d="M18 9a9 9 0 0 1-9 9" />
+										</svg>
+										<span>{projectInfo.branch}</span>
+									</span>
+								)}
+								<svg
+									className="chat-project-chevron"
+									width="11"
+									height="11"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									strokeWidth="2.5"
+									strokeLinecap="round"
+									strokeLinejoin="round"
+								>
+									<polyline points="6 9 12 15 18 9" />
+								</svg>
+							</button>
+						) : activeConv ? (
+							<button
+								type="button"
+								className="chat-project-badge chat-project-badge--empty"
+								onClick={() => setShowProjectModal(true)}
+								title="No project linked. Click to view session details."
+								aria-label="No project linked. Click to view session details."
+							>
+								<svg
+									className="chat-project-icon"
+									width="13"
+									height="13"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									strokeWidth="2"
+									strokeLinecap="round"
+									strokeLinejoin="round"
+								>
+									<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+								</svg>
+								<span className="chat-project-name">No Project</span>
+								<svg
+									className="chat-project-chevron"
+									width="11"
+									height="11"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									strokeWidth="2.5"
+									strokeLinecap="round"
+									strokeLinejoin="round"
+								>
+									<polyline points="6 9 12 15 18 9" />
+								</svg>
+							</button>
+						) : null}
 						{activeConv && (
 							<span className="chat-subtitle" title={activeConv.title || "Session"}>
-								{activeConv.title || "Session"}
+								{formatSessionTitle(activeConv.title)}
+								{isArchived && <span className="chat-subtitle-archived-tag">(Archived)</span>}
 							</span>
 						)}
 					</div>
@@ -991,15 +1781,31 @@ export default function ChatView({
 
 			{/* Messages */}
 			<div className="chat-messages">
+				{isArchived && (
+					<div className="chat-archived-banner">
+						<span className="chat-archived-banner-icon">📁</span>
+						<span className="chat-archived-banner-text">
+							This session is archived. You can review history or{" "}
+							<button
+								type="button"
+								className="chat-archived-close-link"
+								onClick={() => onSelectConversation && onSelectConversation(null)}
+							>
+								close this session
+							</button>
+							.
+						</span>
+					</div>
+				)}
 				{messages.length === 0 && (
 					<div className="chat-welcome">
 						<p className="chat-welcome-text">
-							Start a conversation with <strong>{bot.name}</strong>
+							Start a conversation with <strong>{bot?.name || "your bot"}</strong>
 						</p>
 						<span
-							className={`bot-protocol-badge bot-protocol-badge--${bot.bot_type === "ahp" ? "ahp" : "chat"}`}
+							className={`bot-protocol-badge bot-protocol-badge--${bot?.bot_type === "ahp" ? "ahp" : "chat"}`}
 						>
-							{bot.bot_type === "ahp" ? "AHP Protocol" : "Chat Protocol"}
+							{bot?.bot_type === "ahp" ? "AHP Protocol" : "Chat Protocol"}
 						</span>
 					</div>
 				)}
@@ -1013,9 +1819,11 @@ export default function ChatView({
 				))}
 
 				{/* AHP Interactive Question / Approval Card */}
-				{pendingQuestion && (
+				{(pendingQuestion ||
+					sessionStatus === "waiting_for_input" ||
+					sessionStatus === "needs_input") && (
 					<QuestionApprovalCard
-						question={pendingQuestion}
+						question={pendingQuestion || resolvePendingQuestion(sessionStatus, sessionMetadata)}
 						onAnswer={handleAnswerQuestion}
 					/>
 				)}
@@ -1030,17 +1838,16 @@ export default function ChatView({
 					onSteer={handleSteer}
 				/>
 
-				{botIsTyping && <TypingIndicatorView />}
+				{botIsTyping && sessionStatus !== "thinking" && sessionStatus !== "running" && (
+					<TypingIndicatorView />
+				)}
 				<div ref={messagesEndRef} />
 			</div>
 
 			{/* Input area */}
 			<div className="chat-input-area">
 				{/* Prompt Queue Chips */}
-				<PromptQueue
-					queue={promptQueue}
-					onRemovePrompt={handleRemovePrompt}
-				/>
+				<PromptQueue queue={promptQueue} onRemovePrompt={handleRemovePrompt} />
 
 				{/* File preview when selected */}
 				{selectedFile && (
@@ -1066,12 +1873,24 @@ export default function ChatView({
 						</div>
 					</div>
 				)}
-				<form id="message-form" onSubmit={handleSend} className="chat-input-form">
+				<form
+					id="message-form"
+					onSubmit={handleSend}
+					className={`chat-input-form ${
+						sessionStatus === "waiting_for_input" || sessionStatus === "needs_input"
+							? "chat-input-form--waiting"
+							: ""
+					}`}
+				>
 					<textarea
 						id="message-input"
 						ref={inputRef}
 						className="chat-textarea"
-						placeholder="What do you want to know?"
+						placeholder={
+							sessionStatus === "waiting_for_input" || sessionStatus === "needs_input"
+								? "Agent is waiting for your input to continue..."
+								: "What do you want to know?"
+						}
 						value={inputValue}
 						onChange={(e) => setInputValue(e.target.value)}
 						rows={1}
@@ -1142,8 +1961,6 @@ export default function ChatView({
 							)}
 						</div>
 
-
-
 						{selectedFile ? (
 							<button
 								type="button"
@@ -1172,7 +1989,11 @@ export default function ChatView({
 						) : (
 							<button
 								type="submit"
-								className={`send-btn ${inputValue.trim() ? "send-btn--active" : ""}`}
+								className={`send-btn ${inputValue.trim() ? "send-btn--active" : ""} ${
+									sessionStatus === "waiting_for_input" || sessionStatus === "needs_input"
+										? "send-btn--waiting"
+										: ""
+								}`}
 								disabled={sending || !inputValue.trim()}
 								aria-label="Send message"
 							>
@@ -1191,55 +2012,42 @@ export default function ChatView({
 				</form>
 			</div>
 
+			{/* Settings Modal (Alerts, Working States Showcase) */}
+			<SettingsModal
+				isOpen={showSettingsModal}
+				onClose={() => setShowSettingsModal(false)}
+				initialTab={settingsInitialTab}
+				token={token}
+				bot={bot}
+				showBotConfig={false}
+				selectedConversationId={selectedConversationId}
+				onBotUpdated={(updated) => {
+					onBotStatusChange && onBotStatusChange(updated.id, updated)
+				}}
+			/>
+
 			{/* Bot Configuration Modal */}
-			{showConfigModal && (
+			{bot && showConfigModal && (
 				<BotConfigModal
+					isOpen={showConfigModal}
+					onClose={() => setShowConfigModal(false)}
 					token={token}
 					bot={bot}
-					onClose={() => setShowConfigModal(false)}
 					onBotUpdated={(updated) => {
 						onBotStatusChange && onBotStatusChange(updated.id, updated)
 					}}
 				/>
 			)}
 
-			{/* VS Code Working States Showcase Modal */}
-			{showShowcaseModal && (
-				<div className="modal-overlay" onClick={() => setShowShowcaseModal(false)}>
-					<div
-						className="modal-card modal-card--config"
-						style={{ maxWidth: "720px", width: "90%" }}
-						onClick={(e) => e.stopPropagation()}
-					>
-						<div className="modal-header">
-							<div className="modal-title-row">
-								<VSCodeSparkleIcon size={18} animated={true} className="text-purple-400 mr-2" />
-								<h3 className="modal-title">VS Code Working States Preview</h3>
-							</div>
-							<button
-								type="button"
-								className="modal-close-btn"
-								onClick={() => setShowShowcaseModal(false)}
-								aria-label="Close"
-							>
-								✕
-							</button>
-						</div>
-						<div className="modal-body" style={{ maxHeight: "75vh", overflowY: "auto" }}>
-							<VSCodeIconsShowcase />
-						</div>
-						<div className="modal-actions">
-							<button
-								type="button"
-								className="modal-btn modal-btn--primary"
-								onClick={() => setShowShowcaseModal(false)}
-							>
-								Done
-							</button>
-						</div>
-					</div>
-				</div>
-			)}
+			{/* Project & Workspace Info Modal */}
+			<ProjectInfoModal
+				isOpen={showProjectModal}
+				onClose={() => setShowProjectModal(false)}
+				projectInfo={projectInfo}
+				activeConv={activeConv}
+				bot={bot}
+				sessionStatus={sessionStatus}
+			/>
 		</main>
 	)
 }

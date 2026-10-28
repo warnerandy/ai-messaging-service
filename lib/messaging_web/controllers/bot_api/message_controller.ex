@@ -6,6 +6,7 @@ defmodule MessagingWeb.BotAPI.MessageController do
   # POST /api/bot/messages - Bot sends a message
   def create(conn, params) do
     bot_token = conn.assigns.bot_token
+    conversation = Chat.resolve_bot_conversation(bot_token, params)
 
     attrs = %{
       role: "bot",
@@ -13,12 +14,10 @@ defmodule MessagingWeb.BotAPI.MessageController do
       body: params["body"],
       metadata: params["metadata"] || %{},
       is_suggestion: params["is_suggestion"] || false,
-      conversation_id: params["conversation_id"]
+      conversation_id: conversation.id
     }
 
-    conversation = Chat.get_conversation!(attrs.conversation_id, bot_token_id: bot_token.id)
-
-    case Chat.create_message(%{attrs | conversation_id: conversation.id}) do
+    case Chat.create_message(attrs) do
       {:ok, message} ->
         conn
         |> put_status(:created)
@@ -33,6 +32,7 @@ defmodule MessagingWeb.BotAPI.MessageController do
           is_suggestion: message.is_suggestion,
           inserted_at: message.inserted_at
         })
+
       {:error, changeset} ->
         conn
         |> put_status(:unprocessable_entity)

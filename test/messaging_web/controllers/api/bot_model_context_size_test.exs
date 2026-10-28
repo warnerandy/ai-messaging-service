@@ -3,7 +3,6 @@ defmodule MessagingWeb.API.BotModelContextSizeTest do
 
   alias Messaging.Bots
   alias Messaging.Chat
-  alias Messaging.AccountsFixtures
 
   describe "bot models and message context sizes" do
     setup :register_and_log_in_user
@@ -23,7 +22,7 @@ defmodule MessagingWeb.API.BotModelContextSizeTest do
               "name" => "gpt-4o",
               "input_cost_per_token" => "0.000005",
               "output_cost_per_token" => "0.000015",
-              "context_sizes" => [4096, 8192, 16384, 32768, 128000]
+              "context_sizes" => [4096, 8192, 16384, 32768, 128_000]
             },
             %{
               "name" => "gpt-4o-mini",
@@ -37,7 +36,7 @@ defmodule MessagingWeb.API.BotModelContextSizeTest do
       bot_res = json_response(bot_conn, 200)
       assert length(bot_res["models"]) == 2
       gpt4o = Enum.find(bot_res["models"], &(&1["name"] == "gpt-4o"))
-      assert gpt4o["context_sizes"] == [4096, 8192, 16384, 32768, 128000]
+      assert gpt4o["context_sizes"] == [4096, 8192, 16384, 32768, 128_000]
 
       # 3. User lists models for this bot token via GET /api/bot-tokens/:id/models
       user_models_res =
@@ -47,7 +46,7 @@ defmodule MessagingWeb.API.BotModelContextSizeTest do
 
       assert length(user_models_res["models"]) == 2
       listed_gpt4o = Enum.find(user_models_res["models"], &(&1["name"] == "gpt-4o"))
-      assert listed_gpt4o["context_sizes"] == [4096, 8192, 16384, 32768, 128000]
+      assert listed_gpt4o["context_sizes"] == [4096, 8192, 16384, 32768, 128_000]
 
       # 4. User creates a conversation
       {:ok, conv} =
