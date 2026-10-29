@@ -697,19 +697,28 @@ export default function ChatView({
 				ch.on("ahp_event", (payload) => {
 					if (!payload) return
 					const { event_type, data } = payload
-					if (event_type === "thinking") {
-						const chunk = data?.chunk ?? data?.text ?? data?.thought ?? ""
-						setThinkingText((prev) => prev + chunk)
-						setSessionStatus("thinking")
-						if (onConversationStatusChange) {
-							onConversationStatusChange(selectedConversationId, "thinking")
+					if (
+						event_type === "thinking" ||
+						event_type === "terminal" ||
+						event_type === "output" ||
+						event_type === "log"
+					) {
+						const chunk = data?.chunk ?? data?.text ?? data?.thought ?? data?.output ?? ""
+						if (chunk) {
+							setThinkingText((prev) => prev + chunk)
+						}
+						if (event_type === "thinking") {
+							setSessionStatus("thinking")
+							if (onConversationStatusChange) {
+								onConversationStatusChange(selectedConversationId, "thinking")
+							}
 						}
 					} else if (event_type === "step" || event_type === "tool_call") {
 						setToolCalls((prev) => [...prev, data])
-						if (data?.step || data?.tool || data?.name) {
+						if (data?.step || data?.tool || data?.name || data?.command) {
 							const stepMeta = {
-								step: data.step,
-								tool: data.tool || data.name,
+								step: data.step || (data.command ? `Running ${data.command}` : ""),
+								tool: data.tool || data.name || (data.command ? "terminal" : ""),
 							}
 							setSessionMetadata((prev) => ({
 								...prev,
@@ -718,6 +727,20 @@ export default function ChatView({
 							if (onConversationStatusChange) {
 								onConversationStatusChange(selectedConversationId, "running", stepMeta)
 							}
+						}
+					} else if (event_type === "plan") {
+						if (data) {
+							setSessionMetadata((prev) => ({
+								...prev,
+								plan: data.plan || data.steps || data,
+							}))
+						}
+					} else if (event_type === "changeset") {
+						if (data) {
+							setSessionMetadata((prev) => ({
+								...prev,
+								changeset: data.changeset || data.files || data,
+							}))
 						}
 					} else if (event_type === "question") {
 						const resolvedQ = resolvePendingQuestion("waiting_for_input", {}, data)

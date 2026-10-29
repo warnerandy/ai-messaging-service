@@ -221,4 +221,76 @@ defmodule MessagingWeb.AhpChannelTest do
     child = Enum.find(sessions, &(&1.external_session_id == "child-task"))
     assert child.parent_session_id == "parent-task"
   end
+
+  test "ahp_event persists step, plan, and changeset in conversation metadata", %{
+    bot_token: bot,
+    bot_socket: bot_socket,
+    user_socket: user_socket
+  } do
+    {:ok, _, bot_channel} =
+      subscribe_and_join(bot_socket, BotChannel, "bot:#{bot.channel_code}", %{})
+
+    ref =
+      push(bot_channel, "sync_sessions", %{
+        "sessions" => [
+          %{
+            "session_id" => "spec-task",
+            "title" => "Spec Task",
+            "status" => "running"
+          }
+        ]
+      })
+
+    assert_reply ref, :ok, %{sessions: [session]}
+    conv_id = session.id
+
+    {:ok, _, _user_channel} =
+      subscribe_and_join(user_socket, ConversationChannel, "conversation:#{conv_id}", %{})
+
+    # 1. Step event
+    push(bot_channel, "ahp_event", %{
+      "conversation_id" => conv_id,
+      "event_type" => "step",
+      "data" => %{"tool" => "read_file", "step" => "Reading mix.exs"}
+    })
+
+    assert_push "ahp_event", %{
+      event_type: "step",
+      data: %{"tool" => "read_file", "step" => "Reading mix.exs"}
+    }
+
+    updated = Messaging.Chat.get_conversation!(conv_id, [])
+    assert updated.metadata["step"] == "Reading mix.exs"
+    assert updated.metadata["tool"] == "read_file"
+
+    # 2. Plan event
+    push(bot_channel, "ahp_event", %{
+      "conversation_id" => conv_id,
+      "event_type" => "plan",
+      "data" => %{"steps" => ["Init", "Build", "Deploy"]}
+    })
+
+    assert_push "ahp_event", %{
+      event_type: "plan",
+      data: %{"steps" => ["Init", "Build", "Deploy"]}
+    }
+
+    updated = Messaging.Chat.get_conversation!(conv_id, [])
+    assert updated.metadata["plan"]["steps"] == ["Init", "Build", "Deploy"]
+
+    # 3. Changeset event
+    push(bot_channel, "ahp_event", %{
+      "conversation_id" => conv_id,
+      "event_type" => "changeset",
+      "data" => %{"files" => ["lib/app.ex", "test/app_test.exs"]}
+    })
+
+    assert_push "ahp_event", %{
+      event_type: "changeset",
+      data: %{"files" => ["lib/app.ex", "test/app_test.exs"]}
+    }
+
+    updated = Messaging.Chat.get_conversation!(conv_id, [])
+    assert updated.metadata["changeset"]["files"] == ["lib/app.ex", "test/app_test.exs"]
+  end
 end

@@ -273,6 +273,20 @@ defmodule MessagingWeb.BotChannel do
         Chat.update_session_status(conv.id, new_status, data)
         maybe_dispatch_queued_prompt(conv.id, new_status, socket)
 
+      event_type in ["step", "tool_call"] and is_map(data) ->
+        step_meta =
+          data
+          |> Map.take(["step", "tool", "name", "tool_name", "command", "args", "tool_status"])
+          |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+          |> Map.new()
+
+        if map_size(step_meta) > 0 do
+          Chat.update_session_status(conv.id, conv.status, step_meta)
+        end
+
+      event_type in ["plan", "changeset"] and is_map(data) ->
+        Chat.update_session_status(conv.id, conv.status, %{event_type => data})
+
       true ->
         :ok
     end

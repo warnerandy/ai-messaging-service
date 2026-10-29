@@ -1058,23 +1058,50 @@ Validation error shape:
 
 ## Agent Host Protocol (AHP) Integration Mode
 
-In addition to standard chat bots, the service natively supports **Agent Host Protocol (AHP)** integration for programming and coding assistants.
+In addition to standard chat bots, the service natively implements and supports the **Agent Host Protocol (AHP)** specification for autonomous programming and coding assistants.
 
-### 1. Bot Registration & Type
+### 1. Architectural Doctrine & Protocol Overview
+
+AHP decouples AI agent execution runtimes from user interface clients (such as IDEs, web dashboards, companion apps, or CLI tools):
+* **Host-Authoritative**: The agent host server owns session execution. Tasks persist uninterrupted even when client windows close, disconnect, or switch between devices.
+* **State-First Action Model**: State updates follow sequenced, immutable action envelopes with write-ahead reconciliation.
+* **Multi-Client Synchronization**: Multiple clients can connect concurrently to observe live reasoning, review tool executions, and participate in human-in-the-loop approvals.
+* **URI-Addressed Channels**:
+  - `ahp-root://`: Host configuration, global agent settings, and capability discovery.
+  - `ahp-session:/<uuid>`: Session lifecycle, participants, project workspace context, and status.
+  - `ahp-chat:/<uuid>`: Chat turns, user prompts, reasoning tokens, and completions.
+  - `ahp-terminal:/<id>`: Persistent terminal execution state and live command stdout/stderr output.
+  - `ahp-changeset:/<id>`: Working tree modifications, staged files, and reviewable diffs.
+  - `mcp://`: Model Context Protocol side-channel for tool server discovery and tool invocations.
+
+---
+
+### 2. Bot Registration & Type
 
 When creating a bot token, set `"bot_type": "ahp"`:
 
-```json
+```http
 POST /api/bot-tokens
+Content-Type: application/json
+Authorization: Bearer <USER_TOKEN>
+```
+
+```json
 {
   "name": "my-coding-agent",
-  "bot_type": "ahp"
+  "bot_type": "ahp",
+  "metadata": {
+    "version": "2.4.0",
+    "capabilities": ["streaming_thinking", "nested_sessions", "terminal_streaming", "changeset_tracking"]
+  }
 }
 ```
 
-### 2. Multi-Session Synchronization (`sync_sessions`)
+---
 
-AHP agents report their active non-archived sessions. Each active session maps directly to a sub-chat in the service with its own live status.
+### 3. Multi-Session Synchronization (`sync_sessions`)
+
+AHP agents report their active non-archived sessions. Each active session maps directly to a sub-chat in the service with its own live status and project workspace binding.
 
 Push `sync_sessions` over WebSocket (`bot:<CHANNEL_CODE>`):
 
@@ -1083,6 +1110,7 @@ Push `sync_sessions` over WebSocket (`bot:<CHANNEL_CODE>`):
   "topic": "bot:<CHANNEL_CODE>",
   "event": "sync_sessions",
   "payload": {
+    "server_seq": 104,
     "sessions": [
       {
         "session_id": "session-backend-refactor",
@@ -1092,7 +1120,13 @@ Push `sync_sessions` over WebSocket (`bot:<CHANNEL_CODE>`):
         "last_modified_time": "2026-10-07T12:45:00Z",
         "metadata": {
           "step": "Running mix compile",
-          "tool": "run_command"
+          "tool": "run_command",
+          "project": {
+            "name": "ai-messaging-service",
+            "path": "/home/dev/ai-messaging-service",
+            "git_branch": "feature/ahp-sync",
+            "repository": "github.com/my-org/ai-messaging-service"
+          }
         }
       },
       {
@@ -1127,13 +1161,15 @@ Push `sync_sessions` over WebSocket (`bot:<CHANNEL_CODE>`):
 ```
 
 #### Nested Sessions (Parent-Child Hierarchy)
-AHP agents can nest sub-agent or child sessions under an orchestrator session.
-- To nest a session, provide `parent_session_id` (or `parentSessionId`) set to the parent session's ID (or `external_session_id`), or set `"nested": true`.
-- Top-level attributes like `parent_session_id` are automatically preserved in session metadata.
+AHP agents can nest sub-agent or child sessions under an orchestrator session:
+- **Linkage**: Provide `parent_session_id` (or `parentSessionId`, `parent_id`, or `nested: true`) referencing the orchestrator session's external ID.
+- **Inheritance**: Nested sessions automatically inherit project workspace metadata (`name`, `path`, `git_branch`, `repository`, `working_directories`).
+- **Visual Sidebar Tree**: Child sessions are rendered with a `↳ Nested` badge pill, elbow connecting lines (`└─`), parent hover tooltips, and are positioned directly below their parent session.
+- **Session Pruning**: Sessions omitted in subsequent `sync_sessions` invocations are gracefully archived (`status: "archived"`).
 
-Sessions not included in subsequent `sync_sessions` calls are marked as `archived` in the service.
+---
 
-### 3. Session Status Updates (`session_status`)
+### 4. Session Status Updates (`session_status`)
 
 Push status changes as the agent progresses:
 
@@ -1145,25 +1181,28 @@ Push status changes as the agent progresses:
     "session_id": "session-backend-refactor",
     "status": "thinking",
     "metadata": {
-      "step": "Analyzing dependency graph"
+      "step": "Analyzing dependency graph",
+      "tool": "read_file"
     }
   },
   "ref": "2"
 }
 ```
 
-**Supported Statuses:**
+**Supported Status Spectrum:**
 - `"idle"`: Agent is awaiting user requests. Any queued prompt is automatically dispatched.
 - `"running"`: Agent is executing tools or commands.
 - `"thinking"`: Agent is streaming reasoning / thinking tokens.
-- `"waiting_for_input"`: Agent is awaiting user approval or question answer.
-- `"archived"`: Session has ended.
+- `"waiting_for_input"` (or `"needs_input"`): Agent is awaiting user approval or question answer.
+- `"archived"` (or `"completed"`, `"done"`): Session has concluded.
 
-### 4. Ferrying AHP Events (`ahp_event`)
+---
+
+### 5. Ferrying AHP Events (`ahp_event`)
 
 Ferry raw AHP events to the service with minimal transformation:
 
-#### a. Streaming Thinking Tokens
+#### a. Streaming Reasoning Tokens (`event_type: "thinking"`)
 ```json
 {
   "topic": "bot:<CHANNEL_CODE>",
@@ -1172,14 +1211,14 @@ Ferry raw AHP events to the service with minimal transformation:
     "session_id": "session-backend-refactor",
     "event_type": "thinking",
     "data": {
-      "chunk": "Checking database migrations to ensure compatibility..."
+      "chunk": "Checking database migrations to ensure compatibility...\n"
     }
   },
   "ref": "3"
 }
 ```
 
-#### b. Tool / Step Progress
+#### b. Tool Execution & Step Progress (`event_type: "step"` or `"tool_call"`)
 ```json
 {
   "topic": "bot:<CHANNEL_CODE>",
@@ -1190,14 +1229,74 @@ Ferry raw AHP events to the service with minimal transformation:
     "data": {
       "tool": "run_command",
       "command": "mix test test/messaging/chat_test.exs",
-      "step": "Executing chat unit tests"
+      "step": "Executing chat unit tests",
+      "tool_status": "executing",
+      "args": {"cmd": "mix test"}
     }
   },
   "ref": "4"
 }
 ```
 
-#### c. Interactive Question / Approval Request
+#### c. Live Terminal & Command Output (`event_type: "terminal"` or `"output"`)
+```json
+{
+  "topic": "bot:<CHANNEL_CODE>",
+  "event": "ahp_event",
+  "payload": {
+    "session_id": "session-backend-refactor",
+    "event_type": "terminal",
+    "data": {
+      "chunk": "Compiling 4 files (.ex)\nGenerated messaging app\n.. Finished in 0.4s\n",
+      "stream": "stdout"
+    }
+  },
+  "ref": "5"
+}
+```
+
+#### d. Milestone Plan Updates (`event_type: "plan"`)
+```json
+{
+  "topic": "bot:<CHANNEL_CODE>",
+  "event": "ahp_event",
+  "payload": {
+    "session_id": "session-backend-refactor",
+    "event_type": "plan",
+    "data": {
+      "title": "Refactoring Roadmap",
+      "steps": [
+        {"title": "Inspect schema", "status": "completed"},
+        {"title": "Run unit tests", "status": "in_progress"},
+        {"title": "Update migration", "status": "pending"}
+      ]
+    }
+  },
+  "ref": "6"
+}
+```
+
+#### e. Changeset & Working Tree Diffs (`event_type: "changeset"`)
+```json
+{
+  "topic": "bot:<CHANNEL_CODE>",
+  "event": "ahp_event",
+  "payload": {
+    "session_id": "session-backend-refactor",
+    "event_type": "changeset",
+    "data": {
+      "files": [
+        "lib/messaging/chat.ex",
+        "lib/messaging_web/channels/bot_channel.ex"
+      ],
+      "stats": {"added": 24, "removed": 6}
+    }
+  },
+  "ref": "7"
+}
+```
+
+#### f. Interactive Question / Approval Request (`event_type: "question"`)
 ```json
 {
   "topic": "bot:<CHANNEL_CODE>",
@@ -1213,13 +1312,15 @@ Ferry raw AHP events to the service with minimal transformation:
       "default_action": "Proceed"
     }
   },
-  "ref": "5"
+  "ref": "8"
 }
 ```
 
-### 5. Receiving User Interactions from the Service
+---
 
-The bot receives user responses pushed over the WebSocket:
+### 6. Receiving User Interactions from the Service
+
+The bot receives user actions and steering directives pushed over the WebSocket:
 
 #### a. Question / Approval Answer (`answer_question`)
 ```json
@@ -1287,14 +1388,20 @@ When a user opens a session in the PWA or clicks the topbar "Sync" button, the s
   "payload": {
     "conversation_id": 42,
     "external_session_id": "session-backend-refactor",
+    "metadata": {
+      "project": {"name": "ai-messaging-service"}
+    },
     "requested_at": "2026-10-20T20:30:00Z"
   }
 }
 ```
 If your agent host bridge tracks recent turns or unacknowledged messages, it can respond by emitting any missed messages via `send_message` or completion events via `ahp_event`.
 
-### 6. Example Python Bridge Snippet
+---
 
+### 7. Complete Bridge Client Examples
+
+#### Python AHP Host Bridge
 ```python
 import json
 import websocket
@@ -1313,7 +1420,7 @@ ws.send(json.dumps({
     "ref": "1"
 }))
 
-# 2. Sync active coding sessions
+# 2. Sync active coding sessions (with parent/child hierarchy and project metadata)
 ws.send(json.dumps({
     "topic": f"bot:{CHANNEL_CODE}",
     "event": "sync_sessions",
@@ -1323,7 +1430,21 @@ ws.send(json.dumps({
                 "session_id": "session-api-refactor",
                 "title": "API Refactor Task",
                 "status": "running",
-                "metadata": {"step": "Compiling Elixir code", "tool": "mix compile"}
+                "metadata": {
+                    "project": {
+                        "name": "ai-messaging-service",
+                        "path": "/home/dev/ai-messaging-service",
+                        "git_branch": "feature/ahp"
+                    },
+                    "step": "Compiling Elixir code",
+                    "tool": "mix compile"
+                }
+            },
+            {
+                "session_id": "session-api-types",
+                "title": "Subtask: Type Checks",
+                "parent_session_id": "session-api-refactor",
+                "status": "running"
             }
         ]
     },
@@ -1342,6 +1463,18 @@ ws.send(json.dumps({
     "ref": "3"
 }))
 
+# 4. Stream terminal output
+ws.send(json.dumps({
+    "topic": f"bot:{CHANNEL_CODE}",
+    "event": "ahp_event",
+    "payload": {
+        "session_id": "session-api-refactor",
+        "event_type": "terminal",
+        "data": {"chunk": "Compiled lib/messaging/chat.ex\n"}
+    },
+    "ref": "4"
+}))
+
 # Listen for user interactions (answer_question, steer_agent, execute_queued_prompt)
 while True:
     msg = json.loads(ws.recv())
@@ -1352,6 +1485,56 @@ while True:
         print(f"User steered agent: {msg['payload']}")
     elif event == "execute_queued_prompt":
         print(f"Executing queued prompt: {msg['payload']}")
+    elif event == "request_session_sync":
+        print(f"Sync requested for session: {msg['payload']}")
+```
+
+#### Node.js / TypeScript AHP Host Bridge
+```typescript
+import { Socket } from "phoenix-channels";
+
+const BOT_TOKEN = "your_bot_token";
+const CHANNEL_CODE = "your_channel_code";
+
+const socket = new Socket("ws://localhost:4002/bot/websocket", {
+  params: { token: BOT_TOKEN }
+});
+
+socket.connect();
+
+const channel = socket.channel(`bot:${CHANNEL_CODE}`, {});
+
+channel.join()
+  .receive("ok", () => console.log("Joined bot channel"))
+  .receive("error", (resp) => console.error("Join failed", resp));
+
+// Sync sessions
+channel.push("sync_sessions", {
+  sessions: [
+    {
+      session_id: "agent-task-1",
+      title: "Orchestrator Task",
+      status: "running",
+      metadata: { project: { name: "aims", git_branch: "master" } }
+    }
+  ]
+});
+
+// Stream reasoning
+channel.push("ahp_event", {
+  session_id: "agent-task-1",
+  event_type: "thinking",
+  data: { chunk: "Evaluating AST nodes...\n" }
+});
+
+// Listen for steering & questions
+channel.on("answer_question", (payload) => {
+  console.log("Human approval received:", payload);
+});
+
+channel.on("steer_agent", (payload) => {
+  console.log("Steering command received:", payload.action, payload.instruction);
+});
 ```
 
 ---

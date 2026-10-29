@@ -77,6 +77,28 @@ export default function LiveThinking({
 							{currentTool}
 						</span>
 					)}
+
+					{metadata?.changeset && (
+						<span
+							className="live-tool-chip"
+							title={
+								Array.isArray(metadata.changeset?.files)
+									? metadata.changeset.files.join(", ")
+									: "Changeset tracked"
+							}
+						>
+							📁{" "}
+							{Array.isArray(metadata.changeset?.files)
+								? `${metadata.changeset.files.length} files changed`
+								: "Changeset"}
+						</span>
+					)}
+
+					{metadata?.plan && (
+						<span className="live-tool-chip" title="Active Execution Plan">
+							📋 Plan
+						</span>
+					)}
 				</div>
 
 				<div className="live-thinking-actions">

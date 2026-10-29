@@ -64,4 +64,22 @@ describe("LiveThinking", () => {
 
 		expect(handleSteer).toHaveBeenCalledWith("Try another approach")
 	})
+
+	it("renders changeset and plan chips when present in metadata", () => {
+		render(
+			<LiveThinking
+				status="running"
+				thinkingText="Running..."
+				metadata={{
+					tool: "edit_file",
+					step: "Modifying router",
+					changeset: { files: ["lib/router.ex", "lib/controller.ex"] },
+					plan: { steps: ["Analyze", "Edit", "Test"] },
+				}}
+			/>,
+		)
+
+		expect(screen.getByText(/2 files changed/i)).toBeInTheDocument()
+		expect(screen.getByText(/Plan/i)).toBeInTheDocument()
+	})
 })
