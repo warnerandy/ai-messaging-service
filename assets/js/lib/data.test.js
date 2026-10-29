@@ -81,4 +81,23 @@ describe("createConversation", () => {
 			token: "token-1",
 		})
 	})
+
+	it("supports external_session_id in options object", async () => {
+		apiRequest.mockResolvedValue({ id: "conversation-1" })
+
+		await createConversation("token-1", "bot-1", {
+			title: "New Task",
+			external_session_id: "123e4567-e89b-12d3-a456-426614174000",
+		})
+
+		expect(apiRequest).toHaveBeenCalledWith("/api/conversations", {
+			method: "POST",
+			body: {
+				bot_token_id: "bot-1",
+				title: "New Task",
+				external_session_id: "123e4567-e89b-12d3-a456-426614174000",
+			},
+			token: "token-1",
+		})
+	})
 })

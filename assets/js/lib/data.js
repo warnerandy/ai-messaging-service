@@ -60,14 +60,19 @@ export function listConversations(token) {
 }
 
 export function createConversation(token, botTokenId, titleOrOpts, maybeMetadata) {
+	const isOpts = typeof titleOrOpts === "object" && titleOrOpts !== null
 	const title = typeof titleOrOpts === "string" ? titleOrOpts : titleOrOpts?.title
 	const metadata =
-		typeof titleOrOpts === "object" &&
-		titleOrOpts !== null &&
+		isOpts &&
 		!titleOrOpts.title &&
-		!titleOrOpts.metadata
+		!titleOrOpts.metadata &&
+		!titleOrOpts.external_session_id &&
+		!titleOrOpts.externalSessionId
 			? titleOrOpts
 			: titleOrOpts?.metadata || maybeMetadata || {}
+	const externalSessionId = isOpts
+		? titleOrOpts.external_session_id || titleOrOpts.externalSessionId
+		: null
 
 	return apiRequest("/api/conversations", {
 		method: "POST",
@@ -75,6 +80,7 @@ export function createConversation(token, botTokenId, titleOrOpts, maybeMetadata
 			bot_token_id: botTokenId,
 			...(title ? { title } : {}),
 			...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
+			...(externalSessionId ? { external_session_id: externalSessionId } : {}),
 		},
 		token,
 	})

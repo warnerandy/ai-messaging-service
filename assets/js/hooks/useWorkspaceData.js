@@ -197,10 +197,18 @@ export function useWorkspaceData() {
 				const bot = botsRef.current.find((entry) => entry.id === selectedBotId)
 				const title = opts.title || (opts.projectName ? `${opts.projectName} Session` : bot?.name)
 				const metadata = opts.metadata || {}
-				const created =
-					metadata && Object.keys(metadata).length > 0
-						? await createConversation(token, selectedBotId, title, metadata)
-						: await createConversation(token, selectedBotId, title)
+				const externalSessionId =
+					opts.external_session_id ||
+					opts.externalSessionId ||
+					(typeof window !== "undefined" && window.crypto?.randomUUID?.()
+						? window.crypto.randomUUID()
+						: undefined)
+
+				const created = await createConversation(token, selectedBotId, {
+					title,
+					metadata,
+					external_session_id: externalSessionId,
+				})
 				setConversations((prev) => [created, ...prev])
 				selectConversation(created.id)
 				return created

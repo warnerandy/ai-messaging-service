@@ -147,6 +147,8 @@ defmodule Messaging.Chat do
   end
 
   def create_conversation(attrs) do
+    attrs = ensure_external_session_id(attrs)
+
     %Conversation{}
     |> Conversation.changeset(attrs)
     |> Repo.insert()
@@ -158,10 +160,50 @@ defmodule Messaging.Chat do
           {:conversation_created, conv}
         )
 
+        create_payload = %{
+          "conversation_id" => conv.id,
+          "session_id" => conv.external_session_id,
+          "external_session_id" => conv.external_session_id,
+          "title" => conv.title,
+          "status" => conv.status,
+          "metadata" => conv.metadata || %{},
+          "created_at" => DateTime.to_iso8601(conv.inserted_at)
+        }
+
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "bot:#{conv.bot_token_id}",
+          {:create_session, create_payload}
+        )
+
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "bot:#{conv.bot_token_id}",
+          {:request_session_sync, create_payload}
+        )
+
       _ ->
         :ok
     end)
   end
+
+  defp ensure_external_session_id(attrs) when is_map(attrs) do
+    ext_id = attrs[:external_session_id] || attrs["external_session_id"]
+
+    if is_nil(ext_id) or ext_id == "" do
+      uuid = Ecto.UUID.generate()
+
+      if Map.has_key?(attrs, :bot_token_id) or Map.has_key?(attrs, :user_id) do
+        Map.put(attrs, :external_session_id, uuid)
+      else
+        Map.put(attrs, "external_session_id", uuid)
+      end
+    else
+      attrs
+    end
+  end
+
+  defp ensure_external_session_id(attrs), do: attrs
 
   def get_conversation_by_external_session(bot_token_id, external_session_id) do
     Conversation

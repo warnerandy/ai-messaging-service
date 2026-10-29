@@ -49,6 +49,10 @@ defmodule MessagingWeb.BotChannel do
 
     push(socket, "new_message", %{
       conversation_id: conversation.id,
+      session_id: conversation.external_session_id,
+      external_session_id: conversation.external_session_id,
+      conversation_title: conversation.title,
+      conversation_metadata: conversation.metadata || %{},
       message: %{
         id: message.id,
         role: message.role,
@@ -63,6 +67,16 @@ defmodule MessagingWeb.BotChannel do
       }
     })
 
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:create_session, payload}, socket) do
+    Logger.info(
+      "[BotChannel] pushing create_session session_id=#{payload["external_session_id"]} conv_id=#{payload["conversation_id"]} bot_token_id=#{socket.assigns.bot_token.id}"
+    )
+
+    push(socket, "create_session", payload)
     {:noreply, socket}
   end
 

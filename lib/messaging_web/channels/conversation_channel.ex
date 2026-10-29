@@ -19,8 +19,10 @@ defmodule MessagingWeb.ConversationChannel do
           {:request_session_sync,
            %{
              "conversation_id" => conversation.id,
+             "session_id" => conversation.external_session_id,
              "external_session_id" => conversation.external_session_id,
              "metadata" => conversation.metadata,
+             "title" => conversation.title,
              "requested_at" => DateTime.utc_now() |> DateTime.to_iso8601()
            }}
         )
@@ -177,7 +179,9 @@ defmodule MessagingWeb.ConversationChannel do
         {:request_session_sync,
          %{
            "conversation_id" => conv_id,
+           "session_id" => conversation.external_session_id,
            "external_session_id" => conversation.external_session_id,
+           "title" => conversation.title,
            "metadata" => conversation.metadata,
            "requested_at" => DateTime.utc_now() |> DateTime.to_iso8601()
          }}

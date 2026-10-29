@@ -293,4 +293,80 @@ defmodule MessagingWeb.AhpChannelTest do
     updated = Messaging.Chat.get_conversation!(conv_id, [])
     assert updated.metadata["changeset"]["files"] == ["lib/app.ex", "test/app_test.exs"]
   end
+
+  test "creating a conversation in AIMS broadcasts create_session and request_session_sync to bot with UUID",
+       %{
+         user: user,
+         bot_token: bot,
+         bot_socket: bot_socket
+       } do
+    {:ok, _, _bot_channel} =
+      subscribe_and_join(bot_socket, BotChannel, "bot:#{bot.channel_code}", %{})
+
+    {:ok, conv} =
+      Messaging.Chat.create_conversation(%{
+        user_id: user.id,
+        bot_token_id: bot.id,
+        title: "Project Alpha Session",
+        metadata: %{
+          "project" => %{
+            "name" => "aims",
+            "path" => "/home/user/aims"
+          }
+        }
+      })
+
+    assert is_binary(conv.external_session_id)
+    assert conv.external_session_id != ""
+
+    # Bot receives create_session
+    assert_push "create_session", %{
+      "conversation_id" => conv_id,
+      "session_id" => session_id,
+      "external_session_id" => session_id,
+      "title" => "Project Alpha Session",
+      "metadata" => %{
+        "project" => %{
+          "name" => "aims",
+          "path" => "/home/user/aims"
+        }
+      }
+    }
+
+    assert conv_id == conv.id
+    assert session_id == conv.external_session_id
+
+    # Bot also receives request_session_sync
+    assert_push "request_session_sync", %{
+      "conversation_id" => ^conv_id,
+      "session_id" => ^session_id,
+      "external_session_id" => ^session_id
+    }
+
+    # User sends a message via Chat context (as REST API does)
+    {:ok, _message} =
+      Messaging.Chat.create_message(%{
+        conversation_id: conv.id,
+        user_id: user.id,
+        role: "user",
+        body: "Let's review the integration file"
+      })
+
+    # Bot receives new_message containing session_id and metadata
+    assert_push "new_message", %{
+      message: %{
+        body: "Let's review the integration file"
+      },
+      conversation_id: ^conv_id,
+      session_id: ^session_id,
+      external_session_id: ^session_id,
+      conversation_title: "Project Alpha Session",
+      conversation_metadata: %{
+        "project" => %{
+          "name" => "aims",
+          "path" => "/home/user/aims"
+        }
+      }
+    }
+  end
 end
