@@ -45,6 +45,12 @@ AHP natively supports orchestrator agents delegating subtasks to child or sub-ag
   - Hierarchical tree indentation with connecting lines (`└─`) placed directly under the parent session.
   - Hover tooltips displaying parent context (`Nested under: "<Parent Title>"`).
 - **Active Sub-Session Topbar Badge**: When viewing a child session, the chat header displays a prominent `Nested Session` badge.
+- **Subagents Inspector Panel (`SubagentsPanel`)**:
+  - Topbar action button with a live running/total counter pill (`Subagents (N)`).
+  - Collapsible side panel listing all active and completed subagents, their delegated roles, tools, and current step.
+  - One-click navigation to inspect child session message streams directly.
+- **Subagent State Events (`ahp_event: "subagent"`)**:
+  - Emits real-time state envelopes (`id`, `session_id`, `title`, `role`, `status`, `step`, `tool`, `thinking`, `prompt`, `output`).
 - **Project Context Inheritance**: Nested sessions automatically inherit project workspace metadata (`name`, `path`, `git_branch`, `repository`, `working_directories`).
 
 ### 4. Real-Time Session Statuses
@@ -55,7 +61,11 @@ AHP sub-chats report live execution states:
 - **`waiting_for_input`** (or `needs_input`): Agent is paused waiting for human-in-the-loop approval or question response.
 - **`archived`** (or `completed` / `done`): Session has concluded.
 
-### 5. Reasoning Tokens & Execution Logs
+### 5. Standardized Agent Process UI (`@assistant-ui/react`) & Execution Logs
+Rather than displaying agent interactions as conventional chat speech bubbles, the interface presents an agent-native, standardized execution process:
+- **Reasoning Process Stage**: Collapsible thinking container displaying the agent's internal monologue, elapsed reasoning time, and status badge (`Thinking...` / `Thought for Xs`).
+- **Tool Execution Stages**: Structured visualization for each tool call, displaying tool name, command line, arguments, and live output stream.
+- **Live Process Monitoring (`ahp_event: "process"`)**: Displays currently running background processes and CLI commands with PID, status badges, and expandable logs.
 - **Streaming Thinking Tokens (`ahp_event: "thinking"`)**: Real-time token streaming with collapsible thought drawers and VS Code indeterminate progress bars.
 - **Terminal & Command Output (`ahp_event: "terminal"`, `"output"`, `"log"`)**: Live streaming of command stdout/stderr directly into the reasoning and execution view.
 - **Tool Lifecycle & Step Progress (`ahp_event: "step"`, `"tool_call"`)**: Reports tool name, command line, arguments, and execution status (`started`, `executing`, `completed`, `failed`).

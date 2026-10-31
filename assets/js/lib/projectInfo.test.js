@@ -10,6 +10,9 @@ import {
 	getParentSessionId,
 	isSessionNested,
 	findParentSession,
+	findChildSessions,
+	getSessionSubagents,
+	getSessionProcesses,
 	orderSessionsHierarchically,
 } from "./projectInfo.js"
 
@@ -290,4 +293,132 @@ test("orderSessionsHierarchically places child sessions directly under their par
 
 	// Check total count preserved
 	assert.equal(ordered.length, shuffled.length)
+})
+
+test("findChildSessions returns child sessions linked by parent_session_id or parent child_session_ids", () => {
+	const parent = {
+		id: 10,
+		external_session_id: "parent-root",
+		metadata: { child_session_ids: ["child-via-parent-list"] },
+	}
+	const child1 = {
+		id: 11,
+		external_session_id: "child-1",
+		parent_session_id: "parent-root",
+		title: "Code Researcher",
+	}
+	const child2 = {
+		id: 12,
+		external_session_id: "child-via-parent-list",
+		title: "Test Runner",
+	}
+	const unrelated = {
+		id: 13,
+		external_session_id: "other-session",
+		title: "Unrelated",
+	}
+
+	const children = findChildSessions(parent, [parent, child1, child2, unrelated])
+	assert.equal(children.length, 2)
+	assert.ok(children.includes(child1))
+	assert.ok(children.includes(child2))
+})
+
+test("getSessionSubagents merges child sessions, inline metadata subagents, and subagent toolCalls", () => {
+	const parent = {
+		id: 100,
+		external_session_id: "parent-100",
+		title: "Main Session",
+	}
+	const childIdle = {
+		id: 101,
+		external_session_id: "sub-idle",
+		parent_session_id: "parent-100",
+		title: "Schema Analyzer",
+		status: "idle",
+		metadata: { step: "Finished analysis" },
+	}
+	const childRunning = {
+		id: 102,
+		external_session_id: "sub-running",
+		parent_session_id: "parent-100",
+		title: "Frontend Builder",
+		status: "running",
+		metadata: { tool: "edit_file", step: "Editing ChatView.jsx" },
+	}
+
+	const liveMeta = {
+		subagents: [
+			{
+				session_id: "inline-sub-1",
+				title: "Security Auditor",
+				status: "thinking",
+				step: "Checking auth plugs",
+				thinking: "Inspecting router pipelines...",
+			},
+		],
+	}
+
+	const toolCalls = [
+		{
+			id: "tc-sub-1",
+			name: "invoke_subagent",
+			args: { Role: "DB Debugger", Prompt: "Check migrations" },
+			status: "running",
+		},
+	]
+
+	const subagents = getSessionSubagents(
+		parent,
+		[parent, childIdle, childRunning],
+		liveMeta,
+		toolCalls,
+	)
+
+	assert.equal(subagents.length, 4)
+	// Running subagents should be sorted before idle subagents
+	assert.equal(subagents[0].isRunning, true)
+	assert.equal(subagents[subagents.length - 1].id, "sub-idle")
+	assert.equal(subagents[subagents.length - 1].isRunning, false)
+})
+
+test("getSessionProcesses normalizes explicit processes, tool calls, and active tool/command", () => {
+	const conv = {
+		id: 1,
+		metadata: {
+			processes: [
+				{
+					id: "p1",
+					pid: 4321,
+					name: "mix phx.server",
+					command: "mix phx.server",
+					status: "running",
+					output: "Listening on port 4000",
+				},
+			],
+		},
+	}
+
+	const toolCalls = [
+		{
+			id: "tc1",
+			name: "read_file",
+			args: { Path: "lib/messaging/chat.ex" },
+			result: "file contents",
+		},
+	]
+
+	const procs = getSessionProcesses(
+		conv,
+		{ tool: "run_command", command: "npm test" },
+		toolCalls,
+		"running",
+	)
+	assert.equal(procs.length, 3)
+	assert.equal(procs[0].pid, 4321)
+	assert.equal(procs[0].isRunning, true)
+	assert.equal(procs[1].name, "read_file")
+	assert.equal(procs[1].isRunning, false)
+	assert.equal(procs[2].name, "run_command")
+	assert.equal(procs[2].isRunning, true)
 })

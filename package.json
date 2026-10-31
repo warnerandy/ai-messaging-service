@@ -25,6 +25,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "@assistant-ui/react": "^0.15.32",
     "@heroui/react": "^3.0.4",
     "@heroui/styles": "^3.0.4",
     "dompurify": "^3.4.5",

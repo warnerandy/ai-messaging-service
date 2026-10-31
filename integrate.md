@@ -1316,6 +1316,54 @@ Ferry raw AHP events to the service with minimal transformation:
 }
 ```
 
+#### g. Running Subagent Monitoring (`event_type: "subagent"`)
+Agents can report background child subagents or delegated worker tasks directly through `ahp_event` or child sessions:
+```json
+{
+  "topic": "bot:<CHANNEL_CODE>",
+  "event": "ahp_event",
+  "payload": {
+    "session_id": "session-backend-refactor",
+    "event_type": "subagent",
+    "data": {
+      "id": "subagent-test-runner",
+      "session_id": "child-session-tests",
+      "title": "Test Suite Runner",
+      "role": "Testing Specialist",
+      "status": "running",
+      "step": "Running mix test test/messaging_test.exs",
+      "tool": "run_command",
+      "thinking": "Validating channel broadcasting contracts before migration...",
+      "prompt": "Execute unit tests and report any failures"
+    }
+  },
+  "ref": "9"
+}
+```
+
+#### h. Running Process Tracking (`event_type: "process"`)
+Agents can stream live active processes and background worker execution states:
+```json
+{
+  "topic": "bot:<CHANNEL_CODE>",
+  "event": "ahp_event",
+  "payload": {
+    "session_id": "session-backend-refactor",
+    "event_type": "process",
+    "data": {
+      "id": "proc-compile-101",
+      "pid": 4821,
+      "name": "mix compile",
+      "command": "mix compile --warnings-as-errors",
+      "step": "Compiling Elixir backend modules",
+      "status": "running",
+      "output": "Compiling 14 files (.ex)..."
+    }
+  },
+  "ref": "10"
+}
+```
+
 ---
 
 ### 6. Receiving User Interactions from the Service

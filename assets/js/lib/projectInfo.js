@@ -380,13 +380,17 @@ export function isSessionNested(conv, allConversations = []) {
 				cMeta.child_session_ids ||
 				cMeta.childSessionIds ||
 				cMeta.subsessions ||
-				cMeta.sub_sessions
+				cMeta.sub_sessions ||
+				cMeta.subagents ||
+				cMeta.sub_agents
 
 			if (Array.isArray(children)) {
 				const isMatch = children.some((child) => {
 					if (!child) return false
 					const childStr =
-						typeof child === "object" ? String(child.session_id || child.id || "") : String(child)
+						typeof child === "object"
+							? String(child.session_id || child.conversation_id || child.id || "")
+							: String(child)
 					return (convId && childStr === convId) || (convExtId && childStr === convExtId)
 				})
 				if (isMatch) return true
@@ -437,13 +441,17 @@ export function findParentSession(conv, allConversations = []) {
 				cMeta.child_session_ids ||
 				cMeta.childSessionIds ||
 				cMeta.subsessions ||
-				cMeta.sub_sessions
+				cMeta.sub_sessions ||
+				cMeta.subagents ||
+				cMeta.sub_agents
 
 			if (Array.isArray(children)) {
 				const isMatch = children.some((child) => {
 					if (!child) return false
 					const childStr =
-						typeof child === "object" ? String(child.session_id || child.id || "") : String(child)
+						typeof child === "object"
+							? String(child.session_id || child.conversation_id || child.id || "")
+							: String(child)
 					return (convId && childStr === convId) || (convExtId && childStr === convExtId)
 				})
 				if (isMatch) return c
@@ -452,6 +460,508 @@ export function findParentSession(conv, allConversations = []) {
 	}
 
 	return null
+}
+
+/**
+ * Finds all child/subagent sessions belonging to a parent conversation.
+ *
+ * @param {object} [parentConv]
+ * @param {object[]} [allConversations=[]]
+ * @returns {object[]}
+ */
+export function findChildSessions(parentConv, allConversations = []) {
+	if (!parentConv || !Array.isArray(allConversations)) return []
+
+	const parentId =
+		parentConv.id !== undefined && parentConv.id !== null ? String(parentConv.id) : null
+	const parentExtId =
+		parentConv.external_session_id !== undefined && parentConv.external_session_id !== null
+			? String(parentConv.external_session_id)
+			: null
+	const parentMetaId =
+		parentConv.metadata?.session_id !== undefined && parentConv.metadata?.session_id !== null
+			? String(parentConv.metadata.session_id)
+			: null
+
+	const pMeta = parentConv.metadata || {}
+	const explicitChildRefs =
+		parentConv.child_session_ids ||
+		parentConv.childSessionIds ||
+		pMeta.child_session_ids ||
+		pMeta.childSessionIds ||
+		pMeta.subsessions ||
+		pMeta.sub_sessions ||
+		pMeta.subagents ||
+		pMeta.sub_agents ||
+		[]
+
+	const explicitRefSet = new Set()
+	if (Array.isArray(explicitChildRefs)) {
+		for (const ref of explicitChildRefs) {
+			if (!ref) continue
+			if (typeof ref === "object") {
+				if (ref.id != null) explicitRefSet.add(String(ref.id))
+				if (ref.session_id != null) explicitRefSet.add(String(ref.session_id))
+				if (ref.conversation_id != null) explicitRefSet.add(String(ref.conversation_id))
+				if (ref.external_session_id != null) explicitRefSet.add(String(ref.external_session_id))
+			} else {
+				explicitRefSet.add(String(ref))
+			}
+		}
+	}
+
+	const children = []
+	for (const c of allConversations) {
+		if (!c || c === parentConv) continue
+		const cParentId = getParentSessionId(c)
+		const cId = c.id != null ? String(c.id) : null
+		const cExtId = c.external_session_id != null ? String(c.external_session_id) : null
+		const cMetaSid = c.metadata?.session_id != null ? String(c.metadata.session_id) : null
+
+		const matchesParentId =
+			cParentId &&
+			((parentId && cParentId === parentId) ||
+				(parentExtId && cParentId === parentExtId) ||
+				(parentMetaId && cParentId === parentMetaId))
+
+		const matchesExplicitChild =
+			(cId && explicitRefSet.has(cId)) ||
+			(cExtId && explicitRefSet.has(cExtId)) ||
+			(cMetaSid && explicitRefSet.has(cMetaSid))
+
+		if (matchesParentId || matchesExplicitChild) {
+			children.push(c)
+		}
+	}
+
+	return children
+}
+
+/**
+ * Extracts and normalizes all subagents (child sessions, inline metadata subagents, and
+ * subagent tool call invocations) associated with a conversation.
+ *
+ * @param {object} [parentConv]
+ * @param {object[]} [allConversations=[]]
+ * @param {object} [sessionMetadata={}]
+ * @param {object[]} [toolCalls=[]]
+ * @returns {object[]}
+ */
+export function getSessionSubagents(
+	parentConv,
+	allConversations = [],
+	sessionMetadata = {},
+	toolCalls = [],
+) {
+	if (!parentConv && (!sessionMetadata || Object.keys(sessionMetadata).length === 0)) {
+		return []
+	}
+
+	const mergedMeta = {
+		...(parentConv?.metadata || {}),
+		...(sessionMetadata || {}),
+	}
+
+	const subagentMap = new Map()
+
+	function isStatusRunning(status) {
+		const s = String(status || "idle").toLowerCase()
+		return (
+			s === "running" ||
+			s === "thinking" ||
+			s === "waiting_for_input" ||
+			s === "needs_input" ||
+			s === "active" ||
+			s === "working" ||
+			s === "in_progress"
+		)
+	}
+
+	// 1. Child conversations from allConversations
+	const childConvs = findChildSessions(parentConv, allConversations)
+	for (const child of childConvs) {
+		const cMeta = child.metadata || {}
+		const status = child.status || cMeta.status || "idle"
+		const key = String(child.external_session_id || child.id)
+		const step =
+			cMeta.step ||
+			cMeta.current_step ||
+			cMeta.action ||
+			(cMeta.tool ? `Running ${cMeta.tool}` : "") ||
+			""
+		const rawTitle =
+			cMeta.role ||
+			cMeta.agent_name ||
+			cMeta.subagent_name ||
+			child.title ||
+			child.external_session_id ||
+			`Subagent #${child.id}`
+
+		subagentMap.set(key, {
+			id: key,
+			conversationId: child.id,
+			sessionId: child.external_session_id || cMeta.session_id || String(child.id),
+			title: formatSessionTitle(rawTitle),
+			role: cMeta.role || cMeta.agent_type || cMeta.type || "Subagent",
+			status,
+			isRunning: isStatusRunning(status),
+			step,
+			tool: cMeta.tool || cMeta.tool_name || "",
+			thinking: cMeta.thinking || "",
+			prompt: cMeta.prompt || cMeta.task || cMeta.description || "",
+			toolCalls: Array.isArray(cMeta.tool_calls) ? cMeta.tool_calls : [],
+			updatedAt: child.last_modified_time || child.updated_at || child.inserted_at || null,
+			conversation: child,
+		})
+	}
+
+	// 2. Inline subagent descriptors from metadata (subagents, sub_agents, subsessions)
+	const inlineList =
+		mergedMeta.subagents ||
+		mergedMeta.sub_agents ||
+		mergedMeta.subsessions ||
+		mergedMeta.sub_sessions ||
+		[]
+
+	if (Array.isArray(inlineList)) {
+		inlineList.forEach((item, idx) => {
+			if (!item || typeof item !== "object") return
+			const rawId =
+				item.external_session_id ||
+				item.session_id ||
+				item.sessionId ||
+				item.conversation_id ||
+				item.conversationId ||
+				item.id ||
+				`inline-subagent-${idx}`
+			const key = String(rawId)
+
+			// Check if we already have a child conversation matching either external_session_id or conversationId
+			let existingKey = subagentMap.has(key) ? key : null
+			if (!existingKey) {
+				for (const [k, v] of subagentMap.entries()) {
+					if (
+						(item.conversation_id != null &&
+							String(v.conversationId) === String(item.conversation_id)) ||
+						(item.id != null && String(v.conversationId) === String(item.id)) ||
+						(item.session_id != null && String(v.sessionId) === String(item.session_id))
+					) {
+						existingKey = k
+						break
+					}
+				}
+			}
+
+			// Also check if allConversations has a matching conversation by id or external_session_id
+			const matchedConv = Array.isArray(allConversations)
+				? allConversations.find(
+						(c) =>
+							c &&
+							c !== parentConv &&
+							(String(c.id) === key ||
+								String(c.external_session_id) === key ||
+								(item.conversation_id != null && String(c.id) === String(item.conversation_id)) ||
+								(item.session_id != null &&
+									String(c.external_session_id) === String(item.session_id))),
+					)
+				: null
+
+			const status = item.status || matchedConv?.status || "running"
+			const step =
+				item.step ||
+				item.current_step ||
+				item.action ||
+				(item.tool ? `Running ${item.tool}` : "") ||
+				""
+			const rawTitle =
+				item.title ||
+				item.name ||
+				item.role ||
+				item.agent_name ||
+				matchedConv?.title ||
+				`Subagent ${idx + 1}`
+
+			if (existingKey) {
+				const prev = subagentMap.get(existingKey)
+				const nextStatus = item.status || prev.status
+				subagentMap.set(existingKey, {
+					...prev,
+					title: item.title || item.name || item.role ? formatSessionTitle(rawTitle) : prev.title,
+					role: item.role || item.agent_type || item.type || prev.role,
+					status: nextStatus,
+					isRunning: isStatusRunning(nextStatus),
+					step: step || prev.step,
+					tool: item.tool || item.tool_name || prev.tool,
+					thinking: item.thinking || item.thought || prev.thinking,
+					prompt: item.prompt || item.task || item.description || prev.prompt,
+					toolCalls: Array.isArray(item.tool_calls) ? item.tool_calls : prev.toolCalls,
+					output: item.output || item.result || prev.output || "",
+				})
+			} else {
+				subagentMap.set(key, {
+					id: key,
+					conversationId: matchedConv?.id ?? item.conversation_id ?? item.conversationId ?? null,
+					sessionId: item.session_id || item.sessionId || matchedConv?.external_session_id || key,
+					title: formatSessionTitle(rawTitle),
+					role: item.role || item.agent_type || item.type || "Subagent",
+					status,
+					isRunning: isStatusRunning(status),
+					step,
+					tool: item.tool || item.tool_name || "",
+					thinking: item.thinking || item.thought || "",
+					prompt: item.prompt || item.task || item.description || "",
+					toolCalls: Array.isArray(item.tool_calls) ? item.tool_calls : [],
+					output: item.output || item.result || "",
+					updatedAt: item.updated_at || item.started_at || matchedConv?.updated_at || null,
+					conversation: matchedConv || null,
+				})
+			}
+		})
+	}
+
+	// 3. Subagent invocations inside toolCalls
+	const allToolCalls =
+		Array.isArray(toolCalls) && toolCalls.length > 0
+			? toolCalls
+			: Array.isArray(mergedMeta.tool_calls)
+				? mergedMeta.tool_calls
+				: []
+
+	allToolCalls.forEach((tc, idx) => {
+		if (!tc || typeof tc !== "object") return
+		const name = String(tc.name || tc.tool || tc.tool_name || "").toLowerCase()
+		const isSubagentCall =
+			name.includes("subagent") ||
+			name === "spawn_agent" ||
+			name === "delegate_task" ||
+			name === "invoke_agent" ||
+			tc.type === "subagent" ||
+			Boolean(tc.subagent_id || tc.child_session_id)
+
+		if (!isSubagentCall) return
+
+		const args = tc.args || tc.arguments || tc.input || {}
+		const rawId =
+			tc.subagent_id ||
+			tc.child_session_id ||
+			tc.session_id ||
+			args.session_id ||
+			args.conversation_id ||
+			tc.id ||
+			`tool-subagent-${idx}`
+		const key = String(rawId)
+
+		if (!subagentMap.has(key)) {
+			const role =
+				tc.role ||
+				args.Role ||
+				args.role ||
+				args.TypeName ||
+				args.agent ||
+				tc.name ||
+				tc.tool ||
+				"Subagent"
+			const prompt =
+				tc.prompt || args.Prompt || args.prompt || args.task || tc.step || tc.description || ""
+			const status =
+				tc.status || tc.tool_status || (tc.result || tc.output ? "completed" : "running")
+
+			subagentMap.set(key, {
+				id: key,
+				conversationId: tc.conversation_id || args.conversation_id || null,
+				sessionId: key,
+				title: formatSessionTitle(role),
+				role,
+				status,
+				isRunning: isStatusRunning(status),
+				step: tc.step || prompt || `Invoked via ${tc.name || tc.tool || "subagent"}`,
+				tool: tc.name || tc.tool || "invoke_subagent",
+				thinking: tc.thinking || "",
+				prompt,
+				toolCalls: [],
+				output:
+					typeof (tc.result || tc.output) === "string"
+						? tc.result || tc.output
+						: tc.result || tc.output
+							? JSON.stringify(tc.result || tc.output, null, 2)
+							: "",
+				updatedAt: tc.timestamp || null,
+				conversation: null,
+			})
+		}
+	})
+
+	const list = Array.from(subagentMap.values())
+	list.sort((a, b) => {
+		if (a.isRunning !== b.isRunning) return a.isRunning ? -1 : 1
+		return 0
+	})
+
+	return list
+}
+
+/**
+ * Extracts and normalizes running and recent processes / tool executions for a session.
+ *
+ * @param {object} [conv]
+ * @param {object} [sessionMetadata={}]
+ * @param {object[]} [toolCalls=[]]
+ * @param {string} [sessionStatus="idle"]
+ * @returns {object[]}
+ */
+export function getSessionProcesses(
+	conv,
+	sessionMetadata = {},
+	toolCalls = [],
+	sessionStatus = "idle",
+) {
+	const mergedMeta = {
+		...(conv?.metadata || {}),
+		...(sessionMetadata || {}),
+	}
+
+	const processes = []
+	const seenIds = new Set()
+
+	const isSessionBusy = sessionStatus === "running" || sessionStatus === "thinking"
+
+	// 1. Explicit processes list from metadata
+	if (Array.isArray(mergedMeta.processes)) {
+		mergedMeta.processes.forEach((proc, idx) => {
+			if (!proc) return
+			if (typeof proc === "string") {
+				const id = `proc-str-${idx}`
+				seenIds.add(id)
+				processes.push({
+					id,
+					name: proc,
+					toolName: "process",
+					command: proc,
+					status: isSessionBusy ? "running" : "completed",
+					isRunning: isSessionBusy,
+					output: "",
+					args: {},
+				})
+				return
+			}
+			const id = String(proc.id || proc.pid || `proc-${idx}`)
+			seenIds.add(id)
+			const status = proc.status || (isSessionBusy ? "running" : "completed")
+			const isRunning =
+				status === "running" ||
+				status === "thinking" ||
+				status === "active" ||
+				status === "in_progress"
+			processes.push({
+				id,
+				pid: proc.pid || null,
+				name: proc.name || proc.command || proc.tool || `Process #${idx + 1}`,
+				toolName: proc.tool || proc.name || "process",
+				command: proc.command || proc.cmd || "",
+				step: proc.step || proc.description || "",
+				status,
+				isRunning,
+				output: proc.output || proc.stdout || proc.result || "",
+				args: proc.args || proc.input || {},
+				startedAt: proc.started_at || proc.timestamp || null,
+			})
+		})
+	}
+
+	// 2. Tool calls from live state or metadata
+	const rawTools =
+		Array.isArray(toolCalls) && toolCalls.length > 0
+			? toolCalls
+			: Array.isArray(mergedMeta.tool_calls)
+				? mergedMeta.tool_calls
+				: []
+
+	rawTools.forEach((tc, idx) => {
+		if (!tc) return
+		const isLast = idx === rawTools.length - 1
+		if (typeof tc === "string") {
+			const id = `tc-${idx}-${tc}`
+			if (seenIds.has(id)) return
+			seenIds.add(id)
+			const isRunning = isSessionBusy && isLast
+			processes.push({
+				id,
+				name: tc,
+				toolName: tc,
+				command: "",
+				step: `Executed ${tc}`,
+				status: isRunning ? "running" : "completed",
+				isRunning,
+				output: "",
+				args: {},
+			})
+			return
+		}
+
+		const id = String(tc.id || tc.toolCallId || tc.call_id || `tc-${idx}`)
+		if (seenIds.has(id)) return
+		seenIds.add(id)
+
+		const toolName = tc.name || tc.tool || tc.tool_name || (tc.command ? "terminal" : "tool_call")
+		const command = tc.command || tc.cmd || tc.args?.command || tc.args?.CommandLine || ""
+		const step = tc.step || tc.description || (command ? `Running ${command}` : toolName)
+		const hasResult = tc.result !== undefined || tc.output !== undefined
+		const rawStatus = tc.status || tc.tool_status
+		const status =
+			rawStatus || (hasResult ? "completed" : isSessionBusy && isLast ? "running" : "completed")
+		const isRunning =
+			status === "running" ||
+			status === "thinking" ||
+			status === "in_progress" ||
+			status === "active"
+
+		processes.push({
+			id,
+			pid: tc.pid || null,
+			name: toolName,
+			toolName,
+			command,
+			step,
+			status,
+			isRunning,
+			output:
+				typeof (tc.output ?? tc.result) === "string"
+					? (tc.output ?? tc.result)
+					: (tc.output ?? tc.result) !== undefined
+						? JSON.stringify(tc.output ?? tc.result, null, 2)
+						: "",
+			args: tc.args || tc.arguments || tc.input || {},
+			isError: Boolean(tc.isError || tc.error || status === "error" || status === "failed"),
+		})
+	})
+
+	// 3. Active tool / command from metadata if not already captured by the latest running item
+	const currentTool = mergedMeta.tool || mergedMeta.tool_name || ""
+	const currentCommand = mergedMeta.command || ""
+
+	if (isSessionBusy && (currentTool || currentCommand)) {
+		const alreadyHasActiveMatch = processes.some(
+			(p) =>
+				p.isRunning &&
+				((currentTool && p.toolName === currentTool) ||
+					(currentCommand && p.command === currentCommand)),
+		)
+		if (!alreadyHasActiveMatch) {
+			processes.push({
+				id: "active-step-process",
+				name: currentTool || "terminal",
+				toolName: currentTool || "terminal",
+				command: currentCommand,
+				step: currentCommand ? `Running ${currentCommand}` : "",
+				status: sessionStatus,
+				isRunning: true,
+				output: "",
+				args: mergedMeta.args || {},
+			})
+		}
+	}
+
+	return processes
 }
 
 /**

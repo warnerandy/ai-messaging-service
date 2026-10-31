@@ -3,6 +3,7 @@ import { Socket } from "phoenix"
 import MessageBubbleView from "./MessageBubble.jsx"
 import TypingIndicatorView from "./TypingIndicator.jsx"
 import LiveThinking from "./LiveThinking.jsx"
+import SubagentsPanel from "./SubagentsPanel.jsx"
 import QuestionApprovalCard from "./QuestionApprovalCard.jsx"
 import PromptQueue from "./PromptQueue.jsx"
 import BotConfigModal from "./BotConfigModal.jsx"
@@ -741,6 +742,57 @@ export default function ChatView({
 								...prev,
 								changeset: data.changeset || data.files || data,
 							}))
+						}
+					} else if (event_type === "subagent" || event_type === "subagents") {
+						if (data) {
+							setSessionMetadata((prev) => {
+								const incomingList = Array.isArray(data)
+									? data
+									: Array.isArray(data.subagents)
+										? data.subagents
+										: null
+								if (incomingList) {
+									return { ...prev, subagents: incomingList }
+								}
+								const existing = Array.isArray(prev.subagents) ? [...prev.subagents] : []
+								const key = data.session_id || data.id || data.conversation_id
+								const idx = key
+									? existing.findIndex(
+											(s) =>
+												s && (s.session_id === key || s.id === key || s.conversation_id === key),
+										)
+									: -1
+								if (idx >= 0) {
+									existing[idx] = { ...existing[idx], ...data }
+								} else {
+									existing.push(data)
+								}
+								return { ...prev, subagents: existing }
+							})
+						}
+					} else if (event_type === "process" || event_type === "processes") {
+						if (data) {
+							setSessionMetadata((prev) => {
+								const incomingList = Array.isArray(data)
+									? data
+									: Array.isArray(data.processes)
+										? data.processes
+										: null
+								if (incomingList) {
+									return { ...prev, processes: incomingList }
+								}
+								const existing = Array.isArray(prev.processes) ? [...prev.processes] : []
+								const key = data.id || data.pid
+								const idx = key
+									? existing.findIndex((p) => p && (p.id === key || p.pid === key))
+									: -1
+								if (idx >= 0) {
+									existing[idx] = { ...existing[idx], ...data }
+								} else {
+									existing.push(data)
+								}
+								return { ...prev, processes: existing }
+							})
 						}
 					} else if (event_type === "question") {
 						const resolvedQ = resolvePendingQuestion("waiting_for_input", {}, data)
@@ -1800,6 +1852,19 @@ export default function ChatView({
 			<VSCodeProgressBar
 				active={sessionStatus === "running" || sessionStatus === "thinking"}
 				variant={sessionStatus === "thinking" ? "thinking" : "running"}
+			/>
+
+			{/* AHP Subagents & Running Processes Monitor */}
+			<SubagentsPanel
+				token={token}
+				bot={bot}
+				activeConv={activeConv}
+				conversations={conversations}
+				sessionStatus={sessionStatus}
+				sessionMetadata={sessionMetadata}
+				thinkingText={thinkingText}
+				toolCalls={toolCalls}
+				onSelectConversation={onSelectConversation}
 			/>
 
 			{/* Messages */}

@@ -1,5 +1,12 @@
-import React, { useState, useRef, useEffect } from "react"
+import React, { useState, useRef, useEffect, useMemo, useCallback } from "react"
+import {
+	AssistantRuntimeProvider,
+	useExternalStoreRuntime,
+	ThreadPrimitive,
+	MessagePrimitive,
+} from "@assistant-ui/react"
 import { VSCodeWorkingStateIcon, VSCodeGearIcon, VSCodeProgressBar } from "./VSCodeWorkingIcons.jsx"
+import { AssistantToolCallPart } from "./AssistantAgentProcess.jsx"
 
 export default function LiveThinking({
 	status = "idle",
@@ -31,6 +38,82 @@ export default function LiveThinking({
 		userScrolledUpRef.current = !atBottom
 	}
 
+	const liveToolParts = useMemo(() => {
+		return toolCalls.slice(-8).map((tc, idx) => {
+			const isLast = idx === Math.min(toolCalls.length, 8) - 1
+			if (typeof tc === "string") {
+				return {
+					type: "tool-call",
+					toolCallId: `live-tc-${idx}`,
+					toolName: tc,
+					args: {},
+					...(isBusy && isLast ? {} : { result: "Completed" }),
+				}
+			}
+			const toolName = tc?.name || tc?.tool || tc?.tool_name || (tc?.command ? "terminal" : "call")
+			const args =
+				tc?.args && typeof tc.args === "object"
+					? tc.args
+					: tc?.command
+						? { command: tc.command, ...(tc?.step ? { step: tc.step } : {}) }
+						: tc?.step
+							? { step: tc.step }
+							: {}
+			const result = tc?.result ?? tc?.output ?? (isBusy && isLast ? undefined : "Completed")
+			return {
+				type: "tool-call",
+				toolCallId: String(tc?.id || `live-tc-${idx}`),
+				toolName: String(toolName),
+				args,
+				...(result !== undefined ? { result } : {}),
+			}
+		})
+	}, [toolCalls, isBusy])
+
+	const liveMessages = useMemo(
+		() => [
+			{
+				id: "live-agent-process",
+				role: "assistant",
+				content: liveToolParts,
+			},
+		],
+		[liveToolParts],
+	)
+
+	const convertLiveMessage = useCallback(
+		(m) => ({
+			id: m.id,
+			role: "assistant",
+			createdAt: new Date(),
+			content: m.content,
+			status: isBusy ? { type: "running" } : { type: "complete", reason: "stop" },
+		}),
+		[isBusy],
+	)
+
+	const runtime = useExternalStoreRuntime({
+		isRunning: isBusy,
+		messages: liveMessages,
+		convertMessage: convertLiveMessage,
+		onNew: async () => {},
+	})
+
+	const LiveAssistantMessage = useCallback(
+		() => (
+			<MessagePrimitive.Root className="aui-live-message-root">
+				<MessagePrimitive.Parts
+					components={{
+						tools: {
+							Fallback: AssistantToolCallPart,
+						},
+					}}
+				/>
+			</MessagePrimitive.Root>
+		),
+		[],
+	)
+
 	if (!isBusy && !thinkingText && toolCalls.length === 0) {
 		return null
 	}
@@ -53,7 +136,7 @@ export default function LiveThinking({
 					: status.replace(/_/g, " ")
 
 	return (
-		<div className="live-thinking-card">
+		<div className="live-thinking-card" data-testid="live-thinking-card">
 			{/* VS Code Indeterminate Progress Bar */}
 			<VSCodeProgressBar active={isBusy} variant={status === "thinking" ? "thinking" : "running"} />
 
@@ -154,20 +237,19 @@ export default function LiveThinking({
 				</form>
 			)}
 
-			{/* Tool chips history */}
-			{toolCalls.length > 0 && (
-				<div className="tool-chips-row">
-					<span className="tool-chips-label">Recent tools:</span>
-					{toolCalls.slice(-5).map((tool, idx) => (
-						<span
-							key={idx}
-							className="tool-chip-item"
-							title={typeof tool === "string" ? tool : JSON.stringify(tool)}
-						>
-							<VSCodeGearIcon size={11} spin={false} className="inline mr-1 opacity-70" />
-							{typeof tool === "string" ? tool : tool.name || tool.tool || "call"}
-						</span>
-					))}
+			{/* @assistant-ui/react Live Tool Execution Steps */}
+			{isOpen && liveToolParts.length > 0 && (
+				<div className="aui-live-tools-stream" data-testid="aui-live-tools-stream">
+					<span className="tool-chips-label">Process Steps:</span>
+					<AssistantRuntimeProvider runtime={runtime}>
+						<ThreadPrimitive.Root className="aui-live-thread">
+							<ThreadPrimitive.Messages
+								components={{
+									AssistantMessage: LiveAssistantMessage,
+								}}
+							/>
+						</ThreadPrimitive.Root>
+					</AssistantRuntimeProvider>
 				</div>
 			)}
 

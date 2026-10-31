@@ -242,7 +242,13 @@ defmodule MessagingWeb.BotChannel do
         "parent_id",
         "parentId",
         "nested",
-        "is_nested"
+        "is_nested",
+        "subagents",
+        "sub_agents",
+        "child_session_ids",
+        "processes",
+        "tool_calls",
+        "thinking"
       ])
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()
@@ -282,21 +288,33 @@ defmodule MessagingWeb.BotChannel do
 
         Chat.update_session_status(conv.id, "waiting_for_input", meta)
 
-      event_type == "status" or Map.has_key?(data, "status") ->
+      event_type == "status" or
+          (is_map(data) and Map.has_key?(data, "status") and
+             event_type not in ["subagent", "process", "step", "tool_call"]) ->
         new_status = data["status"] || event_type
         Chat.update_session_status(conv.id, new_status, data)
         maybe_dispatch_queued_prompt(conv.id, new_status, socket)
 
       event_type in ["step", "tool_call"] and is_map(data) ->
+        existing_calls = List.wrap(get_in(conv.metadata || %{}, ["tool_calls"]))
+        updated_calls = Enum.take(existing_calls ++ [data], -50)
+
         step_meta =
           data
           |> Map.take(["step", "tool", "name", "tool_name", "command", "args", "tool_status"])
           |> Enum.reject(fn {_k, v} -> is_nil(v) end)
           |> Map.new()
+          |> Map.put("tool_calls", updated_calls)
 
-        if map_size(step_meta) > 0 do
-          Chat.update_session_status(conv.id, conv.status, step_meta)
-        end
+        Chat.update_session_status(conv.id, conv.status, step_meta)
+
+      event_type in ["subagent", "subagents"] ->
+        subagents_meta = merge_subagent_metadata(conv.metadata || %{}, data)
+        Chat.update_session_status(conv.id, conv.status, %{"subagents" => subagents_meta})
+
+      event_type in ["process", "processes"] ->
+        processes_meta = merge_process_metadata(conv.metadata || %{}, data)
+        Chat.update_session_status(conv.id, conv.status, %{"processes" => processes_meta})
 
       event_type in ["plan", "changeset"] and is_map(data) ->
         Chat.update_session_status(conv.id, conv.status, %{event_type => data})
@@ -399,7 +417,16 @@ defmodule MessagingWeb.BotChannel do
         is_map(data) and
           (Map.has_key?(data, "final_message") or Map.has_key?(data, "message") or
              Map.has_key?(data, "response")) and
-            event_type not in ["thinking", "step", "tool_call", "question"] ->
+            event_type not in [
+              "thinking",
+              "step",
+              "tool_call",
+              "question",
+              "subagent",
+              "subagents",
+              "process",
+              "processes"
+            ] ->
           data["final_message"] || data["message"] || data["response"] || data["body"]
 
         true ->
@@ -421,6 +448,70 @@ defmodule MessagingWeb.BotChannel do
       end
     end
   end
+
+  defp merge_subagent_metadata(_meta, %{"subagents" => list}) when is_list(list), do: list
+  defp merge_subagent_metadata(_meta, list) when is_list(list), do: list
+
+  defp merge_subagent_metadata(meta, %{} = subagent_data) do
+    existing = List.wrap(meta["subagents"])
+    key = subagent_data["session_id"] || subagent_data["id"] || subagent_data["conversation_id"]
+
+    if key do
+      matched? =
+        Enum.any?(existing, fn item ->
+          is_map(item) and
+            (item["session_id"] == key or item["id"] == key or item["conversation_id"] == key)
+        end)
+
+      if matched? do
+        Enum.map(existing, fn item ->
+          if is_map(item) and
+               (item["session_id"] == key or item["id"] == key or item["conversation_id"] == key) do
+            Map.merge(item, subagent_data)
+          else
+            item
+          end
+        end)
+      else
+        existing ++ [subagent_data]
+      end
+    else
+      existing ++ [subagent_data]
+    end
+  end
+
+  defp merge_subagent_metadata(meta, _), do: List.wrap(meta["subagents"])
+
+  defp merge_process_metadata(_meta, %{"processes" => list}) when is_list(list), do: list
+  defp merge_process_metadata(_meta, list) when is_list(list), do: list
+
+  defp merge_process_metadata(meta, %{} = proc_data) do
+    existing = List.wrap(meta["processes"])
+    key = proc_data["id"] || proc_data["pid"]
+
+    if key do
+      matched? =
+        Enum.any?(existing, fn item ->
+          is_map(item) and (item["id"] == key or item["pid"] == key)
+        end)
+
+      if matched? do
+        Enum.map(existing, fn item ->
+          if is_map(item) and (item["id"] == key or item["pid"] == key) do
+            Map.merge(item, proc_data)
+          else
+            item
+          end
+        end)
+      else
+        Enum.take(existing ++ [proc_data], -30)
+      end
+    else
+      Enum.take(existing ++ [proc_data], -30)
+    end
+  end
+
+  defp merge_process_metadata(meta, _), do: List.wrap(meta["processes"])
 
   defp maybe_dispatch_queued_prompt(conv_id, "idle", socket) do
     case Chat.pop_queued_prompt(conv_id) do
