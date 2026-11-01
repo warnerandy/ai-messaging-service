@@ -5549,6 +5549,107 @@ body {
   color: var(--text-muted);
 }
 
+/* Completed Subagents Collapsible Group */
+.completed-subagents-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.25rem;
+}
+
+.completed-subagents-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0.45rem 0.75rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.76rem;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.completed-subagents-toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.16);
+  color: var(--text-primary);
+}
+
+.completed-subagents-toggle__left {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.completed-subagents-toggle__chevron {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.completed-subagents-toggle__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.16);
+  color: #94a3b8;
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+
+.completed-subagents-toggle__title {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.76rem;
+}
+
+.completed-subagents-toggle__count {
+  font-size: 0.68rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.completed-subagents-toggle__action {
+  font-size: 0.7rem;
+  color: #818cf8;
+  font-weight: 600;
+}
+
+.completed-subagents-toggle:hover .completed-subagents-toggle__action {
+  color: #a5b4fc;
+}
+
+.completed-subagents-grid {
+  margin-top: 0.2rem;
+}
+
+.subagents-all-completed-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px dashed rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  margin-bottom: 0.25rem;
+}
+
+.subagents-all-completed-banner__icon {
+  color: #4ade80;
+  font-weight: 700;
+}
+
 /* Subagent Inspector Drawer / Card */
 .subagent-inspector {
   margin-top: 0.35rem;

@@ -202,6 +202,43 @@ describe("SubagentsPanel", () => {
 		expect(screen.queryByTestId("subagents-drawer")).not.toBeInTheDocument()
 	})
 
+	it("collapses completed subagents into a single item with a toggle to expand/collapse them", () => {
+		render(
+			<SubagentsPanel
+				token="test-token"
+				bot={ahpBot}
+				activeConv={parentConv}
+				conversations={[parentConv, runningSubagentConv, idleSubagentConv]}
+				sessionStatus="running"
+				sessionMetadata={{}}
+				isOpen={true}
+			/>,
+		)
+
+		// Running subagent is visible directly
+		expect(screen.getByTestId("subagent-card-sess-sub-1")).toBeInTheDocument()
+
+		// Completed subagent is collapsed into a single group item by default
+		expect(screen.getByTestId("completed-subagents-group")).toBeInTheDocument()
+		const toggleBtn = screen.getByTestId("toggle-completed-subagents")
+		expect(toggleBtn).toBeInTheDocument()
+		expect(toggleBtn).toHaveTextContent("Completed Subagents")
+		expect(toggleBtn).toHaveTextContent("(1)")
+		expect(toggleBtn).toHaveTextContent("Expand")
+		expect(screen.queryByTestId("subagent-card-sess-sub-2")).not.toBeInTheDocument()
+
+		// Click the toggle to expand completed subagents
+		fireEvent.click(toggleBtn)
+		expect(toggleBtn).toHaveTextContent("Collapse")
+		expect(screen.getByTestId("completed-subagents-list")).toBeInTheDocument()
+		expect(screen.getByTestId("subagent-card-sess-sub-2")).toBeInTheDocument()
+
+		// Click again to collapse them back
+		fireEvent.click(toggleBtn)
+		expect(toggleBtn).toHaveTextContent("Expand")
+		expect(screen.queryByTestId("subagent-card-sess-sub-2")).not.toBeInTheDocument()
+	})
+
 	it("filters by running subagents by default and allows switching to all subagents", () => {
 		render(
 			<SubagentsPanel

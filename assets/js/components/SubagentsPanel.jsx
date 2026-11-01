@@ -37,11 +37,13 @@ export default function SubagentsPanel({
 	const [selectedProcessId, setSelectedProcessId] = useState(null)
 	const [subagentsExpanded, setSubagentsExpanded] = useState(true)
 	const [processesExpanded, setProcessesExpanded] = useState(true)
+	const [completedExpanded, setCompletedExpanded] = useState(false)
 
 	const isAhp = bot?.bot_type === "ahp"
 	const subagents = getSessionSubagents(activeConv, conversations, sessionMetadata, toolCalls)
 	const processes = getSessionProcesses(activeConv, sessionMetadata, toolCalls, sessionStatus)
 	const runningSubagents = subagents.filter((s) => s.isRunning)
+	const completedSubagents = subagents.filter((s) => !s.isRunning)
 	const runningProcesses = processes.filter((p) => p.isRunning)
 
 	const isNested = isSessionNested(activeConv, conversations)
@@ -161,6 +163,54 @@ export default function SubagentsPanel({
 		(activeTab === "running" && (runningProcesses.length > 0 || runningSubagents.length === 0)) ||
 		activeTab === "all"
 
+	const renderSubagentCard = (sub) => {
+		const isSelected = selectedSubagentId === sub.id
+		return (
+			<button
+				key={sub.id}
+				type="button"
+				role="listitem"
+				data-testid={`subagent-card-${sub.id}`}
+				className={[
+					"subagent-card",
+					sub.isRunning ? "subagent-card--running" : "subagent-card--idle",
+					isSelected ? "subagent-card--selected" : "",
+				]
+					.filter(Boolean)
+					.join(" ")}
+				onClick={() => setSelectedSubagentId((prev) => (prev === sub.id ? null : sub.id))}
+				aria-pressed={isSelected}
+				title={`Click to inspect ${sub.title}`}
+			>
+				<div className="subagent-card__top">
+					<span className="subagent-card__icon">
+						<VSCodeWorkingStateIcon
+							status={sub.status || "idle"}
+							size={14}
+							className="inline-flex"
+						/>
+					</span>
+					<span className="subagent-card__title">{sub.title}</span>
+					<span className={`subagent-card__status subagent-card__status--${sub.status || "idle"}`}>
+						{formatStatusLabel(sub.status)}
+					</span>
+				</div>
+
+				{(sub.step || sub.tool || sub.prompt) && (
+					<div className="subagent-card__activity">
+						{sub.tool && (
+							<span className="subagent-card__tool-chip">
+								<VSCodeGearIcon size={10} spin={sub.isRunning} className="inline mr-1" />
+								{sub.tool}
+							</span>
+						)}
+						<span className="subagent-card__step">{sub.step || sub.prompt || "Working..."}</span>
+					</div>
+				)}
+			</button>
+		)
+	}
+
 	return (
 		<>
 			{/* Parent Session Breadcrumb bar when viewing a subagent session (always visible inline) */}
@@ -262,7 +312,10 @@ export default function SubagentsPanel({
 								role="tab"
 								aria-selected={activeTab === "running"}
 								className={`subagents-tab ${activeTab === "running" ? "subagents-tab--active" : ""}`}
-								onClick={() => setActiveTab("running")}
+								onClick={() => {
+									setActiveTab("running")
+									setCompletedExpanded(false)
+								}}
 								data-testid="tab-running-subagents"
 							>
 								<span className="subagents-tab__icon">⚡</span>
@@ -284,7 +337,10 @@ export default function SubagentsPanel({
 								role="tab"
 								aria-selected={activeTab === "all"}
 								className={`subagents-tab ${activeTab === "all" ? "subagents-tab--active" : ""}`}
-								onClick={() => setActiveTab("all")}
+								onClick={() => {
+									setActiveTab("all")
+									setCompletedExpanded(true)
+								}}
 								data-testid="tab-all-subagents"
 							>
 								<span>All Subagents ({subagents.length})</span>
@@ -328,82 +384,85 @@ export default function SubagentsPanel({
 
 									{subagentsExpanded && (
 										<>
-											{displayedSubagents.length === 0 ? (
-												<div className="subagents-empty-state" data-testid="subagents-empty-state">
-													<span className="subagents-empty-state__icon">✓</span>
-													<p className="subagents-empty-state__title">
-														No subagents currently running
-													</p>
-													<p className="subagents-empty-state__desc">
-														All {subagents.length} subagents have concluded or are idle.
-													</p>
+											{/* Running subagents grid */}
+											{runningSubagents.length > 0 && (
+												<div
+													className="subagents-grid"
+													role="list"
+													aria-label="Running subagents"
+													data-testid="running-subagents-grid"
+												>
+													{runningSubagents.map(renderSubagentCard)}
+												</div>
+											)}
+
+											{/* Notice when no subagents are currently running */}
+											{runningSubagents.length === 0 && completedSubagents.length > 0 && (
+												<div
+													className="subagents-all-completed-banner"
+													data-testid="subagents-all-completed-banner"
+												>
+													<span className="subagents-all-completed-banner__icon">✓</span>
+													<span>No active subagents running.</span>
+												</div>
+											)}
+
+											{/* Collapsible item for completed subagents */}
+											{completedSubagents.length > 0 && (
+												<div
+													className="completed-subagents-group"
+													data-testid="completed-subagents-group"
+												>
 													<button
 														type="button"
-														className="subagents-empty-state__btn"
-														onClick={() => setActiveTab("all")}
+														className="completed-subagents-toggle"
+														data-testid="toggle-completed-subagents"
+														onClick={() => setCompletedExpanded((prev) => !prev)}
+														aria-expanded={completedExpanded}
+														aria-label={
+															completedExpanded
+																? "Collapse completed subagents"
+																: "Expand completed subagents"
+														}
 													>
-														View All {subagents.length} Subagents →
+														<div className="completed-subagents-toggle__left">
+															<span className="completed-subagents-toggle__chevron">
+																{completedExpanded ? "▾" : "▸"}
+															</span>
+															<span className="completed-subagents-toggle__icon">✓</span>
+															<span className="completed-subagents-toggle__title">
+																Completed Subagents
+															</span>
+															<span className="completed-subagents-toggle__count">
+																({completedSubagents.length})
+															</span>
+														</div>
+														<span className="completed-subagents-toggle__action">
+															{completedExpanded ? "Collapse" : "Expand"}
+														</span>
 													</button>
-												</div>
-											) : (
-												<div className="subagents-grid" role="list" aria-label="Session subagents">
-													{displayedSubagents.map((sub) => {
-														const isSelected = selectedSubagentId === sub.id
-														return (
-															<button
-																key={sub.id}
-																type="button"
-																role="listitem"
-																data-testid={`subagent-card-${sub.id}`}
-																className={[
-																	"subagent-card",
-																	sub.isRunning ? "subagent-card--running" : "subagent-card--idle",
-																	isSelected ? "subagent-card--selected" : "",
-																]
-																	.filter(Boolean)
-																	.join(" ")}
-																onClick={() =>
-																	setSelectedSubagentId((prev) => (prev === sub.id ? null : sub.id))
-																}
-																aria-pressed={isSelected}
-																title={`Click to inspect ${sub.title}`}
-															>
-																<div className="subagent-card__top">
-																	<span className="subagent-card__icon">
-																		<VSCodeWorkingStateIcon
-																			status={sub.status || "idle"}
-																			size={14}
-																			className="inline-flex"
-																		/>
-																	</span>
-																	<span className="subagent-card__title">{sub.title}</span>
-																	<span
-																		className={`subagent-card__status subagent-card__status--${sub.status || "idle"}`}
-																	>
-																		{formatStatusLabel(sub.status)}
-																	</span>
-																</div>
 
-																{(sub.step || sub.tool || sub.prompt) && (
-																	<div className="subagent-card__activity">
-																		{sub.tool && (
-																			<span className="subagent-card__tool-chip">
-																				<VSCodeGearIcon
-																					size={10}
-																					spin={sub.isRunning}
-																					className="inline mr-1"
-																				/>
-																				{sub.tool}
-																			</span>
-																		)}
-																		<span className="subagent-card__step">
-																			{sub.step || sub.prompt || "Working..."}
-																		</span>
-																	</div>
-																)}
-															</button>
-														)
-													})}
+													{completedExpanded && (
+														<div
+															className="subagents-grid completed-subagents-grid"
+															role="list"
+															aria-label="Completed subagents"
+															data-testid="completed-subagents-list"
+														>
+															{completedSubagents.map(renderSubagentCard)}
+														</div>
+													)}
+												</div>
+											)}
+
+											{/* Empty state when no subagents exist in session */}
+											{subagents.length === 0 && (
+												<div className="subagents-empty-state" data-testid="subagents-empty-state">
+													<span className="subagents-empty-state__icon">ℹ️</span>
+													<p className="subagents-empty-state__title">No subagents</p>
+													<p className="subagents-empty-state__desc">
+														No subagents have been launched in this session.
+													</p>
 												</div>
 											)}
 										</>
