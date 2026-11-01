@@ -5010,6 +5010,137 @@ body {
 
 /* ───────── AHP Subagents & Running Processes Monitor ───────── */
 
+/* Chat Topbar Action Button in Header */
+.chat-subagents-topbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.65rem;
+  border-radius: 8px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  background: rgba(99, 102, 241, 0.15);
+  border: 1px solid rgba(99, 102, 241, 0.38);
+  color: #e0e7ff;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.chat-subagents-topbar-btn:hover {
+  background: rgba(99, 102, 241, 0.28);
+  border-color: rgba(99, 102, 241, 0.55);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.chat-subagents-topbar-btn--running {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: rgba(34, 197, 94, 0.45);
+  color: #86efac;
+  box-shadow: 0 0 10px rgba(34, 197, 94, 0.2);
+}
+
+.chat-subagents-topbar-btn--running:hover {
+  background: rgba(34, 197, 94, 0.25);
+  border-color: rgba(34, 197, 94, 0.6);
+  color: #fff;
+}
+
+.chat-subagents-topbar-btn__icon {
+  font-size: 0.82rem;
+  color: #fbbf24;
+}
+
+.chat-subagents-topbar-btn__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 0.3rem;
+  border-radius: 9999px;
+  font-size: 0.64rem;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.chat-subagents-topbar-btn--running .chat-subagents-topbar-btn__badge {
+  background: #22c55e;
+  color: #0f172a;
+}
+
+/* Slim 1-line Banner Above Messages */
+.chat-subagents-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.45rem 1rem;
+  background: rgba(15, 23, 42, 0.75);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+  animation: fadeIn 0.15s ease;
+}
+
+.chat-subagents-bar__left {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.chat-subagents-bar__icon {
+  font-size: 0.85rem;
+  color: #fbbf24;
+}
+
+.chat-subagents-bar__title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.chat-subagents-bar__proc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.66rem;
+  font-weight: 700;
+  padding: 0.1rem 0.45rem;
+  border-radius: 9999px;
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.chat-subagents-bar__sub {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.chat-subagents-bar__action-btn {
+  background: rgba(99, 102, 241, 0.2);
+  color: #e0e7ff;
+  border: 1px solid rgba(99, 102, 241, 0.45);
+  border-radius: 6px;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.chat-subagents-bar__action-btn:hover {
+  background: rgba(99, 102, 241, 0.35);
+  border-color: rgba(99, 102, 241, 0.6);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
 /* Chat Topbar Trigger Pill */
 .chat-subagents-trigger-btn {
   display: inline-flex;

@@ -250,13 +250,23 @@ export default function ChatView({
 			activeConv.status === "completed"),
 	)
 	const projectInfo = getProjectInfo(activeConv, sessionMetadata)
-	const isAhp = bot?.bot_type === "ahp"
-	const sessionSubagents = isAhp
-		? getSessionSubagents(activeConv, conversations, sessionMetadata, toolCalls)
-		: []
-	const sessionProcesses = isAhp
-		? getSessionProcesses(activeConv, sessionMetadata, toolCalls, sessionStatus)
-		: []
+	const isAhp =
+		bot?.bot_type === "ahp" ||
+		activeConv?.metadata?.bot_type === "ahp" ||
+		Boolean(activeConv?.external_session_id) ||
+		Boolean(activeConv?.parent_session_id)
+	const sessionSubagents = getSessionSubagents(
+		activeConv,
+		conversations,
+		sessionMetadata,
+		toolCalls,
+	)
+	const sessionProcesses = getSessionProcesses(
+		activeConv,
+		sessionMetadata,
+		toolCalls,
+		sessionStatus,
+	)
 	const runningSubagentsCount = sessionSubagents.filter((s) => s.isRunning).length
 	const runningProcessesCount = sessionProcesses.filter((p) => p.isRunning).length
 
@@ -1706,6 +1716,30 @@ export default function ChatView({
 								<circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.8" />
 							</svg>
 						</button>
+						{(isAhp || sessionSubagents.length > 0 || sessionProcesses.length > 0) && (
+							<button
+								type="button"
+								className={`chat-subagents-topbar-btn ${runningSubagentsCount > 0 ? "chat-subagents-topbar-btn--running" : ""}`}
+								onClick={() => setShowSubagentsDrawer(true)}
+								title={
+									runningSubagentsCount > 0
+										? `${runningSubagentsCount} running subagent(s). Click to inspect.`
+										: `View subagents and processes (${sessionSubagents.length} subagents, ${sessionProcesses.length} processes)`
+								}
+								aria-label="Inspect running subagents and processes"
+								data-testid="subagents-topbar-btn"
+							>
+								<span className="chat-subagents-topbar-btn__icon">⚡</span>
+								<span className="chat-subagents-topbar-btn__text">
+									{runningSubagentsCount > 0 ? `${runningSubagentsCount} Running` : "Subagents"}
+								</span>
+								{(runningSubagentsCount > 0 || sessionSubagents.length > 0) && (
+									<span className="chat-subagents-topbar-btn__badge">
+										{runningSubagentsCount > 0 ? runningSubagentsCount : sessionSubagents.length}
+									</span>
+								)}
+							</button>
+						)}
 					</div>
 				</div>
 
@@ -1896,6 +1930,33 @@ export default function ChatView({
 				active={sessionStatus === "running" || sessionStatus === "thinking"}
 				variant={sessionStatus === "thinking" ? "thinking" : "running"}
 			/>
+
+			{/* Sleek 1-line Subagents & Running Processes Bar */}
+			{(sessionSubagents.length > 0 || sessionProcesses.length > 0) && (
+				<div className="chat-subagents-bar" data-testid="chat-subagents-bar">
+					<div className="chat-subagents-bar__left">
+						<span className="chat-subagents-bar__icon">⚡</span>
+						<span className="chat-subagents-bar__title">
+							{runningSubagentsCount > 0
+								? `${runningSubagentsCount} Running Subagent${runningSubagentsCount > 1 ? "s" : ""}`
+								: `${sessionSubagents.length} Subagent${sessionSubagents.length === 1 ? "" : "s"}`}
+						</span>
+						{runningProcessesCount > 0 && (
+							<span className="chat-subagents-bar__proc-chip">
+								⚙️ {runningProcessesCount} Active Process{runningProcessesCount === 1 ? "" : "es"}
+							</span>
+						)}
+					</div>
+					<button
+						type="button"
+						className="chat-subagents-bar__action-btn"
+						onClick={() => setShowSubagentsDrawer(true)}
+						data-testid="open-subagents-from-chat-bar"
+					>
+						Inspect Subagents & Processes →
+					</button>
+				</div>
+			)}
 
 			{/* AHP Subagents & Running Processes Monitor Panel */}
 			<SubagentsPanel
