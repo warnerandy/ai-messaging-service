@@ -179,6 +179,8 @@ export default function ChatView({
 		return () => window.removeEventListener("open-settings", handleOpenSettings)
 	}, [])
 	const messagesEndRef = useRef(null)
+	const messagesContainerRef = useRef(null)
+	const isAtBottomRef = useRef(true)
 	const socketRef = useRef(null)
 	const channelRef = useRef(null)
 	const renderedIdsRef = useRef(new Set())
@@ -329,10 +331,31 @@ export default function ChatView({
 		}
 	}, [bot?.name])
 
-	// Scroll to bottom
+	// Track whether the user has scrolled up or is at the bottom
+	const handleMessagesScroll = useCallback(() => {
+		const container = messagesContainerRef.current
+		if (!container) return
+		const threshold = 64
+		const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight
+		isAtBottomRef.current = distanceToBottom <= threshold
+	}, [])
+
+	// If the user was already at the bottom, keep them pinned to the bottom smoothly without jarring animations
 	useEffect(() => {
-		messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+		const container = messagesContainerRef.current
+		if (isAtBottomRef.current && container) {
+			container.scrollTop = container.scrollHeight
+		}
 	}, [messages, botIsTyping])
+
+	// Always scroll to bottom when switching sessions
+	useEffect(() => {
+		isAtBottomRef.current = true
+		const container = messagesContainerRef.current
+		if (container) {
+			container.scrollTop = container.scrollHeight
+		}
+	}, [selectedConversationId])
 
 	useEffect(() => {
 		messagesRef.current = messages
@@ -1346,6 +1369,10 @@ export default function ChatView({
 		if (!body || !selectedConversationId) return
 
 		setInputValue("")
+		isAtBottomRef.current = true
+		if (messagesContainerRef.current) {
+			messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight
+		}
 
 		// If an interactive question is awaiting input, route the message to answer the question
 		if (pendingQuestion) {
@@ -1926,7 +1953,7 @@ export default function ChatView({
 			/>
 
 			{/* Messages */}
-			<div className="chat-messages">
+			<div className="chat-messages" ref={messagesContainerRef} onScroll={handleMessagesScroll}>
 				{isArchived && (
 					<div className="chat-archived-banner">
 						<span className="chat-archived-banner-icon">📁</span>
