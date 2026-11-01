@@ -1716,30 +1716,6 @@ export default function ChatView({
 								<circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.8" />
 							</svg>
 						</button>
-						{(isAhp || sessionSubagents.length > 0 || sessionProcesses.length > 0) && (
-							<button
-								type="button"
-								className={`chat-subagents-topbar-btn ${runningSubagentsCount > 0 ? "chat-subagents-topbar-btn--running" : ""}`}
-								onClick={() => setShowSubagentsDrawer(true)}
-								title={
-									runningSubagentsCount > 0
-										? `${runningSubagentsCount} running subagent(s). Click to inspect.`
-										: `View subagents and processes (${sessionSubagents.length} subagents, ${sessionProcesses.length} processes)`
-								}
-								aria-label="Inspect running subagents and processes"
-								data-testid="subagents-topbar-btn"
-							>
-								<span className="chat-subagents-topbar-btn__icon">⚡</span>
-								<span className="chat-subagents-topbar-btn__text">
-									{runningSubagentsCount > 0 ? `${runningSubagentsCount} Running` : "Subagents"}
-								</span>
-								{(runningSubagentsCount > 0 || sessionSubagents.length > 0) && (
-									<span className="chat-subagents-topbar-btn__badge">
-										{runningSubagentsCount > 0 ? runningSubagentsCount : sessionSubagents.length}
-									</span>
-								)}
-							</button>
-						)}
 					</div>
 				</div>
 
@@ -1787,11 +1763,11 @@ export default function ChatView({
 							</span>
 						)}
 						{/* Subagents & Running Processes Trigger Pill */}
-						{isAhp && (sessionSubagents.length > 0 || sessionProcesses.length > 0) && (
+						{(sessionSubagents.length > 0 || sessionProcesses.length > 0) && (
 							<button
 								type="button"
 								className={`chat-subagents-trigger-btn ${runningSubagentsCount > 0 ? "chat-subagents-trigger-btn--running" : ""}`}
-								onClick={() => setShowSubagentsDrawer(true)}
+								onClick={() => setShowSubagentsDrawer((prev) => !prev)}
 								title={
 									runningSubagentsCount > 0
 										? `${runningSubagentsCount} running subagent(s). Click to inspect.`
@@ -1803,8 +1779,10 @@ export default function ChatView({
 								<span className="chat-subagents-trigger-btn__icon">⚡</span>
 								<span>
 									{runningSubagentsCount > 0
-										? `${runningSubagentsCount} Running Subagent${runningSubagentsCount > 1 ? "s" : ""}`
-										: `Subagents (${sessionSubagents.length})`}
+										? `${runningSubagentsCount} Running`
+										: sessionSubagents.length > 0
+											? `Subagents (${sessionSubagents.length})`
+											: "Processes"}
 								</span>
 								{runningProcessesCount > 0 && (
 									<span className="chat-subagents-trigger-btn__proc-chip">
@@ -1930,33 +1908,6 @@ export default function ChatView({
 				active={sessionStatus === "running" || sessionStatus === "thinking"}
 				variant={sessionStatus === "thinking" ? "thinking" : "running"}
 			/>
-
-			{/* Sleek 1-line Subagents & Running Processes Bar */}
-			{(sessionSubagents.length > 0 || sessionProcesses.length > 0) && (
-				<div className="chat-subagents-bar" data-testid="chat-subagents-bar">
-					<div className="chat-subagents-bar__left">
-						<span className="chat-subagents-bar__icon">⚡</span>
-						<span className="chat-subagents-bar__title">
-							{runningSubagentsCount > 0
-								? `${runningSubagentsCount} Running Subagent${runningSubagentsCount > 1 ? "s" : ""}`
-								: `${sessionSubagents.length} Subagent${sessionSubagents.length === 1 ? "" : "s"}`}
-						</span>
-						{runningProcessesCount > 0 && (
-							<span className="chat-subagents-bar__proc-chip">
-								⚙️ {runningProcessesCount} Active Process{runningProcessesCount === 1 ? "" : "es"}
-							</span>
-						)}
-					</div>
-					<button
-						type="button"
-						className="chat-subagents-bar__action-btn"
-						onClick={() => setShowSubagentsDrawer(true)}
-						data-testid="open-subagents-from-chat-bar"
-					>
-						Inspect Subagents & Processes →
-					</button>
-				</div>
-			)}
 
 			{/* AHP Subagents & Running Processes Monitor Panel */}
 			<SubagentsPanel
