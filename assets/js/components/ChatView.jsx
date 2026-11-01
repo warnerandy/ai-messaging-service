@@ -15,6 +15,8 @@ import {
 	isSessionNested,
 	findParentSession,
 	getParentSessionId,
+	getSessionSubagents,
+	getSessionProcesses,
 } from "../lib/projectInfo.js"
 import { formatQuestionAnswer, resolvePendingQuestion } from "../lib/ahpQuestion.js"
 import {
@@ -162,6 +164,11 @@ export default function ChatView({
 	const [showSettingsModal, setShowSettingsModal] = useState(false)
 	const [settingsInitialTab, setSettingsInitialTab] = useState("alerts")
 	const [showProjectModal, setShowProjectModal] = useState(false)
+	const [showSubagentsDrawer, setShowSubagentsDrawer] = useState(false)
+
+	useEffect(() => {
+		setShowSubagentsDrawer(false)
+	}, [selectedConversationId])
 
 	useEffect(() => {
 		const handleOpenSettings = (e) => {
@@ -243,6 +250,15 @@ export default function ChatView({
 			activeConv.status === "completed"),
 	)
 	const projectInfo = getProjectInfo(activeConv, sessionMetadata)
+	const isAhp = bot?.bot_type === "ahp"
+	const sessionSubagents = isAhp
+		? getSessionSubagents(activeConv, conversations, sessionMetadata, toolCalls)
+		: []
+	const sessionProcesses = isAhp
+		? getSessionProcesses(activeConv, sessionMetadata, toolCalls, sessionStatus)
+		: []
+	const runningSubagentsCount = sessionSubagents.filter((s) => s.isRunning).length
+	const runningProcessesCount = sessionProcesses.filter((p) => p.isRunning).length
 
 	function startBotThinking(timeoutMs = null) {
 		startThinkingTimer(typingTimeoutRef, setBotIsTyping, timeoutMs)
@@ -1736,6 +1752,33 @@ export default function ChatView({
 								Nested Session
 							</span>
 						)}
+						{/* Subagents & Running Processes Trigger Pill */}
+						{isAhp && (sessionSubagents.length > 0 || sessionProcesses.length > 0) && (
+							<button
+								type="button"
+								className={`chat-subagents-trigger-btn ${runningSubagentsCount > 0 ? "chat-subagents-trigger-btn--running" : ""}`}
+								onClick={() => setShowSubagentsDrawer(true)}
+								title={
+									runningSubagentsCount > 0
+										? `${runningSubagentsCount} running subagent(s). Click to inspect.`
+										: `${sessionSubagents.length} subagent(s). Click to inspect.`
+								}
+								aria-label="Inspect running subagents and processes"
+								data-testid="open-subagents-drawer-btn"
+							>
+								<span className="chat-subagents-trigger-btn__icon">⚡</span>
+								<span>
+									{runningSubagentsCount > 0
+										? `${runningSubagentsCount} Running Subagent${runningSubagentsCount > 1 ? "s" : ""}`
+										: `Subagents (${sessionSubagents.length})`}
+								</span>
+								{runningProcessesCount > 0 && (
+									<span className="chat-subagents-trigger-btn__proc-chip">
+										⚙️ {runningProcessesCount}
+									</span>
+								)}
+							</button>
+						)}
 						{/* Project & Workspace Badge */}
 						{projectInfo.hasProject ? (
 							<button
@@ -1854,7 +1897,7 @@ export default function ChatView({
 				variant={sessionStatus === "thinking" ? "thinking" : "running"}
 			/>
 
-			{/* AHP Subagents & Running Processes Monitor */}
+			{/* AHP Subagents & Running Processes Monitor Panel */}
 			<SubagentsPanel
 				token={token}
 				bot={bot}
@@ -1865,6 +1908,9 @@ export default function ChatView({
 				thinkingText={thinkingText}
 				toolCalls={toolCalls}
 				onSelectConversation={onSelectConversation}
+				isOpen={showSubagentsDrawer}
+				onClose={() => setShowSubagentsDrawer(false)}
+				onOpen={() => setShowSubagentsDrawer(true)}
 			/>
 
 			{/* Messages */}

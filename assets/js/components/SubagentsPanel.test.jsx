@@ -159,4 +159,71 @@ describe("SubagentsPanel", () => {
 		fireEvent.click(screen.getByRole("button", { name: /Back to Parent Session/i }))
 		expect(onSelectConversation).toHaveBeenCalledWith(10)
 	})
+
+	it("closes the drawer when clicking the close button or pressing Escape", () => {
+		const onClose = vi.fn()
+
+		const { rerender } = render(
+			<SubagentsPanel
+				token="test-token"
+				bot={ahpBot}
+				activeConv={parentConv}
+				conversations={[parentConv, runningSubagentConv]}
+				sessionStatus="running"
+				sessionMetadata={{}}
+				isOpen={true}
+				onClose={onClose}
+			/>,
+		)
+
+		expect(screen.getByTestId("subagents-drawer")).toBeInTheDocument()
+
+		// Click the close button
+		fireEvent.click(screen.getByTestId("close-subagents-panel"))
+		expect(onClose).toHaveBeenCalledTimes(1)
+
+		// Test Escape key
+		fireEvent.keyDown(window, { key: "Escape" })
+		expect(onClose).toHaveBeenCalledTimes(2)
+
+		// When isOpen is false, drawer is not in the document
+		rerender(
+			<SubagentsPanel
+				token="test-token"
+				bot={ahpBot}
+				activeConv={parentConv}
+				conversations={[parentConv, runningSubagentConv]}
+				sessionStatus="running"
+				sessionMetadata={{}}
+				isOpen={false}
+				onClose={onClose}
+			/>,
+		)
+		expect(screen.queryByTestId("subagents-drawer")).not.toBeInTheDocument()
+	})
+
+	it("filters by running subagents by default and allows switching to all subagents", () => {
+		render(
+			<SubagentsPanel
+				token="test-token"
+				bot={ahpBot}
+				activeConv={parentConv}
+				conversations={[parentConv, runningSubagentConv, idleSubagentConv]}
+				sessionStatus="running"
+				sessionMetadata={{}}
+				isOpen={true}
+			/>,
+		)
+
+		// By default on running tab, running subagent is visible, completed is NOT in grid
+		expect(screen.getByTestId("subagent-card-sess-sub-1")).toBeInTheDocument()
+		expect(screen.queryByTestId("subagent-card-sess-sub-2")).not.toBeInTheDocument()
+
+		// Switch to "All Subagents" tab
+		fireEvent.click(screen.getByTestId("tab-all-subagents"))
+
+		// Both subagents are now visible
+		expect(screen.getByTestId("subagent-card-sess-sub-1")).toBeInTheDocument()
+		expect(screen.getByTestId("subagent-card-sess-sub-2")).toBeInTheDocument()
+	})
 })
