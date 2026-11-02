@@ -126,14 +126,10 @@ export function groupSessionsByProject(conversations = []) {
 	}
 
 	return Array.from(groupsMap.values()).sort((a, b) => {
-		if (a.hasActiveSession && !b.hasActiveSession) return -1
-		if (!a.hasActiveSession && b.hasActiveSession) return 1
-		if (b.latestTimestamp !== a.latestTimestamp) {
-			return b.latestTimestamp - a.latestTimestamp
-		}
+		// Keep named project folders static alphabetically
 		if (a.hasProject && !b.hasProject) return -1
 		if (!a.hasProject && b.hasProject) return 1
-		return a.name.localeCompare(b.name)
+		return a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true })
 	})
 }
 
@@ -1095,7 +1091,6 @@ export default function Sidebar({
 						) : isAhp && groupByProject ? (
 							groupSessionsByProject(activeConversations).map((group) => {
 								const isCollapsed = collapsedProjects.has(group.key)
-								const primaryConversation = group.conversations[0]
 								return (
 									<div key={group.key} className="project-group">
 										<div className="project-group-header-wrapper">
@@ -1104,9 +1099,6 @@ export default function Sidebar({
 												className="project-group-header"
 												onClick={() => {
 													toggleProjectCollapse(group.key)
-													if (primaryConversation && onSelectConversation) {
-														onSelectConversation(primaryConversation.id)
-													}
 												}}
 												aria-expanded={!isCollapsed}
 												aria-label={`Project: ${group.name}, ${group.conversations.length} items`}

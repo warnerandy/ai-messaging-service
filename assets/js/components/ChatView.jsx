@@ -1233,7 +1233,7 @@ export default function ChatView({
 			}
 		}
 		loadMessages()
-	}, [selectedConversationId, token, activeConv?.status])
+	}, [selectedConversationId, token])
 
 	useEffect(() => {
 		if (models.length === 0) {

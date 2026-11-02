@@ -828,6 +828,43 @@ describe("Sidebar", () => {
 			expect(noProj.conversations.length).toBe(1)
 		})
 
+		it("sorts project folders statically alphabetically regardless of active session state", () => {
+			const convs = [
+				{
+					id: "z-1",
+					title: "Zeta Task",
+					status: "running", // active, but project Z
+					updated_at: new Date().toISOString(),
+					metadata: { project: { name: "zeta-project" } },
+				},
+				{
+					id: "a-1",
+					title: "Alpha Task",
+					status: "idle", // idle, but project A
+					updated_at: new Date(Date.now() - 100000).toISOString(),
+					metadata: { project: { name: "alpha-project" } },
+				},
+				{
+					id: "m-1",
+					title: "Middle Task",
+					status: "idle",
+					updated_at: new Date(Date.now() - 50000).toISOString(),
+					metadata: { project: { name: "middle-project" } },
+				},
+				{
+					id: "n-1",
+					title: "No Project Task",
+					status: "running",
+					updated_at: new Date().toISOString(),
+				},
+			]
+
+			const groups = groupSessionsByProject(convs)
+			const groupNames = groups.map((g) => g.name)
+			// Alphabetical order for named projects, No Project last
+			expect(groupNames).toEqual(["alpha-project", "middle-project", "zeta-project", "No Project"])
+		})
+
 		it("renders project headers and expands/collapses sessions on click", async () => {
 			const user = userEvent.setup()
 
