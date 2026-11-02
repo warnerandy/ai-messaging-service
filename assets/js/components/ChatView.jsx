@@ -444,26 +444,15 @@ export default function ChatView({
 					const nextState = deriveConversationState(msgs)
 					setMessages(nextState.messages)
 
-					if (res?.conversation) {
+					if (res?.conversation && res.conversation.id === selectedConversationId) {
 						const convStatus = res.conversation.status || "idle"
 						setSessionStatus(convStatus)
-						if (res.conversation.metadata) {
-							setSessionMetadata(res.conversation.metadata)
-							if (res.conversation.metadata.prompt_queue) {
-								setPromptQueue(res.conversation.metadata.prompt_queue)
-							}
-							if (res.conversation.metadata.thinking) {
-								setThinkingText(res.conversation.metadata.thinking)
-							}
-							if (res.conversation.metadata.tool_calls) {
-								setToolCalls(res.conversation.metadata.tool_calls)
-							}
-						}
-						const resolvedQ = resolvePendingQuestion(
-							convStatus,
-							res.conversation.metadata || {},
-							res.conversation.metadata?.question,
-						)
+						const convMeta = res.conversation.metadata || {}
+						setSessionMetadata(convMeta)
+						setPromptQueue(convMeta.prompt_queue || [])
+						setThinkingText(convMeta.thinking || "")
+						setToolCalls(Array.isArray(convMeta.tool_calls) ? convMeta.tool_calls : [])
+						const resolvedQ = resolvePendingQuestion(convStatus, convMeta, convMeta.question)
 						if (resolvedQ) {
 							setPendingQuestion(resolvedQ)
 							setTimeout(() => inputRef.current?.focus(), 50)
@@ -936,15 +925,24 @@ export default function ChatView({
 					sessionsCh = socketRef.current.channel(`bot_sessions:${bot.id}`, {})
 					sessionsCh.on("session_status_changed", (payload) => {
 						if (!payload) return
-						if (payload.conversation_id === selectedConversationId) {
+						if (
+							payload.conversation_id === selectedConversationId ||
+							String(payload.conversation_id) === String(selectedConversationId)
+						) {
 							const newStatus = payload.status || "idle"
 							const prevStatus = prevSessionStatusRef.current
 							setSessionStatus(newStatus)
 							const meta = payload.metadata || {}
 							if (payload.metadata) {
 								setSessionMetadata((prev) => ({ ...prev, ...payload.metadata }))
-								if (payload.metadata.thinking) setThinkingText(payload.metadata.thinking)
-								if (payload.metadata.tool_calls) setToolCalls(payload.metadata.tool_calls)
+								if (payload.metadata.thinking !== undefined) {
+									setThinkingText(payload.metadata.thinking || "")
+								}
+								if (payload.metadata.tool_calls !== undefined) {
+									setToolCalls(
+										Array.isArray(payload.metadata.tool_calls) ? payload.metadata.tool_calls : [],
+									)
+								}
 							}
 							const resolvedQ = resolvePendingQuestion(newStatus, meta, payload.question)
 							if (resolvedQ) {
@@ -1062,15 +1060,17 @@ export default function ChatView({
 						const respMeta = resp?.metadata || {}
 						if (resp?.metadata) {
 							setSessionMetadata((prev) => ({
-								...resp.metadata,
 								...prev,
+								...resp.metadata,
 							}))
 							if (resp.metadata.prompt_queue) setPromptQueue(resp.metadata.prompt_queue)
-							if (resp.metadata.thinking) {
-								setThinkingText((prev) => prev || resp.metadata.thinking)
+							if (resp.metadata.thinking !== undefined) {
+								setThinkingText(resp.metadata.thinking || "")
 							}
-							if (resp.metadata.tool_calls) {
-								setToolCalls((prev) => (prev.length > 0 ? prev : resp.metadata.tool_calls))
+							if (resp.metadata.tool_calls !== undefined) {
+								setToolCalls(
+									Array.isArray(resp.metadata.tool_calls) ? resp.metadata.tool_calls : [],
+								)
 							}
 						}
 						const targetStatus = resp?.status || sessionStatus
@@ -1121,6 +1121,19 @@ export default function ChatView({
 		renderedIdsRef.current.clear()
 		setMessages([])
 		messagesRef.current = []
+		setSessionMetadata(activeConv?.metadata || {})
+		setThinkingText(activeConv?.metadata?.thinking || "")
+		setToolCalls(
+			Array.isArray(activeConv?.metadata?.tool_calls) ? activeConv.metadata.tool_calls : [],
+		)
+		setPromptQueue(activeConv?.metadata?.prompt_queue || [])
+		setPendingQuestion(
+			resolvePendingQuestion(
+				activeConv?.status || "idle",
+				activeConv?.metadata || {},
+				activeConv?.metadata?.question,
+			),
+		)
 		if (activeConv?.status !== "thinking" && activeConv?.status !== "running") {
 			stopBotThinking()
 		}
@@ -1140,7 +1153,7 @@ export default function ChatView({
 				if (activeConv?.status !== "thinking" && activeConv?.status !== "running") {
 					setBotIsTyping(nextState.botIsTyping)
 				}
-				if (res?.conversation) {
+				if (res?.conversation && res.conversation.id === selectedConversationId) {
 					const convStatus = res.conversation.status || "idle"
 					if (res.conversation.status) {
 						setSessionStatus((prevStatus) => {
@@ -1156,22 +1169,12 @@ export default function ChatView({
 						})
 					}
 					const convMeta = res.conversation.metadata || {}
-					if (res.conversation.metadata) {
-						setSessionMetadata((prev) => ({
-							...res.conversation.metadata,
-							...prev,
-						}))
-						if (res.conversation.metadata.prompt_queue)
-							setPromptQueue(res.conversation.metadata.prompt_queue)
-						if (res.conversation.metadata.thinking) {
-							setThinkingText((prev) => prev || res.conversation.metadata.thinking)
-						}
-						if (res.conversation.metadata.tool_calls) {
-							setToolCalls((prev) =>
-								prev.length > 0 ? prev : res.conversation.metadata.tool_calls,
-							)
-						}
+					setSessionMetadata(convMeta)
+					if (convMeta.prompt_queue) {
+						setPromptQueue(convMeta.prompt_queue)
 					}
+					setThinkingText(convMeta.thinking || "")
+					setToolCalls(Array.isArray(convMeta.tool_calls) ? convMeta.tool_calls : [])
 					const resolvedQ = resolvePendingQuestion(convStatus, convMeta, convMeta.question)
 					if (resolvedQ) {
 						setPendingQuestion(resolvedQ)
@@ -1405,24 +1408,24 @@ export default function ChatView({
 			const st = activeConv.status || "idle"
 			const meta = activeConv.metadata || {}
 			setSessionStatus(st)
-			setSessionMetadata((prev) => ({
-				...prev,
-				...meta,
-			}))
+			setSessionMetadata(meta)
 			setPromptQueue(meta.prompt_queue || [])
 			const resolvedQ = resolvePendingQuestion(st, meta, meta.question)
 			setPendingQuestion(resolvedQ)
-			if (meta.thinking) {
-				setThinkingText(meta.thinking)
-			}
-			if (meta.tool_calls) {
-				setToolCalls(meta.tool_calls)
-			}
+			setThinkingText(meta.thinking || "")
+			setToolCalls(Array.isArray(meta.tool_calls) ? meta.tool_calls : [])
 			if (st === "waiting_for_input" || st === "needs_input") {
 				setTimeout(() => inputRef.current?.focus(), 50)
 			}
+		} else {
+			setSessionStatus("idle")
+			setSessionMetadata({})
+			setPromptQueue([])
+			setPendingQuestion(null)
+			setThinkingText("")
+			setToolCalls([])
 		}
-	}, [activeConv, selectedConversationId])
+	}, [activeConv?.id, selectedConversationId])
 
 	function handleStop() {
 		channelRef.current?.push("steer", { action: "stop" })

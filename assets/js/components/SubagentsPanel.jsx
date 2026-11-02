@@ -75,12 +75,13 @@ export default function SubagentsPanel({
 		return () => window.removeEventListener("keydown", handleKeyDown)
 	}, [isPanelOpen])
 
-	// Reset inspector selection when switching conversations
+	// Reset inspector selection and completed collapse state when switching conversations
 	useEffect(() => {
 		setSelectedSubagentId(null)
 		setInspectedData(null)
 		setSelectedProcessId(null)
-	}, [activeConv?.id])
+		setCompletedExpanded(false)
+	}, [activeConv?.id, activeConv?.external_session_id])
 
 	// Fetch live conversation details when a subagent with a conversationId is clicked
 	useEffect(() => {

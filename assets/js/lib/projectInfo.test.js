@@ -382,6 +382,52 @@ test("getSessionSubagents merges child sessions, inline metadata subagents, and 
 	assert.equal(subagents[subagents.length - 1].isRunning, false)
 })
 
+test("getSessionSubagents only shows subagents for current session and prevents cross-session leakage", () => {
+	const sessionA = {
+		id: 200,
+		external_session_id: "sess-A",
+		title: "Session A with Subagents",
+		metadata: {
+			subagents: [
+				{ session_id: "sub-A1", title: "Subagent A1", status: "running" },
+				{ session_id: "sub-A2", title: "Subagent A2", status: "completed" },
+			],
+		},
+	}
+	const childA = {
+		id: 201,
+		external_session_id: "child-A1",
+		parent_session_id: "sess-A",
+		title: "Child Session A",
+		status: "running",
+	}
+
+	const sessionB = {
+		id: 300,
+		external_session_id: "sess-B",
+		title: "Session B (Clean, no subagents)",
+		metadata: {},
+	}
+
+	const allConvs = [sessionA, childA, sessionB]
+
+	// Session A sees its subagents
+	const subagentsA = getSessionSubagents(sessionA, allConvs, sessionA.metadata)
+	assert.equal(subagentsA.length, 3)
+
+	// Session B MUST NOT see Session A's subagents, even if stale sessionMetadata from Session A is provided
+	const staleMetaFromA = {
+		session_id: "sess-A",
+		subagents: [{ session_id: "sub-A1", title: "Subagent A1" }],
+	}
+	const subagentsBWithStaleMeta = getSessionSubagents(sessionB, allConvs, staleMetaFromA)
+	assert.equal(subagentsBWithStaleMeta.length, 0)
+
+	// Session B with its own clean metadata sees 0 subagents
+	const subagentsBClean = getSessionSubagents(sessionB, allConvs, sessionB.metadata)
+	assert.equal(subagentsBClean.length, 0)
+})
+
 test("getSessionProcesses normalizes explicit processes, tool calls, and active tool/command", () => {
 	const conv = {
 		id: 1,

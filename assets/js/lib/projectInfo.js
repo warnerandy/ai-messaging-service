@@ -491,8 +491,6 @@ export function findChildSessions(parentConv, allConversations = []) {
 		pMeta.childSessionIds ||
 		pMeta.subsessions ||
 		pMeta.sub_sessions ||
-		pMeta.subagents ||
-		pMeta.sub_agents ||
 		[]
 
 	const explicitRefSet = new Set()
@@ -500,9 +498,10 @@ export function findChildSessions(parentConv, allConversations = []) {
 		for (const ref of explicitChildRefs) {
 			if (!ref) continue
 			if (typeof ref === "object") {
-				if (ref.id != null) explicitRefSet.add(String(ref.id))
 				if (ref.session_id != null) explicitRefSet.add(String(ref.session_id))
+				if (ref.sessionId != null) explicitRefSet.add(String(ref.sessionId))
 				if (ref.conversation_id != null) explicitRefSet.add(String(ref.conversation_id))
+				if (ref.conversationId != null) explicitRefSet.add(String(ref.conversationId))
 				if (ref.external_session_id != null) explicitRefSet.add(String(ref.external_session_id))
 			} else {
 				explicitRefSet.add(String(ref))
@@ -513,10 +512,25 @@ export function findChildSessions(parentConv, allConversations = []) {
 	const children = []
 	for (const c of allConversations) {
 		if (!c || c === parentConv) continue
+		if (parentConv.bot_token_id && c.bot_token_id && parentConv.bot_token_id !== c.bot_token_id) {
+			continue
+		}
+
 		const cParentId = getParentSessionId(c)
 		const cId = c.id != null ? String(c.id) : null
 		const cExtId = c.external_session_id != null ? String(c.external_session_id) : null
 		const cMetaSid = c.metadata?.session_id != null ? String(c.metadata.session_id) : null
+
+		// If c specifies an explicit parent that points to another session, it cannot belong to parentConv
+		if (
+			cParentId &&
+			parentId &&
+			cParentId !== parentId &&
+			(!parentExtId || cParentId !== parentExtId) &&
+			(!parentMetaId || cParentId !== parentMetaId)
+		) {
+			continue
+		}
 
 		const matchesParentId =
 			cParentId &&
@@ -557,9 +571,20 @@ export function getSessionSubagents(
 		return []
 	}
 
+	// Verify sessionMetadata corresponds to parentConv to prevent cross-session leakage
+	const metaSid = sessionMetadata?.session_id || sessionMetadata?.external_session_id
+	const convSid = parentConv?.external_session_id || (parentConv?.id ? String(parentConv.id) : null)
+	const isMetaForDifferentSession = Boolean(
+		metaSid &&
+		convSid &&
+		String(metaSid) !== String(convSid) &&
+		String(metaSid) !== String(parentConv?.metadata?.session_id),
+	)
+
+	const effectiveSessionMeta = isMetaForDifferentSession ? {} : sessionMetadata || {}
 	const mergedMeta = {
 		...(parentConv?.metadata || {}),
-		...(sessionMetadata || {}),
+		...effectiveSessionMeta,
 	}
 
 	const subagentMap = new Map()
@@ -815,9 +840,19 @@ export function getSessionProcesses(
 	toolCalls = [],
 	sessionStatus = "idle",
 ) {
+	const metaSid = sessionMetadata?.session_id || sessionMetadata?.external_session_id
+	const convSid = conv?.external_session_id || (conv?.id ? String(conv.id) : null)
+	const isMetaForDifferentSession = Boolean(
+		metaSid &&
+		convSid &&
+		String(metaSid) !== String(convSid) &&
+		String(metaSid) !== String(conv?.metadata?.session_id),
+	)
+
+	const effectiveSessionMeta = isMetaForDifferentSession ? {} : sessionMetadata || {}
 	const mergedMeta = {
 		...(conv?.metadata || {}),
-		...(sessionMetadata || {}),
+		...effectiveSessionMeta,
 	}
 
 	const processes = []

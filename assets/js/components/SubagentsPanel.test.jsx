@@ -263,4 +263,46 @@ describe("SubagentsPanel", () => {
 		expect(screen.getByTestId("subagent-card-sess-sub-1")).toBeInTheDocument()
 		expect(screen.getByTestId("subagent-card-sess-sub-2")).toBeInTheDocument()
 	})
+
+	it("does not show subagents from other sessions when switching to an unrelated session", () => {
+		const unrelatedConv = {
+			id: 99,
+			external_session_id: "sess-unrelated",
+			title: "Unrelated Chat",
+			status: "idle",
+			metadata: {},
+		}
+
+		const { rerender } = render(
+			<SubagentsPanel
+				token="test-token"
+				bot={ahpBot}
+				activeConv={parentConv}
+				conversations={[parentConv, runningSubagentConv, idleSubagentConv, unrelatedConv]}
+				sessionStatus="running"
+				sessionMetadata={{}}
+				isOpen={true}
+			/>,
+		)
+
+		// On parent session: has subagents
+		expect(screen.getByTestId("subagent-card-sess-sub-1")).toBeInTheDocument()
+
+		// Switch to unrelated session: should have NO subagents
+		rerender(
+			<SubagentsPanel
+				token="test-token"
+				bot={ahpBot}
+				activeConv={unrelatedConv}
+				conversations={[parentConv, runningSubagentConv, idleSubagentConv, unrelatedConv]}
+				sessionStatus="idle"
+				sessionMetadata={{}}
+				isOpen={true}
+			/>,
+		)
+
+		expect(screen.queryByTestId("subagent-card-sess-sub-1")).not.toBeInTheDocument()
+		expect(screen.queryByTestId("subagent-card-sess-sub-2")).not.toBeInTheDocument()
+		expect(screen.queryByTestId("subagents-section")).not.toBeInTheDocument()
+	})
 })
