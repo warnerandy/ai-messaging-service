@@ -22,7 +22,27 @@ export default function LiveThinking({
 	const bodyRef = useRef(null)
 	const userScrolledUpRef = useRef(false)
 
-	const isBusy = status === "running" || status === "thinking"
+	const hasActiveWork = Boolean(
+		metadata?.step ||
+		metadata?.action ||
+		metadata?.tool ||
+		metadata?.command ||
+		(Array.isArray(toolCalls) && toolCalls.some((tc) => tc?.status === "running")),
+	)
+
+	const isBusy =
+		status === "running" ||
+		status === "thinking" ||
+		status === "working" ||
+		status === "in_progress" ||
+		hasActiveWork
+
+	useEffect(() => {
+		const handleExpand = () => setIsOpen(true)
+		window.addEventListener("expand-live-thinking", handleExpand)
+		return () => window.removeEventListener("expand-live-thinking", handleExpand)
+	}, [])
+
 	const currentStep = metadata?.step || metadata?.action || metadata?.current_step || ""
 	const currentTool = metadata?.tool || metadata?.tool_name || ""
 
@@ -126,25 +146,33 @@ export default function LiveThinking({
 		setShowSteerModal(false)
 	}
 
+	const effectiveStatus = isBusy && status === "idle" ? "running" : status
 	const displayStatus =
-		status === "thinking"
+		effectiveStatus === "thinking"
 			? "Thinking"
-			: status === "running"
+			: effectiveStatus === "running"
 				? "Running"
-				: status === "waiting_for_input" || status === "needs_input"
+				: effectiveStatus === "waiting_for_input" || effectiveStatus === "needs_input"
 					? "Waiting for Input"
-					: status.replace(/_/g, " ")
+					: effectiveStatus.replace(/_/g, " ")
 
 	return (
-		<div className="live-thinking-card" data-testid="live-thinking-card">
+		<div id="live-thinking-card" className="live-thinking-card" data-testid="live-thinking-card">
 			{/* VS Code Indeterminate Progress Bar */}
-			<VSCodeProgressBar active={isBusy} variant={status === "thinking" ? "thinking" : "running"} />
+			<VSCodeProgressBar
+				active={isBusy}
+				variant={effectiveStatus === "thinking" ? "thinking" : "running"}
+			/>
 
 			{/* Status & Tool Step Header */}
 			<div className="live-thinking-header">
 				<div className="live-thinking-status">
-					<span className={`live-status-badge live-status-badge--${status}`}>
-						<VSCodeWorkingStateIcon status={status} size={13} className="live-status-icon mr-1" />
+					<span className={`live-status-badge live-status-badge--${effectiveStatus}`}>
+						<VSCodeWorkingStateIcon
+							status={effectiveStatus}
+							size={13}
+							className="live-status-icon mr-1"
+						/>
 						{displayStatus}
 					</span>
 

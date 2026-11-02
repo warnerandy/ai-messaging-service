@@ -246,6 +246,11 @@ export default function ChatView({
 		prevSessionStatusRef.current = sessionStatus
 	}, [sessionStatus])
 
+	const conversationsRef = useRef(conversations)
+	useEffect(() => {
+		conversationsRef.current = conversations
+	}, [conversations])
+
 	const activeConv = conversations?.find((c) => c.id === selectedConversationId)
 	const isArchived = Boolean(
 		activeConv &&
@@ -253,7 +258,49 @@ export default function ChatView({
 			activeConv.status === "done" ||
 			activeConv.status === "completed"),
 	)
-	const projectInfo = getProjectInfo(activeConv, sessionMetadata)
+
+	const isLiveRunning =
+		sessionStatus === "running" ||
+		sessionStatus === "thinking" ||
+		activeConv?.status === "running" ||
+		activeConv?.status === "thinking"
+
+	const isLiveWaiting =
+		sessionStatus === "waiting_for_input" ||
+		sessionStatus === "needs_input" ||
+		activeConv?.status === "waiting_for_input" ||
+		activeConv?.status === "needs_input"
+
+	const effectiveMetadata = {
+		...(activeConv?.metadata || {}),
+		...(sessionMetadata || {}),
+	}
+
+	const hasActiveWork = Boolean(
+		effectiveMetadata?.step ||
+		effectiveMetadata?.action ||
+		effectiveMetadata?.tool ||
+		effectiveMetadata?.command ||
+		(Array.isArray(toolCalls) && toolCalls.some((t) => t?.status === "running")),
+	)
+
+	const isAgentBusy = isLiveRunning || hasActiveWork
+
+	const effectiveStatus = isLiveRunning
+		? sessionStatus === "thinking" || activeConv?.status === "thinking"
+			? "thinking"
+			: "running"
+		: isLiveWaiting
+			? sessionStatus === "waiting_for_input" || activeConv?.status === "waiting_for_input"
+				? "waiting_for_input"
+				: "needs_input"
+			: hasActiveWork
+				? "running"
+				: sessionStatus && sessionStatus !== "idle"
+					? sessionStatus
+					: activeConv?.status || "idle"
+
+	const projectInfo = getProjectInfo(activeConv, effectiveMetadata)
 	const isAhp =
 		bot?.bot_type === "ahp" ||
 		activeConv?.metadata?.bot_type === "ahp" ||
@@ -262,14 +309,14 @@ export default function ChatView({
 	const sessionSubagents = getSessionSubagents(
 		activeConv,
 		conversations,
-		sessionMetadata,
+		effectiveMetadata,
 		toolCalls,
 	)
 	const sessionProcesses = getSessionProcesses(
 		activeConv,
-		sessionMetadata,
+		effectiveMetadata,
 		toolCalls,
-		sessionStatus,
+		effectiveStatus,
 	)
 	const runningSubagentsCount = sessionSubagents.filter((s) => s.isRunning).length
 	const runningProcessesCount = sessionProcesses.filter((p) => p.isRunning).length
@@ -800,15 +847,34 @@ export default function ChatView({
 					const { event_type, data } = payload
 					if (
 						event_type === "thinking" ||
+						event_type === "thought" ||
+						event_type === "reasoning" ||
 						event_type === "terminal" ||
 						event_type === "output" ||
 						event_type === "log"
 					) {
-						const chunk = data?.chunk ?? data?.text ?? data?.thought ?? data?.output ?? ""
+						const chunk =
+							typeof data === "string"
+								? data
+								: (data?.chunk ??
+									data?.text ??
+									data?.thought ??
+									data?.reasoning ??
+									data?.thinking ??
+									data?.delta?.content ??
+									data?.delta?.thought ??
+									(typeof data?.delta === "string" ? data.delta : null) ??
+									data?.output ??
+									data?.content ??
+									"")
 						if (chunk) {
 							setThinkingText((prev) => prev + chunk)
 						}
-						if (event_type === "thinking") {
+						if (
+							event_type === "thinking" ||
+							event_type === "thought" ||
+							event_type === "reasoning"
+						) {
 							setSessionStatus("thinking")
 							if (onConversationStatusChange) {
 								onConversationStatusChange(selectedConversationId, "thinking")
@@ -1104,15 +1170,20 @@ export default function ChatView({
 						refetchMissedMessages()
 						setTimeout(() => refetchMissedMessages(), 350)
 
-						const liveConv =
-							conversations?.find((c) => c.id === selectedConversationId) || activeConv
+						const currentConv =
+							conversationsRef.current?.find((c) => c.id === selectedConversationId) || activeConv
 						const isLiveActive =
 							sessionStatus === "running" ||
 							sessionStatus === "thinking" ||
-							liveConv?.status === "running" ||
-							liveConv?.status === "thinking" ||
-							liveConv?.status === "waiting_for_input" ||
-							liveConv?.status === "needs_input"
+							currentConv?.status === "running" ||
+							currentConv?.status === "thinking" ||
+							currentConv?.status === "waiting_for_input" ||
+							currentConv?.status === "needs_input" ||
+							Boolean(
+								currentConv?.metadata?.step ||
+								currentConv?.metadata?.tool ||
+								currentConv?.metadata?.action,
+							)
 
 						if (resp?.status) {
 							if (!isLiveActive || (resp.status !== "idle" && resp.status !== "completed")) {
@@ -1235,15 +1306,21 @@ export default function ChatView({
 					}
 				})
 				if (res?.conversation && res.conversation.id === selectedConversationId) {
-					const liveConv = conversations?.find((c) => c.id === selectedConversationId) || activeConv
+					const currentConv =
+						conversationsRef.current?.find((c) => c.id === selectedConversationId) || activeConv
 					const convStatus = res.conversation.status || "idle"
 					const isLiveActive =
 						sessionStatus === "running" ||
 						sessionStatus === "thinking" ||
-						liveConv?.status === "running" ||
-						liveConv?.status === "thinking" ||
-						liveConv?.status === "waiting_for_input" ||
-						liveConv?.status === "needs_input"
+						currentConv?.status === "running" ||
+						currentConv?.status === "thinking" ||
+						currentConv?.status === "waiting_for_input" ||
+						currentConv?.status === "needs_input" ||
+						Boolean(
+							currentConv?.metadata?.step ||
+							currentConv?.metadata?.tool ||
+							currentConv?.metadata?.action,
+						)
 
 					// Only update sessionStatus from DB if the session is NOT actively running live
 					if (!isLiveActive && res.conversation.status) {
@@ -1505,7 +1582,8 @@ export default function ChatView({
 			return
 		}
 
-		const isAgentRunning = sessionStatus === "running" || sessionStatus === "thinking"
+		const isAgentRunning =
+			effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy
 		if (isAgentRunning) {
 			channelRef.current?.push("steer", { action: "steer", instruction: body })
 			await sendMessage(body, { is_steer: true })
@@ -1551,17 +1629,27 @@ export default function ChatView({
 				if ((prev === "running" || prev === "thinking") && (st === "idle" || !st)) {
 					return prev
 				}
-				return st
+				if (
+					st === "running" ||
+					st === "thinking" ||
+					st === "waiting_for_input" ||
+					st === "needs_input"
+				) {
+					return st
+				}
+				return prev && prev !== "idle" ? prev : st
 			})
 			setSessionMetadata((prev) => ({
-				...prev,
 				...meta,
+				...prev,
 			}))
 			if (meta.prompt_queue) {
 				setPromptQueue(meta.prompt_queue)
 			}
 			const resolvedQ = resolvePendingQuestion(st, meta, meta.question)
-			setPendingQuestion(resolvedQ)
+			if (resolvedQ) {
+				setPendingQuestion(resolvedQ)
+			}
 			if (meta.thinking !== undefined && meta.thinking !== "") {
 				setThinkingText((prev) => prev || meta.thinking)
 			}
@@ -1579,7 +1667,12 @@ export default function ChatView({
 			setThinkingText("")
 			setToolCalls([])
 		}
-	}, [selectedConversationId])
+	}, [
+		selectedConversationId,
+		activeConv?.status,
+		activeConv?.metadata?.step,
+		activeConv?.metadata?.tool,
+	])
 
 	function handleStop() {
 		channelRef.current?.push("steer", { action: "stop" })
@@ -1590,6 +1683,20 @@ export default function ChatView({
 		channelRef.current?.push("steer", { action: "steer", instruction })
 		sendMessage(instruction, { is_steer: true }).catch(() => {})
 	}
+
+	const handleViewProgress = useCallback(() => {
+		isAtBottomRef.current = true
+		window.dispatchEvent(new CustomEvent("expand-live-thinking"))
+		const card = document.getElementById("live-thinking-card") || messagesEndRef.current
+		if (card) {
+			card.scrollIntoView({ behavior: "smooth", block: "nearest" })
+		} else if (messagesContainerRef.current) {
+			messagesContainerRef.current.scrollTo({
+				top: messagesContainerRef.current.scrollHeight,
+				behavior: "smooth",
+			})
+		}
+	}, [])
 
 	function handleAnswerQuestion(answerData) {
 		channelRef.current?.push("answer_question", answerData)
@@ -1753,14 +1860,16 @@ export default function ChatView({
 							<h2 className="chat-title" title={bot?.name || "Botamus Prime"}>
 								{bot?.name || "Botamus Prime"}
 							</h2>
-							{bot?.bot_type === "ahp" && sessionStatus && sessionStatus !== "idle" && (
+							{bot?.bot_type === "ahp" && effectiveStatus && effectiveStatus !== "idle" && (
 								<span
-									className={`session-status-badge session-status-badge--${sessionStatus}`}
-									title={sessionStatus === "waiting_for_input" ? "Needs Input" : sessionStatus}
-									aria-label={sessionStatus === "waiting_for_input" ? "Needs Input" : sessionStatus}
+									className={`session-status-badge session-status-badge--${effectiveStatus}`}
+									title={effectiveStatus === "waiting_for_input" ? "Needs Input" : effectiveStatus}
+									aria-label={
+										effectiveStatus === "waiting_for_input" ? "Needs Input" : effectiveStatus
+									}
 								>
 									<VSCodeWorkingStateIcon
-										status={sessionStatus}
+										status={effectiveStatus}
 										size={13}
 										className="inline-flex"
 									/>
@@ -2091,8 +2200,8 @@ export default function ChatView({
 
 			{/* VS Code Indeterminate Running Bar */}
 			<VSCodeProgressBar
-				active={sessionStatus === "running" || sessionStatus === "thinking"}
-				variant={sessionStatus === "thinking" ? "thinking" : "running"}
+				active={effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy}
+				variant={effectiveStatus === "thinking" ? "thinking" : "running"}
 			/>
 
 			{/* AHP Subagents & Running Processes Monitor Panel */}
@@ -2101,8 +2210,8 @@ export default function ChatView({
 				bot={bot}
 				activeConv={activeConv}
 				conversations={conversations}
-				sessionStatus={sessionStatus}
-				sessionMetadata={sessionMetadata}
+				sessionStatus={effectiveStatus}
+				sessionMetadata={effectiveMetadata}
 				thinkingText={thinkingText}
 				toolCalls={toolCalls}
 				onSelectConversation={onSelectConversation}
@@ -2152,27 +2261,34 @@ export default function ChatView({
 
 				{/* AHP Interactive Question / Approval Card */}
 				{(pendingQuestion ||
-					sessionStatus === "waiting_for_input" ||
-					sessionStatus === "needs_input") && (
+					effectiveStatus === "waiting_for_input" ||
+					effectiveStatus === "needs_input") && (
 					<QuestionApprovalCard
-						question={pendingQuestion || resolvePendingQuestion(sessionStatus, sessionMetadata)}
+						question={pendingQuestion || resolvePendingQuestion(effectiveStatus, effectiveMetadata)}
 						onAnswer={handleAnswerQuestion}
 					/>
 				)}
 
 				{/* AHP Live Thinking, Tool Steps, & Steering */}
 				<LiveThinking
-					status={sessionStatus}
-					metadata={sessionMetadata}
-					thinkingText={thinkingText}
-					toolCalls={toolCalls}
+					status={effectiveStatus}
+					metadata={effectiveMetadata}
+					thinkingText={thinkingText || effectiveMetadata?.thinking || ""}
+					toolCalls={
+						toolCalls.length > 0
+							? toolCalls
+							: Array.isArray(effectiveMetadata?.tool_calls)
+								? effectiveMetadata.tool_calls
+								: []
+					}
 					onStop={handleStop}
 					onSteer={handleSteer}
 				/>
 
-				{botIsTyping && sessionStatus !== "thinking" && sessionStatus !== "running" && (
-					<TypingIndicatorView />
-				)}
+				{botIsTyping &&
+					effectiveStatus !== "thinking" &&
+					effectiveStatus !== "running" &&
+					!isAgentBusy && <TypingIndicatorView />}
 				<div ref={messagesEndRef} />
 			</div>
 
@@ -2206,21 +2322,25 @@ export default function ChatView({
 					</div>
 				)}
 				{/* Agent Steering & Live Progress Bar when Agent is Busy */}
-				{(sessionStatus === "running" || sessionStatus === "thinking") && (
+				{(effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy) && (
 					<div className="chat-steering-bar" data-testid="chat-steering-bar">
 						<div className="chat-steering-info">
 							<span className="chat-steering-pulse" />
 							<span className="chat-steering-label">
-								Agent is {sessionStatus === "thinking" ? "thinking" : "running"}
+								Agent is {effectiveStatus === "thinking" ? "thinking" : "running"}
 							</span>
-							{(sessionMetadata?.step || sessionMetadata?.tool || sessionMetadata?.action) && (
+							{(effectiveMetadata?.step ||
+								effectiveMetadata?.tool ||
+								effectiveMetadata?.action) && (
 								<span
 									className="chat-steering-step"
-									title={sessionMetadata.step || sessionMetadata.action || sessionMetadata.tool}
+									title={
+										effectiveMetadata.step || effectiveMetadata.action || effectiveMetadata.tool
+									}
 								>
-									{sessionMetadata.step ||
-										sessionMetadata.action ||
-										`Running ${sessionMetadata.tool}...`}
+									{effectiveMetadata.step ||
+										effectiveMetadata.action ||
+										`Running ${effectiveMetadata.tool}...`}
 								</span>
 							)}
 						</div>
@@ -2228,13 +2348,7 @@ export default function ChatView({
 							<button
 								type="button"
 								className="chat-steering-quick-btn chat-steering-quick-btn--jump"
-								onClick={() => {
-									isAtBottomRef.current = true
-									if (messagesContainerRef.current) {
-										messagesContainerRef.current.scrollTop =
-											messagesContainerRef.current.scrollHeight
-									}
-								}}
+								onClick={handleViewProgress}
 								title="Jump to live progress"
 							>
 								↓ View Progress
@@ -2255,9 +2369,9 @@ export default function ChatView({
 					id="message-form"
 					onSubmit={handleSend}
 					className={`chat-input-form ${
-						sessionStatus === "waiting_for_input" || sessionStatus === "needs_input"
+						effectiveStatus === "waiting_for_input" || effectiveStatus === "needs_input"
 							? "chat-input-form--waiting"
-							: sessionStatus === "running" || sessionStatus === "thinking"
+							: effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy
 								? "chat-input-form--running"
 								: ""
 					}`}
@@ -2267,9 +2381,9 @@ export default function ChatView({
 						ref={inputRef}
 						className="chat-textarea"
 						placeholder={
-							sessionStatus === "waiting_for_input" || sessionStatus === "needs_input"
+							effectiveStatus === "waiting_for_input" || effectiveStatus === "needs_input"
 								? "Agent is waiting for your input to continue..."
-								: sessionStatus === "running" || sessionStatus === "thinking"
+								: effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy
 									? "Steer running agent with an instruction (or ask a question)..."
 									: "What do you want to know?"
 						}
@@ -2370,7 +2484,9 @@ export default function ChatView({
 							</button>
 						) : (
 							<div className="chat-send-actions">
-								{(sessionStatus === "running" || sessionStatus === "thinking") && (
+								{(effectiveStatus === "running" ||
+									effectiveStatus === "thinking" ||
+									isAgentBusy) && (
 									<button
 										type="button"
 										className={`steer-action-btn ${inputValue.trim() ? "steer-action-btn--active" : ""}`}
@@ -2384,20 +2500,22 @@ export default function ChatView({
 								<button
 									type="submit"
 									className={`send-btn ${inputValue.trim() ? "send-btn--active" : ""} ${
-										sessionStatus === "waiting_for_input" || sessionStatus === "needs_input"
+										effectiveStatus === "waiting_for_input" || effectiveStatus === "needs_input"
 											? "send-btn--waiting"
-											: sessionStatus === "running" || sessionStatus === "thinking"
+											: effectiveStatus === "running" ||
+												  effectiveStatus === "thinking" ||
+												  isAgentBusy
 												? "send-btn--steer"
 												: ""
 									}`}
 									disabled={sending || !inputValue.trim()}
 									aria-label={
-										sessionStatus === "running" || sessionStatus === "thinking"
+										effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy
 											? "Steer agent"
 											: "Send message"
 									}
 									title={
-										sessionStatus === "running" || sessionStatus === "thinking"
+										effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy
 											? "Steer agent with message (Enter)"
 											: "Send message (Enter)"
 									}
@@ -2452,7 +2570,7 @@ export default function ChatView({
 				projectInfo={projectInfo}
 				activeConv={activeConv}
 				bot={bot}
-				sessionStatus={sessionStatus}
+				sessionStatus={effectiveStatus}
 			/>
 		</main>
 	)

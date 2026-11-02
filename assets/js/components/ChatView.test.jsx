@@ -638,4 +638,37 @@ describe("normalizeMessage", () => {
 
 		expect(textarea.value).toBe("")
 	})
+
+	it("dispatches expand-live-thinking when clicking View Progress in steering bar", async () => {
+		const user = userEvent.setup()
+		const expandListener = vi.fn()
+		window.addEventListener("expand-live-thinking", expandListener)
+
+		render(
+			<ChatView
+				token="fake"
+				bot={{ id: 1, name: "Atlas", bot_type: "ahp", is_connected: true }}
+				conversations={[
+					{
+						id: 10,
+						title: "Active Migration",
+						status: "running",
+						metadata: { step: "Delegating task", tool: "agent" },
+					},
+				]}
+				selectedConversationId={10}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		const viewProgressBtn = await screen.findByRole("button", { name: "↓ View Progress" })
+		expect(viewProgressBtn).toBeInTheDocument()
+
+		await user.click(viewProgressBtn)
+		expect(expandListener).toHaveBeenCalledTimes(1)
+		window.removeEventListener("expand-live-thinking", expandListener)
+	})
 })
