@@ -34,6 +34,8 @@ RUN mix deps.compile
 COPY package.json ./
 RUN npm install --registry=https://registry.npmjs.org/
 
+ARG CACHEBUST=1
+
 # Copy assets
 COPY assets assets
 
