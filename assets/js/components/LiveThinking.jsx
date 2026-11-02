@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo, useCallback } from "react"
+import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react"
 import {
 	AssistantRuntimeProvider,
 	useExternalStoreRuntime,
@@ -26,7 +26,7 @@ export default function LiveThinking({
 	const currentStep = metadata?.step || metadata?.action || metadata?.current_step || ""
 	const currentTool = metadata?.tool || metadata?.tool_name || ""
 
-	useEffect(() => {
+	useLayoutEffect(() => {
 		if (isOpen && bodyRef.current && !userScrolledUpRef.current) {
 			bodyRef.current.scrollTop = bodyRef.current.scrollHeight
 		}
@@ -34,7 +34,7 @@ export default function LiveThinking({
 
 	const handleScroll = (e) => {
 		const target = e.currentTarget
-		const atBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 40
+		const atBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 20
 		userScrolledUpRef.current = !atBottom
 	}
 

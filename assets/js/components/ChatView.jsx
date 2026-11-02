@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react"
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react"
 import { Socket } from "phoenix"
 import MessageBubbleView from "./MessageBubble.jsx"
 import TypingIndicatorView from "./TypingIndicator.jsx"
@@ -335,27 +335,49 @@ export default function ChatView({
 	const handleMessagesScroll = useCallback(() => {
 		const container = messagesContainerRef.current
 		if (!container) return
-		const threshold = 64
 		const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight
-		isAtBottomRef.current = distanceToBottom <= threshold
+		// Tight threshold: if within 16px of bottom, consider user pinned to bottom.
+		// If scrolled higher than 32px, user deliberately scrolled up to read history.
+		if (distanceToBottom <= 16) {
+			isAtBottomRef.current = true
+		} else if (distanceToBottom > 32) {
+			isAtBottomRef.current = false
+		}
 	}, [])
 
-	// If the user was already at the bottom, keep them pinned to the bottom smoothly without jarring animations
-	useEffect(() => {
+	// If the user was already at the bottom, keep them pinned to the bottom smoothly without jarring post-paint jumps
+	useLayoutEffect(() => {
 		const container = messagesContainerRef.current
 		if (isAtBottomRef.current && container) {
 			container.scrollTop = container.scrollHeight
 		}
-	}, [messages, botIsTyping])
+	}, [messages, botIsTyping, thinkingText, toolCalls, pendingQuestion])
 
 	// Always scroll to bottom when switching sessions
-	useEffect(() => {
+	useLayoutEffect(() => {
 		isAtBottomRef.current = true
 		const container = messagesContainerRef.current
 		if (container) {
 			container.scrollTop = container.scrollHeight
 		}
 	}, [selectedConversationId])
+
+	// Keep bottom pinned synchronously when elements inside the chat container dynamically resize (markdown, thinking chunks, tool steps)
+	useEffect(() => {
+		const container = messagesContainerRef.current
+		if (!container || typeof ResizeObserver === "undefined") return
+
+		const observer = new ResizeObserver(() => {
+			if (isAtBottomRef.current && container) {
+				container.scrollTop = container.scrollHeight
+			}
+		})
+
+		observer.observe(container)
+		Array.from(container.children).forEach((child) => observer.observe(child))
+
+		return () => observer.disconnect()
+	}, [selectedConversationId, messages.length])
 
 	useEffect(() => {
 		messagesRef.current = messages
@@ -395,6 +417,8 @@ export default function ChatView({
 					}
 				})
 
+				let hasChanges = false
+
 				fetched.forEach((incoming) => {
 					const key = String(incoming.id)
 					const existingIndex = byId.get(key)
@@ -402,15 +426,31 @@ export default function ChatView({
 					if (existingIndex === undefined) {
 						byId.set(key, next.length)
 						next.push(incoming)
+						hasChanges = true
 						return
 					}
 
-					next[existingIndex] = normalizeMessage(incoming, {
-						...next[existingIndex],
+					const existing = next[existingIndex]
+					const normalized = normalizeMessage(incoming, {
+						...existing,
 						pending: false,
 						failed: false,
 					})
+
+					if (
+						existing.body !== normalized.body ||
+						existing.role !== normalized.role ||
+						existing.pending !== normalized.pending ||
+						existing.failed !== normalized.failed ||
+						existing.status !== normalized.status ||
+						existing.metadata?.thinking !== normalized.metadata?.thinking
+					) {
+						next[existingIndex] = normalized
+						hasChanges = true
+					}
 				})
+
+				if (!hasChanges) return prev
 
 				const state = deriveConversationState(next)
 				setBotIsTyping(state.botIsTyping)

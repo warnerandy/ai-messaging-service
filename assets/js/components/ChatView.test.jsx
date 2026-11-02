@@ -1,5 +1,5 @@
 import React, { act } from "react"
-import { render, screen } from "@testing-library/react"
+import { render, screen, fireEvent } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 import ChatView, { deriveConversationState, normalizeMessage } from "./ChatView.jsx"
@@ -544,5 +544,37 @@ describe("normalizeMessage", () => {
 		const closeBtn = screen.getByRole("button", { name: "Close session" })
 		await user.click(closeBtn)
 		expect(onSelect).toHaveBeenCalledWith(null)
+	})
+
+	it("preserves scroll position when user has scrolled up and does not snap to bottom", async () => {
+		const { container } = render(
+			<ChatView
+				token="fake"
+				bot={{ id: 1, name: "Atlas", is_connected: true }}
+				conversations={[{ id: 10, title: "Active Session", status: "idle" }]}
+				selectedConversationId={10}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		const messagesContainer = container.querySelector(".chat-messages")
+		expect(messagesContainer).toBeInTheDocument()
+
+		// Simulate user scrolling up
+		Object.defineProperty(messagesContainer, "scrollHeight", { value: 1000, configurable: true })
+		Object.defineProperty(messagesContainer, "clientHeight", { value: 400, configurable: true })
+		Object.defineProperty(messagesContainer, "scrollTop", {
+			value: 200,
+			writable: true,
+			configurable: true,
+		})
+
+		fireEvent.scroll(messagesContainer)
+
+		// Verify scrollTop was not yanked to scrollHeight (1000)
+		expect(messagesContainer.scrollTop).toBe(200)
 	})
 })

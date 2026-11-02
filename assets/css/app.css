@@ -1301,6 +1301,8 @@ body {
 .chat-messages {
   flex: 1;
   overflow-y: auto;
+  overflow-anchor: auto;
+  scroll-behavior: auto !important;
   padding: 1.5rem;
   display: flex;
   flex-direction: column;
@@ -3697,7 +3699,7 @@ body {
   min-height: 230px;
   max-height: 420px;
   overflow-y: auto;
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
 }
