@@ -255,10 +255,23 @@ export default function LiveThinking({
 			)}
 
 			{/* Collapsible Thinking Stream Body */}
-			{isOpen && thinkingText && (
+			{isOpen && (thinkingText || isBusy) && (
 				<div className="live-thinking-body" ref={bodyRef} onScroll={handleScroll}>
 					<div className="live-thinking-label">Reasoning & Execution Log:</div>
-					<pre className="live-thinking-content">{thinkingText}</pre>
+					{thinkingText ? (
+						<pre className="live-thinking-content">{thinkingText}</pre>
+					) : (
+						<div className="live-thinking-stream-active">
+							<span className="live-thinking-pulse" />
+							<span>
+								{status === "thinking"
+									? "Streaming reasoning and agent thought process..."
+									: currentStep
+										? `Executing: ${currentStep}`
+										: "Executing tool actions..."}
+							</span>
+						</div>
+					)}
 				</div>
 			)}
 		</div>

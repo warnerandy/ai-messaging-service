@@ -338,11 +338,11 @@ export default function ChatView({
 		const container = messagesContainerRef.current
 		if (!container) return
 		const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight
-		// Tight threshold: if within 16px of bottom, consider user pinned to bottom.
-		// If scrolled higher than 32px, user deliberately scrolled up to read history.
-		if (distanceToBottom <= 16) {
+		// Generous threshold: if within 100px of bottom, consider user pinned to bottom.
+		// If scrolled higher than 160px, user deliberately scrolled up to read history.
+		if (distanceToBottom <= 100) {
 			isAtBottomRef.current = true
-		} else if (distanceToBottom > 32) {
+		} else if (distanceToBottom > 160) {
 			isAtBottomRef.current = false
 		}
 	}, [])
@@ -353,7 +353,7 @@ export default function ChatView({
 		if (isAtBottomRef.current && container) {
 			container.scrollTop = container.scrollHeight
 		}
-	}, [messages, botIsTyping, thinkingText, toolCalls, pendingQuestion])
+	}, [messages, botIsTyping, toolCalls, pendingQuestion])
 
 	// Always scroll to bottom when switching sessions
 	useLayoutEffect(() => {
@@ -364,7 +364,7 @@ export default function ChatView({
 		}
 	}, [selectedConversationId])
 
-	// Keep bottom pinned synchronously when elements inside the chat container dynamically resize (markdown, thinking chunks, tool steps)
+	// Keep bottom pinned synchronously when elements inside the chat container dynamically resize (markdown, tool steps)
 	useEffect(() => {
 		const container = messagesContainerRef.current
 		if (!container || typeof ResizeObserver === "undefined") return
@@ -376,7 +376,6 @@ export default function ChatView({
 		})
 
 		observer.observe(container)
-		Array.from(container.children).forEach((child) => observer.observe(child))
 
 		return () => observer.disconnect()
 	}, [selectedConversationId, messages.length])
@@ -730,7 +729,9 @@ export default function ChatView({
 					const prevStatus = prevSessionStatusRef.current
 					setSessionStatus(newStatus)
 					const meta = payload.metadata || {}
-					setSessionMetadata(meta)
+					if (payload.metadata) {
+						setSessionMetadata((prev) => ({ ...prev, ...payload.metadata }))
+					}
 					if (meta.prompt_queue) setPromptQueue(meta.prompt_queue)
 					const resolvedQ = resolvePendingQuestion(newStatus, meta, payload.question)
 					if (resolvedQ) {
@@ -745,7 +746,6 @@ export default function ChatView({
 						setPendingQuestion(null)
 					}
 					if (newStatus === "idle") {
-						setThinkingText("")
 						stopBotThinking()
 					}
 
@@ -997,13 +997,14 @@ export default function ChatView({
 							const meta = payload.metadata || {}
 							if (payload.metadata) {
 								setSessionMetadata((prev) => ({ ...prev, ...payload.metadata }))
-								if (payload.metadata.thinking !== undefined) {
-									setThinkingText(payload.metadata.thinking || "")
+								if (payload.metadata.thinking) {
+									setThinkingText((prev) => prev || payload.metadata.thinking)
 								}
-								if (payload.metadata.tool_calls !== undefined) {
-									setToolCalls(
-										Array.isArray(payload.metadata.tool_calls) ? payload.metadata.tool_calls : [],
-									)
+								if (
+									Array.isArray(payload.metadata.tool_calls) &&
+									payload.metadata.tool_calls.length > 0
+								) {
+									setToolCalls((prev) => (prev.length > 0 ? prev : payload.metadata.tool_calls))
 								}
 							}
 							const resolvedQ = resolvePendingQuestion(newStatus, meta, payload.question)
@@ -1578,16 +1579,7 @@ export default function ChatView({
 			setThinkingText("")
 			setToolCalls([])
 		}
-	}, [
-		activeConv?.id,
-		activeConv?.status,
-		activeConv?.metadata?.step,
-		activeConv?.metadata?.action,
-		activeConv?.metadata?.tool,
-		activeConv?.metadata?.thinking,
-		activeConv?.metadata?.tool_calls,
-		selectedConversationId,
-	])
+	}, [selectedConversationId])
 
 	function handleStop() {
 		channelRef.current?.push("steer", { action: "stop" })
