@@ -1081,11 +1081,15 @@ export default function ChatView({
 						refetchMissedMessages()
 						setTimeout(() => refetchMissedMessages(), 350)
 
+						const liveConv =
+							conversations?.find((c) => c.id === selectedConversationId) || activeConv
 						const isLiveActive =
-							activeConv?.status === "running" ||
-							activeConv?.status === "thinking" ||
-							activeConv?.status === "waiting_for_input" ||
-							activeConv?.status === "needs_input"
+							sessionStatus === "running" ||
+							sessionStatus === "thinking" ||
+							liveConv?.status === "running" ||
+							liveConv?.status === "thinking" ||
+							liveConv?.status === "waiting_for_input" ||
+							liveConv?.status === "needs_input"
 
 						if (resp?.status) {
 							if (!isLiveActive || (resp.status !== "idle" && resp.status !== "completed")) {
@@ -1190,13 +1194,21 @@ export default function ChatView({
 				if (activeConv?.status !== "thinking" && activeConv?.status !== "running") {
 					setBotIsTyping(nextState.botIsTyping)
 				}
+				requestAnimationFrame(() => {
+					if (messagesContainerRef.current) {
+						messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight
+					}
+				})
 				if (res?.conversation && res.conversation.id === selectedConversationId) {
+					const liveConv = conversations?.find((c) => c.id === selectedConversationId) || activeConv
 					const convStatus = res.conversation.status || "idle"
 					const isLiveActive =
-						activeConv?.status === "running" ||
-						activeConv?.status === "thinking" ||
-						activeConv?.status === "waiting_for_input" ||
-						activeConv?.status === "needs_input"
+						sessionStatus === "running" ||
+						sessionStatus === "thinking" ||
+						liveConv?.status === "running" ||
+						liveConv?.status === "thinking" ||
+						liveConv?.status === "waiting_for_input" ||
+						liveConv?.status === "needs_input"
 
 					// Only update sessionStatus from DB if the session is NOT actively running live
 					if (!isLiveActive && res.conversation.status) {
@@ -1317,6 +1329,11 @@ export default function ChatView({
 			role: "user",
 			content_type: "text",
 			pending: true,
+			metadata: {
+				...(opts.metadata || {}),
+				...(opts.is_steer ? { is_steer: true } : {}),
+			},
+			is_steer: !!opts.is_steer,
 			fromSuggestion: opts.fromSuggestion || false,
 			inserted_at: new Date().toISOString(),
 		}
@@ -1329,6 +1346,13 @@ export default function ChatView({
 			if (model) payload.model = model
 			if (contextSize) payload.context_size = contextSize
 			if (opts.fromSuggestion) payload.is_suggestion = true
+			if (opts.is_steer || opts.metadata) {
+				payload.metadata = {
+					...(payload.metadata || {}),
+					...(opts.metadata || {}),
+					...(opts.is_steer ? { is_steer: true } : {}),
+				}
+			}
 
 			const res = await createConversationMessage(token, selectedConversationId, payload)
 			if (onConversationTouch) {
@@ -1336,13 +1360,13 @@ export default function ChatView({
 			}
 
 			setMessages((prev) => {
-				const deliveredAlreadyPresent = prev.some((m) => m.id === res.id && !m.pending)
+				const deliveredAlreadyPresent = res?.id && prev.some((m) => m.id === res.id && !m.pending)
 				if (deliveredAlreadyPresent) {
 					return prev.filter((m) => m.id !== optimisticId)
 				}
 				return prev.map((m) =>
 					m.id === optimisticId
-						? normalizeMessage(res, {
+						? normalizeMessage(res || {}, {
 								pending: false,
 								failed: false,
 								acknowledged: m.acknowledged,
@@ -1351,7 +1375,9 @@ export default function ChatView({
 						: m,
 				)
 			})
-			renderedIdsRef.current.add(res.id)
+			if (res?.id) {
+				renderedIdsRef.current.add(res.id)
+			}
 		} catch {
 			setMessages((prev) =>
 				prev.map((m) => (m.id === optimisticId ? { ...m, pending: false, failed: true } : m)),
@@ -1442,7 +1468,29 @@ export default function ChatView({
 			return
 		}
 
+		const isAgentRunning = sessionStatus === "running" || sessionStatus === "thinking"
+		if (isAgentRunning) {
+			channelRef.current?.push("steer", { action: "steer", instruction: body })
+			await sendMessage(body, { is_steer: true })
+			return
+		}
+
 		await sendMessage(body)
+	}
+
+	async function handleSteerSend(e) {
+		if (e) e.preventDefault()
+		const body = inputValue.trim()
+		if (!body || !selectedConversationId) return
+
+		setInputValue("")
+		isAtBottomRef.current = true
+		if (messagesContainerRef.current) {
+			messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight
+		}
+
+		channelRef.current?.push("steer", { action: "steer", instruction: body })
+		await sendMessage(body, { is_steer: true })
 	}
 
 	async function handleFileSelect(e) {
@@ -1505,7 +1553,9 @@ export default function ChatView({
 	}
 
 	function handleSteer(instruction) {
+		if (!instruction) return
 		channelRef.current?.push("steer", { action: "steer", instruction })
+		sendMessage(instruction, { is_steer: true }).catch(() => {})
 	}
 
 	function handleAnswerQuestion(answerData) {
@@ -2122,13 +2172,61 @@ export default function ChatView({
 						</div>
 					</div>
 				)}
+				{/* Agent Steering & Live Progress Bar when Agent is Busy */}
+				{(sessionStatus === "running" || sessionStatus === "thinking") && (
+					<div className="chat-steering-bar" data-testid="chat-steering-bar">
+						<div className="chat-steering-info">
+							<span className="chat-steering-pulse" />
+							<span className="chat-steering-label">
+								Agent is {sessionStatus === "thinking" ? "thinking" : "running"}
+							</span>
+							{(sessionMetadata?.step || sessionMetadata?.tool || sessionMetadata?.action) && (
+								<span
+									className="chat-steering-step"
+									title={sessionMetadata.step || sessionMetadata.action || sessionMetadata.tool}
+								>
+									{sessionMetadata.step ||
+										sessionMetadata.action ||
+										`Running ${sessionMetadata.tool}...`}
+								</span>
+							)}
+						</div>
+						<div className="chat-steering-actions">
+							<button
+								type="button"
+								className="chat-steering-quick-btn chat-steering-quick-btn--jump"
+								onClick={() => {
+									isAtBottomRef.current = true
+									if (messagesContainerRef.current) {
+										messagesContainerRef.current.scrollTop =
+											messagesContainerRef.current.scrollHeight
+									}
+								}}
+								title="Jump to live progress"
+							>
+								↓ View Progress
+							</button>
+							<button
+								type="button"
+								className="chat-steering-quick-btn chat-steering-quick-btn--stop"
+								onClick={handleStop}
+								title="Stop agent"
+							>
+								⏹ Stop
+							</button>
+						</div>
+					</div>
+				)}
+
 				<form
 					id="message-form"
 					onSubmit={handleSend}
 					className={`chat-input-form ${
 						sessionStatus === "waiting_for_input" || sessionStatus === "needs_input"
 							? "chat-input-form--waiting"
-							: ""
+							: sessionStatus === "running" || sessionStatus === "thinking"
+								? "chat-input-form--running"
+								: ""
 					}`}
 				>
 					<textarea
@@ -2138,7 +2236,9 @@ export default function ChatView({
 						placeholder={
 							sessionStatus === "waiting_for_input" || sessionStatus === "needs_input"
 								? "Agent is waiting for your input to continue..."
-								: "What do you want to know?"
+								: sessionStatus === "running" || sessionStatus === "thinking"
+									? "Steer running agent with an instruction (or ask a question)..."
+									: "What do you want to know?"
 						}
 						value={inputValue}
 						onChange={(e) => setInputValue(e.target.value)}
@@ -2236,26 +2336,50 @@ export default function ChatView({
 								)}
 							</button>
 						) : (
-							<button
-								type="submit"
-								className={`send-btn ${inputValue.trim() ? "send-btn--active" : ""} ${
-									sessionStatus === "waiting_for_input" || sessionStatus === "needs_input"
-										? "send-btn--waiting"
-										: ""
-								}`}
-								disabled={sending || !inputValue.trim()}
-								aria-label="Send message"
-							>
-								<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-									<path
-										d="M12 19V5M5 12l7-7 7 7"
-										stroke="currentColor"
-										strokeWidth="2"
-										strokeLinecap="round"
-										strokeLinejoin="round"
-									/>
-								</svg>
-							</button>
+							<div className="chat-send-actions">
+								{(sessionStatus === "running" || sessionStatus === "thinking") && (
+									<button
+										type="button"
+										className={`steer-action-btn ${inputValue.trim() ? "steer-action-btn--active" : ""}`}
+										onClick={handleSteerSend}
+										disabled={sending || !inputValue.trim()}
+										title="Steer agent with this message"
+									>
+										🧭 Steer Agent
+									</button>
+								)}
+								<button
+									type="submit"
+									className={`send-btn ${inputValue.trim() ? "send-btn--active" : ""} ${
+										sessionStatus === "waiting_for_input" || sessionStatus === "needs_input"
+											? "send-btn--waiting"
+											: sessionStatus === "running" || sessionStatus === "thinking"
+												? "send-btn--steer"
+												: ""
+									}`}
+									disabled={sending || !inputValue.trim()}
+									aria-label={
+										sessionStatus === "running" || sessionStatus === "thinking"
+											? "Steer agent"
+											: "Send message"
+									}
+									title={
+										sessionStatus === "running" || sessionStatus === "thinking"
+											? "Steer agent with message (Enter)"
+											: "Send message (Enter)"
+									}
+								>
+									<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+										<path
+											d="M12 19V5M5 12l7-7 7 7"
+											stroke="currentColor"
+											strokeWidth="2"
+											strokeLinecap="round"
+											strokeLinejoin="round"
+										/>
+									</svg>
+								</button>
+							</div>
 						)}
 					</div>
 				</form>

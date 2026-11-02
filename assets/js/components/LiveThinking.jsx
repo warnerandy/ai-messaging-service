@@ -245,6 +245,7 @@ export default function LiveThinking({
 						<ThreadPrimitive.Root className="aui-live-thread">
 							<ThreadPrimitive.Messages
 								components={{
+									UserMessage: () => null,
 									AssistantMessage: LiveAssistantMessage,
 								}}
 							/>

@@ -33,6 +33,11 @@ export default function MessageBubble({ message, onSuggestion, usedSuggestion })
 							Suggestion
 						</span>
 					)}
+					{(message.metadata?.is_steer || message.is_steer) && (
+						<span className="msg-steer-badge" title="Steering instruction sent to running agent">
+							🧭 Steer Instruction
+						</span>
+					)}
 					<p className="msg-text">{message.body}</p>
 					{message.pending && <span className="msg-status">Sending…</span>}
 					{message.failed && <span className="msg-status msg-status--error">Failed</span>}

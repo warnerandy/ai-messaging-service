@@ -201,8 +201,8 @@ describe("ChatView", () => {
 			/>,
 		)
 
-		expect(screen.getByText("Thinking")).toBeInTheDocument()
-		expect(screen.getByText("Evaluating syntax tree")).toBeInTheDocument()
+		expect(screen.getAllByText("Thinking").length).toBeGreaterThanOrEqual(1)
+		expect(screen.getAllByText("Evaluating syntax tree").length).toBeGreaterThanOrEqual(1)
 		expect(screen.getByText("Processing AST nodes...")).toBeInTheDocument()
 		// Generic typing dots indicator should NOT be rendered when thinking is active
 		expect(screen.queryByText(/Bot has been thinking for/i)).not.toBeInTheDocument()
@@ -599,7 +599,43 @@ describe("normalizeMessage", () => {
 			/>,
 		)
 
-		expect(await screen.findByText("Delegating task")).toBeInTheDocument()
-		expect(screen.getByText("Running")).toBeInTheDocument()
+		const stepElements = await screen.findAllByText("Delegating task")
+		expect(stepElements.length).toBeGreaterThanOrEqual(1)
+		expect(screen.getAllByText("Running").length).toBeGreaterThanOrEqual(1)
+		expect(screen.getByTestId("chat-steering-bar")).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "🧭 Steer Agent" })).toBeInTheDocument()
+	})
+
+	it("steers running agent when submitting a message in running state", async () => {
+		const user = userEvent.setup()
+		render(
+			<ChatView
+				token="fake"
+				bot={{ id: 1, name: "Atlas", bot_type: "ahp", is_connected: true }}
+				conversations={[
+					{
+						id: 10,
+						title: "Active Migration",
+						status: "running",
+						metadata: { step: "Delegating task", tool: "agent" },
+					},
+				]}
+				selectedConversationId={10}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		const textarea = screen.getByPlaceholderText(/Steer running agent with an instruction/i)
+		expect(textarea).toBeInTheDocument()
+
+		await user.type(textarea, "Focus on backend API first")
+		const steerBtn = screen.getByRole("button", { name: "🧭 Steer Agent" })
+		expect(steerBtn).toBeInTheDocument()
+		await user.click(steerBtn)
+
+		expect(textarea.value).toBe("")
 	})
 })

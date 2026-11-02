@@ -450,6 +450,7 @@ export function AssistantProcessTurn({ message, onSuggestion, usedSuggestion }) 
 					<ThreadPrimitive.Root className="aui-thread-primitive">
 						<ThreadPrimitive.Messages
 							components={{
+								UserMessage: () => null,
 								AssistantMessage: AssistantMessageRenderer,
 							}}
 						/>
