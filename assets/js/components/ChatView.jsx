@@ -160,6 +160,7 @@ export default function ChatView({
 	const [toolCalls, setToolCalls] = useState([])
 	const [pendingQuestion, setPendingQuestion] = useState(null)
 	const [promptQueue, setPromptQueue] = useState([])
+	const [isLoadingMessages, setIsLoadingMessages] = useState(false)
 	const [showConfigModal, setShowConfigModal] = useState(false)
 	const [showSettingsModal, setShowSettingsModal] = useState(false)
 	const [settingsInitialTab, setSettingsInitialTab] = useState("alerts")
@@ -186,6 +187,7 @@ export default function ChatView({
 	const renderedIdsRef = useRef(new Set())
 	const hasJoinedConversationRef = useRef(false)
 	const messagesRef = useRef([])
+	const messagesCacheRef = useRef(new Map())
 	const typingTimeoutRef = useRef(null)
 	const responseTimeoutsRef = useRef(new Map())
 	const timeoutRequestsRef = useRef(new Set())
@@ -381,7 +383,10 @@ export default function ChatView({
 
 	useEffect(() => {
 		messagesRef.current = messages
-	}, [messages])
+		if (selectedConversationId && messages.length > 0) {
+			messagesCacheRef.current.set(selectedConversationId, messages)
+		}
+	}, [messages, selectedConversationId])
 
 	const extractLastMessageId = useCallback((items) => {
 		if (!Array.isArray(items)) return null
@@ -486,12 +491,29 @@ export default function ChatView({
 
 					if (res?.conversation && res.conversation.id === selectedConversationId) {
 						const convStatus = res.conversation.status || "idle"
-						setSessionStatus(convStatus)
+						setSessionStatus((prev) => {
+							if (
+								(prev === "running" || prev === "thinking") &&
+								(convStatus === "idle" || !convStatus)
+							) {
+								return prev
+							}
+							return convStatus
+						})
 						const convMeta = res.conversation.metadata || {}
-						setSessionMetadata(convMeta)
-						setPromptQueue(convMeta.prompt_queue || [])
-						setThinkingText(convMeta.thinking || "")
-						setToolCalls(Array.isArray(convMeta.tool_calls) ? convMeta.tool_calls : [])
+						setSessionMetadata((prev) => ({
+							...convMeta,
+							...prev,
+						}))
+						if (convMeta.prompt_queue) {
+							setPromptQueue(convMeta.prompt_queue)
+						}
+						if (convMeta.thinking) {
+							setThinkingText((prev) => prev || convMeta.thinking)
+						}
+						if (Array.isArray(convMeta.tool_calls) && convMeta.tool_calls.length > 0) {
+							setToolCalls((prev) => (prev.length > 0 ? prev : convMeta.tool_calls))
+						}
 						const resolvedQ = resolvePendingQuestion(convStatus, convMeta, convMeta.question)
 						if (resolvedQ) {
 							setPendingQuestion(resolvedQ)
@@ -1160,8 +1182,19 @@ export default function ChatView({
 		if (!selectedConversationId || !token) return
 		hasJoinedConversationRef.current = false
 		renderedIdsRef.current.clear()
-		setMessages([])
-		messagesRef.current = []
+
+		const cached = messagesCacheRef.current.get(selectedConversationId)
+		if (cached && cached.length > 0) {
+			setMessages(cached)
+			messagesRef.current = cached
+			cached.forEach((m) => renderedIdsRef.current.add(m.id))
+			setIsLoadingMessages(false)
+		} else {
+			setMessages([])
+			messagesRef.current = []
+			setIsLoadingMessages(true)
+		}
+
 		setSessionMetadata(activeConv?.metadata || {})
 		setThinkingText(activeConv?.metadata?.thinking || "")
 		setToolCalls(
@@ -1191,6 +1224,7 @@ export default function ChatView({
 				msgs.forEach((m) => renderedIdsRef.current.add(m.id))
 				const nextState = deriveConversationState(msgs)
 				setMessages(nextState.messages)
+				messagesCacheRef.current.set(selectedConversationId, nextState.messages)
 				if (activeConv?.status !== "thinking" && activeConv?.status !== "running") {
 					setBotIsTyping(nextState.botIsTyping)
 				}
@@ -1227,10 +1261,10 @@ export default function ChatView({
 						setPromptQueue(convMeta.prompt_queue)
 					}
 					if (convMeta.thinking) {
-						setThinkingText(convMeta.thinking)
+						setThinkingText((prev) => prev || convMeta.thinking)
 					}
 					if (Array.isArray(convMeta.tool_calls) && convMeta.tool_calls.length > 0) {
-						setToolCalls(convMeta.tool_calls)
+						setToolCalls((prev) => (prev.length > 0 ? prev : convMeta.tool_calls))
 					}
 
 					const effectiveStatus = isLiveActive ? activeConv.status : convStatus
@@ -1257,6 +1291,8 @@ export default function ChatView({
 				}
 			} catch (err) {
 				console.error("Load messages failed:", err)
+			} finally {
+				setIsLoadingMessages(false)
 			}
 		}
 		loadMessages()
@@ -1510,7 +1546,12 @@ export default function ChatView({
 		if (activeConv) {
 			const st = activeConv.status || "idle"
 			const meta = activeConv.metadata || {}
-			setSessionStatus(st)
+			setSessionStatus((prev) => {
+				if ((prev === "running" || prev === "thinking") && (st === "idle" || !st)) {
+					return prev
+				}
+				return st
+			})
 			setSessionMetadata((prev) => ({
 				...prev,
 				...meta,
@@ -1521,10 +1562,10 @@ export default function ChatView({
 			const resolvedQ = resolvePendingQuestion(st, meta, meta.question)
 			setPendingQuestion(resolvedQ)
 			if (meta.thinking !== undefined && meta.thinking !== "") {
-				setThinkingText(meta.thinking)
+				setThinkingText((prev) => prev || meta.thinking)
 			}
 			if (Array.isArray(meta.tool_calls) && meta.tool_calls.length > 0) {
-				setToolCalls(meta.tool_calls)
+				setToolCalls((prev) => (prev.length > 0 ? prev : meta.tool_calls))
 			}
 			if (st === "waiting_for_input" || st === "needs_input") {
 				setTimeout(() => inputRef.current?.focus(), 50)
@@ -2096,7 +2137,7 @@ export default function ChatView({
 						</span>
 					</div>
 				)}
-				{messages.length === 0 && (
+				{!isLoadingMessages && messages.length === 0 && (
 					<div className="chat-welcome">
 						<p className="chat-welcome-text">
 							Start a conversation with <strong>{bot?.name || "your bot"}</strong>
