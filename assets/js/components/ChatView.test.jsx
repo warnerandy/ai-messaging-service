@@ -577,4 +577,29 @@ describe("normalizeMessage", () => {
 		// Verify scrollTop was not yanked to scrollHeight (1000)
 		expect(messagesContainer.scrollTop).toBe(200)
 	})
+
+	it("keeps LiveThinking visible with current step when selecting an actively running session", async () => {
+		render(
+			<ChatView
+				token="fake"
+				bot={{ id: 1, name: "Atlas", bot_type: "ahp", is_connected: true }}
+				conversations={[
+					{
+						id: 10,
+						title: "Active Migration",
+						status: "running",
+						metadata: { step: "Delegating task", tool: "agent" },
+					},
+				]}
+				selectedConversationId={10}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		expect(await screen.findByText("Delegating task")).toBeInTheDocument()
+		expect(screen.getByText("Running")).toBeInTheDocument()
+	})
 })
