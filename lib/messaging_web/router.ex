@@ -43,7 +43,7 @@ defmodule MessagingWeb.Router do
     get "/bot-tokens/:bot_token_id/models", BotModelController, :index
     post "/bot-tokens/:bot_token_id/refresh-models", BotModelController, :refresh
     post "/bot-tokens/refresh-models", BotModelController, :refresh_all
-    resources "/conversations", ConversationController, only: [:index, :create, :show]
+    resources "/conversations", ConversationController, only: [:index, :create, :show, :update]
     post "/conversations/:id/archive", ConversationController, :archive
     delete "/conversations/:id", ConversationController, :archive
     get "/conversations/:id/channel", ConversationController, :channel

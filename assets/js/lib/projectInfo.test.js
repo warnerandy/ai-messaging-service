@@ -14,6 +14,10 @@ import {
 	getSessionSubagents,
 	getSessionProcesses,
 	orderSessionsHierarchically,
+	normalizeAgentMode,
+	normalizeWorktree,
+	formatAgentType,
+	getAgentPromptConfig,
 } from "./projectInfo.js"
 
 test("formatProjectPath converts file URIs to paths", () => {
@@ -467,4 +471,59 @@ test("getSessionProcesses normalizes explicit processes, tool calls, and active 
 	assert.equal(procs[1].isRunning, false)
 	assert.equal(procs[2].name, "run_command")
 	assert.equal(procs[2].isRunning, true)
+})
+
+test("normalizeAgentMode correctly identifies interactive, plan, and autopilot modes", () => {
+	assert.equal(normalizeAgentMode("interactive"), "interactive")
+	assert.equal(normalizeAgentMode("plan"), "plan")
+	assert.equal(normalizeAgentMode("PLANNING"), "plan")
+	assert.equal(normalizeAgentMode("autopilot"), "autopilot")
+	assert.equal(normalizeAgentMode("auto"), "autopilot")
+	assert.equal(normalizeAgentMode("autonomous"), "autopilot")
+	assert.equal(normalizeAgentMode("other"), "interactive")
+	assert.equal(normalizeAgentMode(""), "interactive")
+	assert.equal(normalizeAgentMode(null), "interactive")
+})
+
+test("normalizeWorktree correctly parses boolean and truthy worktree flags", () => {
+	assert.equal(normalizeWorktree(true), true)
+	assert.equal(normalizeWorktree("true"), true)
+	assert.equal(normalizeWorktree("worktree"), true)
+	assert.equal(normalizeWorktree(1), true)
+	assert.equal(normalizeWorktree(false), false)
+	assert.equal(normalizeWorktree("false"), false)
+	assert.equal(normalizeWorktree(0), false)
+	assert.equal(normalizeWorktree(null), false)
+})
+
+test("formatAgentType returns formatted agent labels", () => {
+	assert.equal(formatAgentType("workspace"), "Workspace (@workspace)")
+	assert.equal(formatAgentType("coder"), "Coder")
+	assert.equal(formatAgentType("architect"), "Architect")
+	assert.equal(formatAgentType("reviewer"), "Reviewer")
+	assert.equal(formatAgentType("@terminal"), "@terminal")
+	assert.equal(formatAgentType("custom_agent"), "Custom_agent")
+})
+
+test("getAgentPromptConfig extracts and synchronizes mode, worktree, base_branch, and agent_types", () => {
+	const conv = {
+		metadata: {
+			base_branch: "master",
+			agent_mode: "interactive",
+		},
+	}
+	const sessionMetadata = {
+		agent_mode: "plan",
+		use_worktree: true,
+		base_branch: "feature/auth-flow",
+		agent_type: "architect",
+		agent_types: ["workspace", "coder", "architect", "reviewer", "tester"],
+	}
+
+	const config = getAgentPromptConfig(sessionMetadata, conv)
+	assert.equal(config.agentMode, "plan")
+	assert.equal(config.useWorktree, true)
+	assert.equal(config.baseBranch, "feature/auth-flow")
+	assert.equal(config.agentType, "architect")
+	assert.deepEqual(config.agentTypes, ["workspace", "coder", "architect", "reviewer", "tester"])
 })

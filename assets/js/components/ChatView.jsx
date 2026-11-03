@@ -6,6 +6,7 @@ import LiveThinking from "./LiveThinking.jsx"
 import SubagentsPanel from "./SubagentsPanel.jsx"
 import QuestionApprovalCard from "./QuestionApprovalCard.jsx"
 import PromptQueue from "./PromptQueue.jsx"
+import AssistantChatComposer from "./AssistantChatComposer.jsx"
 import BotConfigModal from "./BotConfigModal.jsx"
 import SettingsModal from "./SettingsModal.jsx"
 import ProjectInfoModal from "./ProjectInfoModal.jsx"
@@ -151,7 +152,41 @@ export default function ChatView({
 	const [botIsTyping, setBotIsTyping] = useState(false)
 	const [sending, setSending] = useState(false)
 	const [selectedFile, setSelectedFile] = useState(null)
+	const [selectedAgentType, setSelectedAgentType] = useState("general")
+	const [selectedSkill, setSelectedSkill] = useState("none")
+	const [attachments, setAttachments] = useState([])
 	const [uploading, setUploading] = useState(false)
+
+	const handleAddAttachments = useCallback((newFiles) => {
+		const mapped = newFiles.map((file) => ({
+			id: `${file.name}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+			file,
+			name: file.name,
+			size: file.size,
+			type: file.type,
+			previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : null,
+		}))
+		setAttachments((prev) => [...prev, ...mapped])
+		if (newFiles[0]) {
+			setSelectedFile(newFiles[0])
+		}
+	}, [])
+
+	const handleRemoveAttachment = useCallback((id) => {
+		setAttachments((prev) => {
+			const match = prev.find((att) => att.id === id)
+			if (match?.previewUrl) {
+				try {
+					URL.revokeObjectURL(match.previewUrl)
+				} catch (_) {}
+			}
+			const next = prev.filter((att) => att.id !== id)
+			if (next.length === 0) {
+				setSelectedFile(null)
+			}
+			return next
+		})
+	}, [])
 	// Maps message id -> value of the suggestion the user clicked
 	const [usedSuggestions, setUsedSuggestions] = useState({})
 	const [sessionStatus, setSessionStatus] = useState("idle")
@@ -1435,6 +1470,12 @@ export default function ChatView({
 		const model = selectedModel || models[0]?.name || null
 		const contextSize = selectedContextSize ? Number(selectedContextSize) : null
 		const optimisticId = `optimistic-${Date.now()}`
+		const metadata = {
+			agent_type: selectedAgentType,
+			skill: selectedSkill,
+			...(opts.metadata || {}),
+			...(opts.is_steer ? { is_steer: true } : {}),
+		}
 		const optimistic = {
 			id: optimisticId,
 			body,
@@ -1443,10 +1484,7 @@ export default function ChatView({
 			role: "user",
 			content_type: "text",
 			pending: true,
-			metadata: {
-				...(opts.metadata || {}),
-				...(opts.is_steer ? { is_steer: true } : {}),
-			},
+			metadata,
 			is_steer: !!opts.is_steer,
 			fromSuggestion: opts.fromSuggestion || false,
 			inserted_at: new Date().toISOString(),
@@ -1460,13 +1498,7 @@ export default function ChatView({
 			if (model) payload.model = model
 			if (contextSize) payload.context_size = contextSize
 			if (opts.fromSuggestion) payload.is_suggestion = true
-			if (opts.is_steer || opts.metadata) {
-				payload.metadata = {
-					...(payload.metadata || {}),
-					...(opts.metadata || {}),
-					...(opts.is_steer ? { is_steer: true } : {}),
-				}
-			}
+			payload.metadata = metadata
 
 			const res = await createConversationMessage(token, selectedConversationId, payload)
 			if (onConversationTouch) {
@@ -1501,22 +1533,40 @@ export default function ChatView({
 		}
 	}
 
-	async function sendAsset(file) {
-		if (!file || !selectedConversationId) return
-
+	async function sendAttachmentsAndBody(body, currentAttachments, opts = {}) {
+		if (!selectedConversationId) return
 		const model = selectedModel || models[0]?.name || null
 		const contextSize = selectedContextSize ? Number(selectedContextSize) : null
 		const optimisticId = `optimistic-${Date.now()}`
-		const assetType = file.type.startsWith("image/") ? "image" : "file"
+		const is_steer = !!opts.is_steer
+
+		const primary = currentAttachments[0]
+		const assetType = primary.type?.startsWith("image/") ? "image" : "file"
+
 		const optimistic = {
 			id: optimisticId,
-			body: null,
-			metadata: { url: URL.createObjectURL(file), filename: file.name },
+			body: body || null,
 			model,
 			context_size: contextSize,
 			role: "user",
 			content_type: assetType,
 			pending: true,
+			metadata: {
+				url: primary.previewUrl,
+				filename: primary.name,
+				agent_type: selectedAgentType,
+				skill: selectedSkill,
+				attachments: currentAttachments.map((a) => ({
+					name: a.name,
+					type: a.type,
+					size: a.size,
+					previewUrl: a.previewUrl,
+				})),
+				...(opts.metadata || {}),
+				...(is_steer ? { is_steer: true } : {}),
+			},
+			is_steer,
+			fromSuggestion: opts.fromSuggestion || false,
 			inserted_at: new Date().toISOString(),
 		}
 
@@ -1524,33 +1574,66 @@ export default function ChatView({
 		setUploading(true)
 
 		try {
-			const uploadResult = await uploadFile(file)
-			if (!uploadResult) {
-				throw new Error("Upload failed")
+			const uploadedList = []
+			for (const att of currentAttachments) {
+				const uploadResult = await uploadFile(att.file)
+				if (uploadResult?.url) {
+					uploadedList.push({
+						url: uploadResult.url,
+						filename: att.name,
+						type: att.type,
+						size: att.size,
+					})
+				}
+			}
+
+			if (uploadedList.length === 0) {
+				throw new Error("Attachment upload failed")
 			}
 
 			const payload = {
-				asset_url: uploadResult.url,
+				body: body || null,
+				asset_url: uploadedList[0].url,
 				asset_type: assetType,
-				asset_filename: file.name,
+				asset_filename: uploadedList[0].filename,
+				metadata: {
+					url: uploadedList[0].url,
+					filename: uploadedList[0].filename,
+					attachments: uploadedList,
+					agent_type: selectedAgentType,
+					skill: selectedSkill,
+					...(opts.metadata || {}),
+					...(is_steer ? { is_steer: true } : {}),
+				},
 			}
 			if (model) payload.model = model
 			if (contextSize) payload.context_size = contextSize
 
 			const res = await createConversationMessage(token, selectedConversationId, payload)
+			if (onConversationTouch) {
+				onConversationTouch(selectedConversationId)
+			}
 
-			setMessages((prev) =>
-				prev.map((m) =>
+			setMessages((prev) => {
+				const deliveredAlreadyPresent = res?.id && prev.some((m) => m.id === res.id && !m.pending)
+				if (deliveredAlreadyPresent) {
+					return prev.filter((m) => m.id !== optimisticId)
+				}
+				return prev.map((m) =>
 					m.id === optimisticId
-						? normalizeMessage(res, {
+						? normalizeMessage(res || {}, {
 								pending: false,
 								failed: false,
 								acknowledged: m.acknowledged,
+								fromSuggestion: m.fromSuggestion,
 							})
 						: m,
-				),
-			)
-			renderedIdsRef.current.add(res.id)
+				)
+			})
+			if (res?.id) {
+				renderedIdsRef.current.add(res.id)
+			}
+			setAttachments([])
 			setSelectedFile(null)
 		} catch {
 			setMessages((prev) =>
@@ -1561,10 +1644,16 @@ export default function ChatView({
 		}
 	}
 
+	async function sendAsset(file) {
+		if (!file) return
+		await sendAttachmentsAndBody("", [{ file, name: file.name, type: file.type, size: file.size }])
+	}
+
 	async function handleSend(e) {
-		e.preventDefault()
+		if (e && e.preventDefault) e.preventDefault()
 		const body = inputValue.trim()
-		if (!body || !selectedConversationId) return
+		const currentAttachments = [...attachments]
+		if ((!body && currentAttachments.length === 0) || !selectedConversationId) return
 
 		setInputValue("")
 		isAtBottomRef.current = true
@@ -1573,7 +1662,7 @@ export default function ChatView({
 		}
 
 		// If an interactive question is awaiting input, route the message to answer the question
-		if (pendingQuestion) {
+		if (pendingQuestion && body) {
 			const formattedAnswer = formatQuestionAnswer(body, pendingQuestion)
 			handleAnswerQuestion(formattedAnswer)
 			if (pendingQuestion.isGenericWaiting) {
@@ -1585,18 +1674,29 @@ export default function ChatView({
 		const isAgentRunning =
 			effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy
 		if (isAgentRunning) {
-			channelRef.current?.push("steer", { action: "steer", instruction: body })
-			await sendMessage(body, { is_steer: true })
+			if (body) {
+				channelRef.current?.push("steer", { action: "steer", instruction: body })
+			}
+			if (currentAttachments.length > 0) {
+				await sendAttachmentsAndBody(body, currentAttachments, { is_steer: true })
+			} else {
+				await sendMessage(body, { is_steer: true })
+			}
 			return
 		}
 
-		await sendMessage(body)
+		if (currentAttachments.length > 0) {
+			await sendAttachmentsAndBody(body, currentAttachments)
+		} else {
+			await sendMessage(body)
+		}
 	}
 
 	async function handleSteerSend(e) {
-		if (e) e.preventDefault()
+		if (e && e.preventDefault) e.preventDefault()
 		const body = inputValue.trim()
-		if (!body || !selectedConversationId) return
+		const currentAttachments = [...attachments]
+		if ((!body && currentAttachments.length === 0) || !selectedConversationId) return
 
 		setInputValue("")
 		isAtBottomRef.current = true
@@ -1604,19 +1704,27 @@ export default function ChatView({
 			messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight
 		}
 
-		channelRef.current?.push("steer", { action: "steer", instruction: body })
-		await sendMessage(body, { is_steer: true })
+		if (body) {
+			channelRef.current?.push("steer", { action: "steer", instruction: body })
+		}
+		if (currentAttachments.length > 0) {
+			await sendAttachmentsAndBody(body, currentAttachments, { is_steer: true })
+		} else {
+			await sendMessage(body, { is_steer: true })
+		}
 	}
 
 	async function handleFileSelect(e) {
-		const file = e.target.files?.[0]
-		if (file) {
-			setSelectedFile(file)
+		const files = Array.from(e.target.files || [])
+		if (files.length > 0) {
+			handleAddAttachments(files)
 		}
 	}
 
 	async function handleSendAsset() {
-		if (selectedFile) {
+		if (attachments.length > 0) {
+			await sendAttachmentsAndBody(inputValue.trim(), attachments)
+		} else if (selectedFile) {
 			await sendAsset(selectedFile)
 		}
 	}
@@ -2292,249 +2400,35 @@ export default function ChatView({
 				<div ref={messagesEndRef} />
 			</div>
 
-			{/* Input area */}
-			<div className="chat-input-area">
-				{/* Prompt Queue Chips */}
-				<PromptQueue queue={promptQueue} onRemovePrompt={handleRemovePrompt} />
-
-				{/* File preview when selected */}
-				{selectedFile && (
-					<div className="file-preview">
-						<div className="file-preview-item">
-							<span className="file-preview-name">{selectedFile.name}</span>
-							<button
-								type="button"
-								className="file-preview-remove"
-								onClick={() => setSelectedFile(null)}
-								aria-label="Remove file"
-							>
-								<svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-									<path
-										d="M18 6L6 18M6 6l12 12"
-										stroke="currentColor"
-										strokeWidth="2"
-										strokeLinecap="round"
-										strokeLinejoin="round"
-									/>
-								</svg>
-							</button>
-						</div>
-					</div>
-				)}
-				{/* Agent Steering & Live Progress Bar when Agent is Busy */}
-				{(effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy) && (
-					<div className="chat-steering-bar" data-testid="chat-steering-bar">
-						<div className="chat-steering-info">
-							<span className="chat-steering-pulse" />
-							<span className="chat-steering-label">
-								Agent is {effectiveStatus === "thinking" ? "thinking" : "running"}
-							</span>
-							{(effectiveMetadata?.step ||
-								effectiveMetadata?.tool ||
-								effectiveMetadata?.action) && (
-								<span
-									className="chat-steering-step"
-									title={
-										effectiveMetadata.step || effectiveMetadata.action || effectiveMetadata.tool
-									}
-								>
-									{effectiveMetadata.step ||
-										effectiveMetadata.action ||
-										`Running ${effectiveMetadata.tool}...`}
-								</span>
-							)}
-						</div>
-						<div className="chat-steering-actions">
-							<button
-								type="button"
-								className="chat-steering-quick-btn chat-steering-quick-btn--jump"
-								onClick={handleViewProgress}
-								title="Jump to live progress"
-							>
-								↓ View Progress
-							</button>
-							<button
-								type="button"
-								className="chat-steering-quick-btn chat-steering-quick-btn--stop"
-								onClick={handleStop}
-								title="Stop agent"
-							>
-								⏹ Stop
-							</button>
-						</div>
-					</div>
-				)}
-
-				<form
-					id="message-form"
-					onSubmit={handleSend}
-					className={`chat-input-form ${
-						effectiveStatus === "waiting_for_input" || effectiveStatus === "needs_input"
-							? "chat-input-form--waiting"
-							: effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy
-								? "chat-input-form--running"
-								: ""
-					}`}
-				>
-					<textarea
-						id="message-input"
-						ref={inputRef}
-						className="chat-textarea"
-						placeholder={
-							effectiveStatus === "waiting_for_input" || effectiveStatus === "needs_input"
-								? "Agent is waiting for your input to continue..."
-								: effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy
-									? "Steer running agent with an instruction (or ask a question)..."
-									: "What do you want to know?"
-						}
-						value={inputValue}
-						onChange={(e) => setInputValue(e.target.value)}
-						rows={1}
-						onKeyDown={(e) => {
-							if (e.key === "Enter" && !e.shiftKey) {
-								e.preventDefault()
-								handleSend(e)
-							}
-						}}
-						onInput={(e) => {
-							e.target.style.height = "auto"
-							e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"
-						}}
-					/>
-					<div className="chat-input-actions">
-						<div className="chat-input-left">
-							<input
-								type="file"
-								id="file-input"
-								className="file-input"
-								onChange={handleFileSelect}
-								accept="image/*,.pdf"
-								aria-label="Upload file"
-							/>
-							<label htmlFor="file-input" className="file-input-btn" title="Attach file">
-								<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-									<path
-										d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"
-										stroke="currentColor"
-										strokeWidth="2"
-										strokeLinecap="round"
-										strokeLinejoin="round"
-									/>
-								</svg>
-							</label>
-							<select
-								id="model-select"
-								className="model-picker"
-								value={selectedModel}
-								onChange={(e) => setSelectedModel(e.target.value)}
-								aria-label="Model"
-							>
-								{models.map((m) => (
-									<option key={m.name} value={m.name}>
-										{m.name}
-									</option>
-								))}
-							</select>
-							{models.find((m) => m.name === selectedModel)?.context_sizes?.length > 0 && (
-								<select
-									id="context-size-select"
-									className="model-picker"
-									value={selectedContextSize}
-									onChange={(e) => setSelectedContextSize(e.target.value)}
-									aria-label="Context Size"
-								>
-									<option value="">Default context</option>
-									{models
-										.find((m) => m.name === selectedModel)
-										.context_sizes.map((size) => (
-											<option key={size} value={size}>
-												{size >= 1000
-													? `${Math.round(size / 1000)}k (${size.toLocaleString()} tokens)`
-													: `${size} tokens`}
-											</option>
-										))}
-								</select>
-							)}
-						</div>
-
-						{selectedFile ? (
-							<button
-								type="button"
-								className={`send-btn send-btn--active`}
-								onClick={handleSendAsset}
-								disabled={uploading}
-								aria-label="Send file"
-							>
-								{uploading ? (
-									<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-										<circle cx="12" cy="12" r="1" fill="currentColor" opacity="0.3" />
-										<circle cx="12" cy="12" r="1" fill="currentColor" />
-									</svg>
-								) : (
-									<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-										<path
-											d="M12 19V5M5 12l7-7 7 7"
-											stroke="currentColor"
-											strokeWidth="2"
-											strokeLinecap="round"
-											strokeLinejoin="round"
-										/>
-									</svg>
-								)}
-							</button>
-						) : (
-							<div className="chat-send-actions">
-								{(effectiveStatus === "running" ||
-									effectiveStatus === "thinking" ||
-									isAgentBusy) && (
-									<button
-										type="button"
-										className={`steer-action-btn ${inputValue.trim() ? "steer-action-btn--active" : ""}`}
-										onClick={handleSteerSend}
-										disabled={sending || !inputValue.trim()}
-										title="Steer agent with this message"
-									>
-										🧭 Steer Agent
-									</button>
-								)}
-								<button
-									type="submit"
-									className={`send-btn ${inputValue.trim() ? "send-btn--active" : ""} ${
-										effectiveStatus === "waiting_for_input" || effectiveStatus === "needs_input"
-											? "send-btn--waiting"
-											: effectiveStatus === "running" ||
-												  effectiveStatus === "thinking" ||
-												  isAgentBusy
-												? "send-btn--steer"
-												: ""
-									}`}
-									disabled={sending || !inputValue.trim()}
-									aria-label={
-										effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy
-											? "Steer agent"
-											: "Send message"
-									}
-									title={
-										effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy
-											? "Steer agent with message (Enter)"
-											: "Send message (Enter)"
-									}
-								>
-									<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-										<path
-											d="M12 19V5M5 12l7-7 7 7"
-											stroke="currentColor"
-											strokeWidth="2"
-											strokeLinecap="round"
-											strokeLinejoin="round"
-										/>
-									</svg>
-								</button>
-							</div>
-						)}
-					</div>
-				</form>
-			</div>
+			{/* Assistant UI Chat Composer (Input, Model Picker, Agent Type, Skill, Attachments, Steering) */}
+			<AssistantChatComposer
+				value={inputValue}
+				onChange={setInputValue}
+				onSubmit={handleSend}
+				onSteerSubmit={handleSteerSend}
+				disabled={sending || uploading}
+				uploading={uploading}
+				effectiveStatus={effectiveStatus}
+				isAgentBusy={isAgentBusy}
+				effectiveMetadata={effectiveMetadata}
+				models={models}
+				selectedModel={selectedModel}
+				onSelectModel={setSelectedModel}
+				selectedContextSize={selectedContextSize}
+				onSelectContextSize={setSelectedContextSize}
+				selectedAgentType={selectedAgentType}
+				onSelectAgentType={setSelectedAgentType}
+				selectedSkill={selectedSkill}
+				onSelectSkill={setSelectedSkill}
+				attachments={attachments}
+				onAddAttachments={handleAddAttachments}
+				onRemoveAttachment={handleRemoveAttachment}
+				promptQueue={promptQueue}
+				onRemovePrompt={handleRemovePrompt}
+				onViewProgress={handleViewProgress}
+				onStop={handleStop}
+				inputRef={inputRef}
+			/>
 
 			{/* Settings Modal (Alerts, Working States Showcase) */}
 			<SettingsModal

@@ -369,4 +369,84 @@ defmodule MessagingWeb.AhpChannelTest do
       }
     }
   end
+
+  test "syncs agent mode, use_worktree, base_branch, and agent_types bidirectionally", %{
+    user: user,
+    bot_token: bot,
+    bot_socket: bot_socket,
+    user_socket: user_socket
+  } do
+    # 1. Join bot channel
+    {:ok, _, bot_channel} =
+      subscribe_and_join(bot_socket, BotChannel, "bot:#{bot.channel_code}", %{})
+
+    # 2. Create conversation
+    {:ok, conv} =
+      Messaging.Chat.create_conversation(%{
+        user_id: user.id,
+        bot_token_id: bot.id,
+        title: "Agent Mode Test",
+        external_session_id: "agent-mode-sess",
+        metadata: %{
+          "base_branch" => "main",
+          "agent_mode" => "interactive"
+        }
+      })
+
+    # 3. Join user conversation channel
+    {:ok, _, user_channel} =
+      subscribe_and_join(user_socket, ConversationChannel, "conversation:#{conv.id}", %{})
+
+    # Clear initial sync push
+    assert_push "request_session_sync", _
+
+    # 4. User updates session configuration: mode to 'plan', worktree to true, branch to 'feature/v2', agent_type to 'architect'
+    ref =
+      push(user_channel, "update_session_config", %{
+        "agent_mode" => "plan",
+        "use_worktree" => true,
+        "base_branch" => "feature/v2",
+        "agent_type" => "architect",
+        "agent_types" => ["workspace", "coder", "architect"]
+      })
+
+    assert_reply ref, :ok, %{metadata: updated_meta}
+    assert updated_meta["agent_mode"] == "plan"
+    assert updated_meta["use_worktree"] == true
+    assert updated_meta["base_branch"] == "feature/v2"
+    assert updated_meta["agent_type"] == "architect"
+    assert updated_meta["agent_types"] == ["workspace", "coder", "architect"]
+
+    # 5. Bot channel receives session_config_changed push
+    assert_push "session_config_changed", %{
+      "conversation_id" => conv_id,
+      "metadata" => bot_received_meta
+    }
+
+    assert conv_id == conv.id
+    assert bot_received_meta["agent_mode"] == "plan"
+    assert bot_received_meta["use_worktree"] == true
+    assert bot_received_meta["base_branch"] == "feature/v2"
+
+    # 6. Bot updates session config from VS Code side via session_status
+    push(bot_channel, "session_status", %{
+      "conversation_id" => conv.id,
+      "status" => "running",
+      "agent_mode" => "autopilot",
+      "use_worktree" => false,
+      "base_branch" => "main",
+      "agent_type" => "coder"
+    })
+
+    # 7. User channel receives session_status_changed with the new mode and branch
+    assert_push "session_status_changed", %{
+      status: "running",
+      metadata: status_meta
+    }
+
+    assert status_meta["agent_mode"] == "autopilot"
+    assert status_meta["use_worktree"] == false
+    assert status_meta["base_branch"] == "main"
+    assert status_meta["agent_type"] == "coder"
+  end
 end

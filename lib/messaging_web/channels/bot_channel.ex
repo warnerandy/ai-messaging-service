@@ -124,6 +124,16 @@ defmodule MessagingWeb.BotChannel do
     {:noreply, socket}
   end
 
+  @impl true
+  def handle_info({:session_config_changed, payload}, socket) do
+    Logger.info(
+      "[BotChannel] pushing session_config_changed conv_id=#{payload["conversation_id"]} bot_token_id=#{socket.assigns.bot_token.id}"
+    )
+
+    push(socket, "session_config_changed", payload)
+    {:noreply, socket}
+  end
+
   # Bot sends a message reply
   @impl true
   def handle_in("send_message", payload, socket) do
@@ -248,7 +258,21 @@ defmodule MessagingWeb.BotChannel do
         "child_session_ids",
         "processes",
         "tool_calls",
-        "thinking"
+        "thinking",
+        "agent_mode",
+        "agentMode",
+        "mode",
+        "use_worktree",
+        "useWorktree",
+        "worktree",
+        "base_branch",
+        "baseBranch",
+        "branch",
+        "git_branch",
+        "agent_type",
+        "agentType",
+        "agent_types",
+        "agentTypes"
       ])
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()
@@ -319,6 +343,9 @@ defmodule MessagingWeb.BotChannel do
       event_type in ["plan", "changeset"] and is_map(data) ->
         Chat.update_session_status(conv.id, conv.status, %{event_type => data})
 
+      event_type in ["session_config", "mode_change", "config"] and is_map(data) ->
+        Chat.update_session_metadata(conv.id, data)
+
       true ->
         :ok
     end
@@ -332,6 +359,18 @@ defmodule MessagingWeb.BotChannel do
     )
 
     {:reply, :ok, socket}
+  rescue
+    Ecto.NoResultsError ->
+      {:reply, {:error, %{reason: "not_found"}}, socket}
+  end
+
+  # Bot updates session configuration (mode, worktree, base branch, agent types)
+  def handle_in("update_session_config", payload, socket) do
+    bot_token = socket.assigns.bot_token
+    conv = Chat.resolve_bot_conversation(bot_token, payload)
+    meta = payload["metadata"] || payload["config"] || payload
+    {:ok, updated} = Chat.update_session_metadata(conv.id, meta)
+    {:reply, {:ok, %{metadata: updated.metadata}}, socket}
   rescue
     Ecto.NoResultsError ->
       {:reply, {:error, %{reason: "not_found"}}, socket}

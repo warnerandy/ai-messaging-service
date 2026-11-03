@@ -38,7 +38,40 @@ export default function MessageBubble({ message, onSuggestion, usedSuggestion })
 							🧭 Steer Instruction
 						</span>
 					)}
-					<p className="msg-text">{message.body}</p>
+					{message.metadata?.agent_type && message.metadata.agent_type !== "general" && (
+						<span className="msg-agent-badge" title={`Agent: ${message.metadata.agent_type}`}>
+							🤖 {message.metadata.agent_type}
+						</span>
+					)}
+					{message.metadata?.skill && message.metadata.skill !== "none" && (
+						<span className="msg-skill-badge" title={`Skill: ${message.metadata.skill}`}>
+							⚡ {message.metadata.skill}
+						</span>
+					)}
+					{message.metadata?.url && (
+						<div className="msg-attachment-wrap">
+							{message.content_type === "image" ||
+							(typeof message.metadata.url === "string" &&
+								/\.(png|jpe?g|gif|webp|svg)(\?.*)?$/i.test(message.metadata.url)) ? (
+								<img
+									src={message.metadata.url}
+									alt={message.metadata.filename || "Attached image"}
+									className="msg-attachment-img"
+									loading="lazy"
+								/>
+							) : (
+								<a
+									href={message.metadata.url}
+									target="_blank"
+									rel="noreferrer"
+									className="msg-attachment-link"
+								>
+									📎 {message.metadata.filename || "Attachment"}
+								</a>
+							)}
+						</div>
+					)}
+					{message.body && <p className="msg-text">{message.body}</p>}
 					{message.pending && <span className="msg-status">Sending…</span>}
 					{message.failed && <span className="msg-status msg-status--error">Failed</span>}
 					{!message.pending &&

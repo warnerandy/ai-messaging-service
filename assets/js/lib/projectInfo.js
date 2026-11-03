@@ -1059,3 +1059,109 @@ export function orderSessionsHierarchically(conversations = []) {
 
 	return result
 }
+
+export const DEFAULT_AGENT_TYPES = [
+	{
+		id: "workspace",
+		label: "Workspace (@workspace)",
+		icon: "workspace",
+		description: "Full workspace context",
+	},
+	{ id: "coder", label: "Coder", icon: "code", description: "Code edits & implementation" },
+	{
+		id: "architect",
+		label: "Architect",
+		icon: "architecture",
+		description: "System design & planning",
+	},
+	{
+		id: "reviewer",
+		label: "Reviewer",
+		icon: "review",
+		description: "Code review & quality checks",
+	},
+]
+
+export function normalizeAgentMode(rawMode) {
+	if (!rawMode || typeof rawMode !== "string") return "interactive"
+	const m = rawMode.trim().toLowerCase()
+	if (m === "plan" || m === "planning") return "plan"
+	if (m === "autopilot" || m === "auto" || m === "autonomous") return "autopilot"
+	return "interactive"
+}
+
+export function normalizeWorktree(val) {
+	if (val === true || val === "true" || val === 1 || val === "1" || val === "worktree") return true
+	return false
+}
+
+export function formatAgentType(type) {
+	if (!type || typeof type !== "string") return "Workspace"
+	const t = type.trim()
+	if (t.startsWith("@")) return t
+	const found = DEFAULT_AGENT_TYPES.find((d) => d.id === t.toLowerCase())
+	if (found) return found.label
+	return t.charAt(0).toUpperCase() + t.slice(1)
+}
+
+export function getAgentPromptConfig(
+	sessionMetadata = {},
+	conv = null,
+	projectInfo = null,
+	bot = null,
+) {
+	const meta = {
+		...(conv?.metadata || {}),
+		...(sessionMetadata || {}),
+	}
+
+	const rawMode = meta.agent_mode || meta.agentMode || meta.mode
+	const agentMode = normalizeAgentMode(rawMode)
+
+	const rawWorktree =
+		meta.use_worktree !== undefined
+			? meta.use_worktree
+			: meta.useWorktree !== undefined
+				? meta.useWorktree
+				: meta.worktree !== undefined
+					? meta.worktree
+					: meta.working_mode === "worktree"
+	const useWorktree = normalizeWorktree(rawWorktree)
+
+	const baseBranch =
+		meta.base_branch ||
+		meta.baseBranch ||
+		meta.branch ||
+		meta.git_branch ||
+		conv?.metadata?.base_branch ||
+		conv?.metadata?.baseBranch ||
+		conv?.metadata?.branch ||
+		projectInfo?.branch ||
+		"main"
+
+	const rawAgentType =
+		meta.agent_type ||
+		meta.agentType ||
+		conv?.metadata?.agent_type ||
+		conv?.metadata?.agentType ||
+		"workspace"
+	const agentType =
+		typeof rawAgentType === "string" && rawAgentType.trim() ? rawAgentType.trim() : "workspace"
+
+	let agentTypesList =
+		meta.agent_types || meta.agentTypes || bot?.metadata?.agent_types || bot?.metadata?.agentTypes
+	if (!Array.isArray(agentTypesList) || agentTypesList.length === 0) {
+		agentTypesList = ["workspace", "coder", "architect", "reviewer"]
+	}
+
+	return {
+		agentMode,
+		useWorktree,
+		baseBranch,
+		agentType,
+		agentTypes: agentTypesList
+			.map(String)
+			.map((s) => s.trim())
+			.filter(Boolean),
+	}
+}

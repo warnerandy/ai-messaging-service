@@ -454,6 +454,93 @@ defmodule Messaging.Chat do
     end
   end
 
+  def update_session_metadata(conversation_id, new_metadata) when is_map(new_metadata) do
+    conversation = get_conversation!(conversation_id, [])
+    merged_metadata = Map.merge(conversation.metadata || %{}, new_metadata)
+
+    case conversation
+         |> Conversation.changeset(%{metadata: merged_metadata})
+         |> Repo.update() do
+      {:ok, updated} ->
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "conversation:#{updated.id}",
+          {:session_status_changed, updated.id, updated.status, merged_metadata}
+        )
+
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "bot_sessions:#{updated.bot_token_id}",
+          {:session_status_changed, updated.id, updated.status, merged_metadata}
+        )
+
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "bot:#{updated.bot_token_id}",
+          {:session_config_changed,
+           %{
+             "conversation_id" => updated.id,
+             "session_id" => updated.external_session_id,
+             "external_session_id" => updated.external_session_id,
+             "metadata" => merged_metadata
+           }}
+        )
+
+        {:ok, updated}
+
+      error ->
+        error
+    end
+  end
+
+  def update_conversation(%Conversation{} = conversation, attrs) do
+    metadata =
+      if Map.has_key?(attrs, "metadata") or Map.has_key?(attrs, :metadata) do
+        new_meta = attrs["metadata"] || attrs[:metadata] || %{}
+        Map.merge(conversation.metadata || %{}, new_meta)
+      else
+        conversation.metadata || %{}
+      end
+
+    updated_attrs =
+      attrs
+      |> Map.put("metadata", metadata)
+
+    case conversation
+         |> Conversation.changeset(updated_attrs)
+         |> Repo.update() do
+      {:ok, updated} ->
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "conversation:#{updated.id}",
+          {:session_status_changed, updated.id, updated.status, updated.metadata}
+        )
+
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "bot_sessions:#{updated.bot_token_id}",
+          {:session_status_changed, updated.id, updated.status, updated.metadata}
+        )
+
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "bot:#{updated.bot_token_id}",
+          {:session_config_changed,
+           %{
+             "conversation_id" => updated.id,
+             "session_id" => updated.external_session_id,
+             "external_session_id" => updated.external_session_id,
+             "metadata" => updated.metadata
+           }}
+        )
+
+        {:ok, updated}
+
+      error ->
+        error
+    end
+  end
+
   def archive_conversation(conversation_id, user_id) do
     conversation = get_conversation!(conversation_id, user_id: user_id)
 

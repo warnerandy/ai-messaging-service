@@ -8,20 +8,27 @@ defmodule MessagingWeb.API.MessageController do
     conversation = Chat.get_conversation!(conversation_id, user_id: user.id)
 
     # Determine content type and body/metadata
+    incoming_meta = params["metadata"] || %{}
+
     {content_type, body, metadata} =
       cond do
         params["asset_url"] ->
-          # User is sending an asset
+          # User is sending an asset (with optional prompt body)
           content_type = params["asset_type"] || "image"
-          metadata = %{"url" => params["asset_url"], "filename" => params["asset_filename"]}
-          {content_type, nil, metadata}
+
+          merged_meta =
+            incoming_meta
+            |> Map.put("url", params["asset_url"])
+            |> Map.put("filename", params["asset_filename"])
+
+          {content_type, params["body"], merged_meta}
 
         params["body"] ->
           # User is sending text
-          {"text", params["body"], %{}}
+          {"text", params["body"], incoming_meta}
 
         true ->
-          {"text", nil, %{}}
+          {"text", nil, incoming_meta}
       end
 
     case Chat.create_message(%{

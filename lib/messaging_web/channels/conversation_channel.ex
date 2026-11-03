@@ -105,6 +105,12 @@ defmodule MessagingWeb.ConversationChannel do
     {:noreply, socket}
   end
 
+  @impl true
+  def handle_info({:session_config_changed, payload}, socket) do
+    push(socket, "session_config_changed", payload)
+    {:noreply, socket}
+  end
+
   # User answers an agent question or approval request
   @impl true
   def handle_in("answer_question", payload, socket) do
@@ -164,6 +170,90 @@ defmodule MessagingWeb.ConversationChannel do
     {:reply, {:ok, %{queue: queue}}, socket}
   end
 
+  # User updates session configuration (agent mode, worktree, base branch, agent type)
+  @impl true
+  def handle_in("update_session_config", payload, socket) do
+    conv_id = socket.assigns.conversation_id
+    bot_token_id = socket.assigns[:bot_token_id]
+
+    config_meta =
+      if is_map(payload) do
+        payload
+        |> Map.take([
+          "agent_mode",
+          "agentMode",
+          "mode",
+          "use_worktree",
+          "useWorktree",
+          "worktree",
+          "base_branch",
+          "baseBranch",
+          "branch",
+          "git_branch",
+          "agent_type",
+          "agentType",
+          "agent_types",
+          "agentTypes",
+          "metadata"
+        ])
+      else
+        %{}
+      end
+
+    nested_meta = if is_map(config_meta["metadata"]), do: config_meta["metadata"], else: %{}
+    merged_config = Map.merge(config_meta, nested_meta) |> Map.delete("metadata")
+
+    raw_worktree =
+      cond do
+        not is_nil(merged_config["use_worktree"]) -> merged_config["use_worktree"]
+        not is_nil(merged_config["useWorktree"]) -> merged_config["useWorktree"]
+        true -> merged_config["worktree"]
+      end
+
+    canonical =
+      %{}
+      |> maybe_put_field(
+        "agent_mode",
+        merged_config["agent_mode"] || merged_config["agentMode"] || merged_config["mode"]
+      )
+      |> maybe_put_field("use_worktree", normalize_bool(raw_worktree))
+      |> maybe_put_field(
+        "base_branch",
+        merged_config["base_branch"] || merged_config["baseBranch"] || merged_config["branch"] ||
+          merged_config["git_branch"]
+      )
+      |> maybe_put_field("agent_type", merged_config["agent_type"] || merged_config["agentType"])
+      |> maybe_put_field(
+        "agent_types",
+        merged_config["agent_types"] || merged_config["agentTypes"]
+      )
+
+    full_update = Map.merge(merged_config, canonical)
+
+    case Chat.update_session_metadata(conv_id, full_update) do
+      {:ok, updated_conv} ->
+        if bot_token_id do
+          Phoenix.PubSub.broadcast(
+            Messaging.PubSub,
+            "bot:#{bot_token_id}",
+            {:session_config_changed,
+             %{
+               "conversation_id" => conv_id,
+               "session_id" => updated_conv.external_session_id,
+               "external_session_id" => updated_conv.external_session_id,
+               "config" => full_update,
+               "metadata" => updated_conv.metadata
+             }}
+          )
+        end
+
+        {:reply, {:ok, %{metadata: updated_conv.metadata}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{reason: inspect(reason)}}, socket}
+    end
+  end
+
   # User requests a sync of session messages (from both DB and bot)
   @impl true
   def handle_in("sync_session", _payload, socket) do
@@ -207,4 +297,15 @@ defmodule MessagingWeb.ConversationChannel do
   end
 
   defp normalize_answer_payload(payload), do: payload
+
+  defp maybe_put_field(map, _key, nil), do: map
+  defp maybe_put_field(map, key, val), do: Map.put(map, key, val)
+
+  defp normalize_bool(nil), do: nil
+  defp normalize_bool(val) when is_boolean(val), do: val
+  defp normalize_bool("true"), do: true
+  defp normalize_bool("false"), do: false
+  defp normalize_bool(1), do: true
+  defp normalize_bool(0), do: false
+  defp normalize_bool(_), do: nil
 end

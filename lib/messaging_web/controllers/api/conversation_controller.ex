@@ -141,6 +141,45 @@ defmodule MessagingWeb.API.ConversationController do
       conn |> put_status(:not_found) |> json(%{error: "Not found"})
   end
 
+  def update(conn, %{"id" => id} = params) do
+    user = conn.assigns.current_user
+    conversation = Chat.get_conversation!(id, user_id: user.id)
+
+    attrs =
+      params
+      |> Map.take(["title", "status", "metadata"])
+
+    case Chat.update_conversation(conversation, attrs) do
+      {:ok, updated} ->
+        json(conn, %{
+          id: updated.id,
+          title: updated.title,
+          external_session_id: updated.external_session_id,
+          status: updated.status,
+          metadata: updated.metadata,
+          parent_session_id:
+            updated.metadata &&
+              (updated.metadata["parent_session_id"] ||
+                 updated.metadata["parentSessionId"] ||
+                 updated.metadata["parent_id"] || updated.metadata["parentId"]),
+          bot_token_id: updated.bot_token_id,
+          last_user_input_time: updated.last_user_input_time,
+          last_modified_time: updated.last_modified_time,
+          last_message_at: updated.last_message_at,
+          inserted_at: updated.inserted_at,
+          updated_at: updated.updated_at
+        })
+
+      {:error, changeset} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{errors: format_errors(changeset)})
+    end
+  rescue
+    Ecto.NoResultsError ->
+      conn |> put_status(:not_found) |> json(%{error: "Not found"})
+  end
+
   def channel(conn, %{"id" => id}) do
     user = conn.assigns.current_user
     conversation = Chat.get_conversation!(id, user_id: user.id)
