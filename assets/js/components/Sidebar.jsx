@@ -58,9 +58,14 @@ export function highlightMatch(text, query) {
 
 export function groupSessionsByProject(conversations = []) {
 	const groupsMap = new Map()
+	const seenIds = new Set()
 
 	for (const conv of conversations) {
 		if (!conv) continue
+		const convKey = conv.id ?? conv.external_session_id
+		if (convKey && seenIds.has(convKey)) continue
+		if (convKey) seenIds.add(convKey)
+
 		const projectInfo = getSessionProjectInfo(conv)
 		let projectName = (projectInfo?.name || "").trim()
 		if (isUuidOrHash(projectName)) {
@@ -458,6 +463,7 @@ export default function Sidebar({
 	selectedConversationId,
 	onSelectBot,
 	onSelectConversation,
+	isCreatingConversation = false,
 	onCreateConversation,
 	onBotsChange,
 	onDeleteBot,
@@ -1027,9 +1033,13 @@ export default function Sidebar({
 							)}
 							<button
 								type="button"
-								className="sidebar-icon-btn"
-								onClick={onCreateConversation}
-								title={selectedBot?.bot_type === "ahp" ? "New session" : "New conversation"}
+								className={`sidebar-icon-btn ${isCreatingConversation ? "sidebar-icon-btn--loading" : ""}`}
+								disabled={isCreatingConversation}
+								onClick={(e) => {
+									if (isCreatingConversation) return
+									onCreateConversation(e)
+								}}
+								title={isCreatingConversation ? "Creating..." : selectedBot?.bot_type === "ahp" ? "New session" : "New conversation"}
 								aria-label={selectedBot?.bot_type === "ahp" ? "New session" : "New conversation"}
 							>
 								<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -1176,9 +1186,11 @@ export default function Sidebar({
 											{onCreateConversation && (
 												<button
 													type="button"
-													className="project-group-add-btn"
+													className={`project-group-add-btn ${isCreatingConversation ? "project-group-add-btn--loading" : ""}`}
+													disabled={isCreatingConversation}
 													onClick={(e) => {
 														e.stopPropagation()
+														if (isCreatingConversation) return
 														if (isCollapsed) {
 															toggleProjectCollapse(group.key)
 														}
@@ -1194,7 +1206,7 @@ export default function Sidebar({
 															metadata,
 														})
 													}}
-													title={`New session in ${group.name}`}
+													title={isCreatingConversation ? "Creating session..." : `New session in ${group.name}`}
 													aria-label={`New session in ${group.name}`}
 												>
 													<svg width="12" height="12" viewBox="0 0 16 16" fill="none">

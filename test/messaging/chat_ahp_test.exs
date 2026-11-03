@@ -212,50 +212,36 @@ defmodule Messaging.ChatAhpTest do
       assert refetched.status == "idle"
     end
 
-    test "restores mistakenly archived sessions that have user messages during routine sync", %{
-      user: user,
+    test "prunes older abandoned default generic sessions that have no user messages", %{
       bot_token: bot
     } do
-      # Bot creates a session
-      {:ok, [conv]} =
-        Chat.sync_bot_sessions(bot, [
-          %{
-            "session_id" => "mistakenly-archived-sess",
-            "title" => "Mistakenly Archived",
-            "status" => "idle"
-          }
-        ])
+      # 1. Simulate an older abandoned generic session created 10 minutes ago
+      ten_mins_ago = DateTime.utc_now() |> DateTime.add(-600, :second) |> DateTime.truncate(:second)
 
-      # User interacts with it
-      {:ok, _msg} =
-        Chat.create_message(%{
-          conversation_id: conv.id,
-          user_id: user.id,
-          role: "user",
-          body: "Hello world"
+      {:ok, old_conv} =
+        Chat.create_conversation(%{
+          bot_token_id: bot.id,
+          user_id: bot.user_id,
+          title: "morpheus-ui Session",
+          status: "idle"
         })
 
-      # Manually set to archived without explicitly_archived metadata (simulating the bug)
-      conv
-      |> Messaging.Chat.Conversation.changeset(%{status: "archived"})
-      |> Messaging.Repo.update!()
+      from(c in Messaging.Chat.Conversation, where: c.id == ^old_conv.id)
+      |> Messaging.Repo.update_all(set: [inserted_at: ten_mins_ago, updated_at: ten_mins_ago])
 
-      assert Chat.get_conversation!(conv.id, []).status == "archived"
-
-      # Next routine sync runs
-      assert {:ok, synced} =
+      # 2. Simulate routine bot sync
+      assert {:ok, _synced} =
                Chat.sync_bot_sessions(bot, [
                  %{
-                   "session_id" => "another-session",
-                   "title" => "Another",
+                   "session_id" => "active-session",
+                   "title" => "Active Session",
                    "status" => "idle"
                  }
                ])
 
-      # The session should be restored to "idle" and included in synced list
-      refetched = Chat.get_conversation!(conv.id, [])
-      assert refetched.status == "idle"
-      assert Enum.any?(synced, &(&1.id == conv.id and &1.status == "idle"))
+      # 3. The older empty generic session should be archived so only 1 new session remains
+      refetched = Chat.get_conversation!(old_conv.id, [])
+      assert refetched.status == "archived"
     end
 
     test "synchronizes nested sub-sessions preserving parent_session_id and nesting metadata",

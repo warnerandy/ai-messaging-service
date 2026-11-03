@@ -149,6 +149,45 @@ defmodule Messaging.Chat do
   def create_conversation(attrs) do
     attrs = ensure_external_session_id(attrs)
 
+    # When creating a new session with a default generic title (e.g. "* Session"),
+    # clean up any prior idle sessions with the same title that have zero user messages
+    # so the sidebar never accumulates duplicate empty session placeholders.
+    title = attrs[:title] || attrs["title"]
+    bot_token_id = attrs[:bot_token_id] || attrs["bot_token_id"]
+
+    if is_binary(title) and String.ends_with?(title, " Session") and not is_nil(bot_token_id) do
+      prior_empty_ids =
+        from(c in Conversation,
+          left_join: m in Message,
+          on: m.conversation_id == c.id and m.role == "user",
+          where: c.bot_token_id == ^bot_token_id and c.title == ^title and c.status == "idle",
+          where: is_nil(m.id),
+          select: c.id
+        )
+        |> Repo.all()
+
+      if prior_empty_ids != [] do
+        now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+        from(c in Conversation, where: c.id in ^prior_empty_ids)
+        |> Repo.update_all(set: [status: "archived", updated_at: now])
+
+        Enum.each(prior_empty_ids, fn conv_id ->
+          Phoenix.PubSub.broadcast(
+            Messaging.PubSub,
+            "conversation:#{conv_id}",
+            {:session_status_changed, conv_id, "archived", %{}}
+          )
+
+          Phoenix.PubSub.broadcast(
+            Messaging.PubSub,
+            "bot_sessions:#{bot_token_id}",
+            {:session_status_changed, conv_id, "archived", %{}}
+          )
+        end)
+      end
+    end
+
     %Conversation{}
     |> Conversation.changeset(attrs)
     |> Repo.insert()
@@ -485,75 +524,74 @@ defmodule Messaging.Chat do
       end)
       |> Enum.map(& &1.id)
 
-    if to_archive_ids != [] do
-      from(c in Conversation, where: c.id in ^to_archive_ids)
+    # Also archive any older abandoned sessions that have generic default titles (e.g. "* Session")
+    # and have NO user messages, keeping at most the single newest one active
+    generic_default_conversations =
+      candidate_conversations
+      |> Enum.filter(fn conv ->
+        generic_title? =
+          is_binary(conv.title) and
+            (String.ends_with?(conv.title, " Session") or conv.title == "Session")
+
+        has_user_messages? = MapSet.member?(conv_ids_with_user_messages, conv.id)
+
+        generic_title? and not has_user_messages?
+      end)
+      |> Enum.sort_by(& &1.inserted_at, {:desc, DateTime})
+
+    # Drop the most recent one if it was created very recently (within 5 minutes), archive the rest
+    five_min_ago = DateTime.add(now, -300, :second)
+
+    extra_generic_to_archive =
+      case generic_default_conversations do
+        [latest | older] ->
+          if DateTime.compare(latest.inserted_at, five_min_ago) == :gt do
+            Enum.map(older, & &1.id)
+          else
+            Enum.map([latest | older], & &1.id)
+          end
+
+        [] ->
+          []
+      end
+
+    all_to_archive_ids =
+      (to_archive_ids ++ extra_generic_to_archive)
+      |> Enum.uniq()
+
+    if all_to_archive_ids != [] do
+      from(c in Conversation, where: c.id in ^all_to_archive_ids)
       |> Repo.update_all(set: [status: "archived", updated_at: now])
 
-      Enum.each(to_archive_ids, fn conv_id ->
+      Enum.each(all_to_archive_ids, fn conv_id ->
         Phoenix.PubSub.broadcast(
           Messaging.PubSub,
           "conversation:#{conv_id}",
           {:session_status_changed, conv_id, "archived", %{}}
         )
+
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "bot_sessions:#{bot_token.id}",
+          {:session_status_changed, conv_id, "archived", %{}}
+        )
       end)
     end
-
-    # Automatically restore any mistakenly auto-archived sessions that contain user messages
-    # (unless the user explicitly archived them via archive_conversation)
-    restore_candidates =
-      from(c in Conversation,
-        join: m in Message,
-        on: m.conversation_id == c.id,
-        where: c.bot_token_id == ^bot_token.id and c.status == "archived" and m.role == "user",
-        select: c,
-        distinct: true
-      )
-      |> Repo.all()
-
-    restore_candidate_ids =
-      restore_candidates
-      |> Enum.filter(fn conv ->
-        conv.metadata == nil or
-          (conv.metadata["explicitly_archived"] != true and
-             conv.metadata[:explicitly_archived] != true)
-      end)
-      |> Enum.map(& &1.id)
-
-    restored_convs =
-      if restore_candidate_ids != [] do
-        from(c in Conversation, where: c.id in ^restore_candidate_ids)
-        |> Repo.update_all(set: [status: "idle", updated_at: now])
-
-        Enum.each(restore_candidate_ids, fn conv_id ->
-          Phoenix.PubSub.broadcast(
-            Messaging.PubSub,
-            "conversation:#{conv_id}",
-            {:session_status_changed, conv_id, "idle", %{}}
-          )
-        end)
-
-        from(c in Conversation, where: c.id in ^restore_candidate_ids)
-        |> Repo.all()
-      else
-        []
-      end
-
-    all_synced = synced ++ restored_convs
 
     # Broadcast to bot session subscribers
     Phoenix.PubSub.broadcast(
       Messaging.PubSub,
       "bot_sessions:#{bot_token.id}",
-      {:bot_sessions_updated, bot_token.id, all_synced}
+      {:bot_sessions_updated, bot_token.id, synced}
     )
 
     Phoenix.PubSub.broadcast(
       Messaging.PubSub,
       "bot_status:#{bot_token.user_id}",
-      {:bot_sessions_updated, bot_token.id, all_synced}
+      {:bot_sessions_updated, bot_token.id, synced}
     )
 
-    {:ok, all_synced}
+    {:ok, synced}
   end
 
   def update_session_status(conversation_id, status, metadata \\ %{}) do

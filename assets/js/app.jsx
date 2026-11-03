@@ -34,6 +34,7 @@ function App() {
 		loadBots,
 		selectBot,
 		selectConversation,
+		isCreatingConversation,
 		handleCreateConversation,
 		handleRefreshModels,
 		handleBotStatusChange,
@@ -73,6 +74,7 @@ function App() {
 							selectConversation(id)
 							setMobileSidebarOpen(false)
 						}}
+						isCreatingConversation={isCreatingConversation}
 						onCreateConversation={handleCreateConversation}
 						onBotsChange={loadBots}
 						onDeleteBot={handleDeleteBot}

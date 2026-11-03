@@ -40,6 +40,8 @@ export function useWorkspaceData() {
 	})
 	const [models, setModels] = useState([])
 	const [loading, setLoading] = useState(false)
+	const [isCreatingConversation, setIsCreatingConversation] = useState(false)
+	const isCreatingConvRef = useRef(false)
 	const [appConnection, setAppConnection] = useState("checking")
 	const botsRef = useRef(bots)
 	const conversationsRef = useRef(conversations)
@@ -184,6 +186,9 @@ export function useWorkspaceData() {
 	const handleCreateConversation = useCallback(
 		async (customOpts = {}) => {
 			if (!selectedBotId || !token) return
+			if (isCreatingConvRef.current) return
+			isCreatingConvRef.current = true
+			setIsCreatingConversation(true)
 
 			const opts =
 				customOpts &&
@@ -209,11 +214,17 @@ export function useWorkspaceData() {
 					metadata,
 					external_session_id: externalSessionId,
 				})
-				setConversations((prev) => [created, ...prev])
+				setConversations((prev) => {
+					if (prev.some((c) => c.id === created.id)) return prev
+					return [created, ...prev]
+				})
 				selectConversation(created.id)
 				return created
 			} catch (err) {
 				console.error("Create conversation failed:", err)
+			} finally {
+				isCreatingConvRef.current = false
+				setIsCreatingConversation(false)
 			}
 		},
 		[selectedBotId, selectConversation, token],
@@ -592,6 +603,7 @@ export function useWorkspaceData() {
 		loadBots,
 		selectBot,
 		selectConversation,
+		isCreatingConversation,
 		handleCreateConversation,
 		handleRefreshModels,
 		handleBotStatusChange,
