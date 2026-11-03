@@ -9,6 +9,9 @@ defmodule MessagingWeb.AppController do
       {:ok, content} ->
         conn
         |> put_resp_content_type("text/html")
+        |> put_resp_header("cache-control", "no-cache, no-store, must-revalidate")
+        |> put_resp_header("pragma", "no-cache")
+        |> put_resp_header("expires", "0")
         |> send_resp(200, content)
 
       {:error, reason} ->

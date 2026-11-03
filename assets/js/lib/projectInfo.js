@@ -331,7 +331,7 @@ export function getParentSessionId(conv) {
 
 	if (rawParentId !== null && rawParentId !== undefined) {
 		const str = String(rawParentId).trim()
-		if (str !== "") return str
+		if (str !== "" && str !== "null" && str !== "undefined") return str
 	}
 
 	return null
@@ -392,7 +392,7 @@ export function isSessionNested(conv, allConversations = []) {
 							? String(child.session_id || child.conversation_id || child.id || "")
 							: String(child)
 					const trimmedChild = childStr.trim()
-					if (!trimmedChild) return false
+					if (!trimmedChild || trimmedChild === "null" || trimmedChild === "undefined") return false
 					return (convId && trimmedChild === convId) || (convExtId && trimmedChild === convExtId)
 				})
 				if (isMatch) return true
@@ -414,14 +414,14 @@ export function findParentSession(conv, allConversations = []) {
 	if (!conv || !Array.isArray(allConversations)) return null
 	const parentId = getParentSessionId(conv)
 
-	if (parentId) {
+	if (parentId && parentId !== "null" && parentId !== "undefined") {
 		const match = allConversations.find(
 			(c) =>
 				c &&
 				c !== conv &&
-				(String(c.external_session_id) === parentId ||
-					String(c.id) === parentId ||
-					String(c.metadata?.session_id) === parentId),
+				((c.external_session_id != null && String(c.external_session_id) === parentId) ||
+					(c.id != null && String(c.id) === parentId) ||
+					(c.metadata?.session_id != null && String(c.metadata.session_id) === parentId)),
 		)
 		if (match) return match
 	}
@@ -455,7 +455,7 @@ export function findParentSession(conv, allConversations = []) {
 							? String(child.session_id || child.conversation_id || child.id || "")
 							: String(child)
 					const trimmedChild = childStr.trim()
-					if (!trimmedChild) return false
+					if (!trimmedChild || trimmedChild === "null" || trimmedChild === "undefined") return false
 					return (convId && trimmedChild === convId) || (convExtId && trimmedChild === convExtId)
 				})
 				if (isMatch) return c

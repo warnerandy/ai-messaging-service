@@ -1,4 +1,4 @@
-const CACHE_NAME = "messaging-pwa-v20";
+const CACHE_NAME = "messaging-pwa-v25";
 const APP_SHELL = [
   "/",
   "/manifest.webmanifest",
@@ -58,6 +58,22 @@ self.addEventListener("fetch", event => {
     return;
   }
 
+  // For scripts and styles (/assets/), use Network-First to immediately load latest code
+  if (url.pathname.startsWith("/assets/")) {
+    event.respondWith(
+      fetch(event.request)
+        .then(response => {
+          if (response.status === 200) {
+            const cloned = response.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(event.request, cloned));
+          }
+          return response;
+        })
+        .catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
   event.respondWith(
     caches.match(event.request).then(cached => {
       if (cached) return cached;
@@ -70,7 +86,7 @@ self.addEventListener("fetch", event => {
           }
           return response;
         })
-        .catch(() => caches.match("/"));
+        .catch(() => (event.request.mode === "navigate" ? caches.match("/") : undefined));
     })
   );
 });

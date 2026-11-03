@@ -60,12 +60,23 @@ function mergeSessionsIntoList(prevList, incomingSessions) {
 
 	const registerItem = (item) => {
 		if (!item) return
-		if (item.id != null) byKey.set(`id:${item.id}`, item)
+		let hasKey = false
+		if (item.id != null) {
+			byKey.set(`id:${item.id}`, item)
+			hasKey = true
+		}
 		if (item.external_session_id != null && item.external_session_id !== "") {
 			byKey.set(`ext:${item.external_session_id}`, item)
+			hasKey = true
 		}
 		if (item.metadata?.session_id != null && item.metadata.session_id !== "") {
 			byKey.set(`ext:${item.metadata.session_id}`, item)
+			hasKey = true
+		}
+		if (!hasKey) {
+			const anonKey = item.__key || `anon:${Math.random().toString(36).slice(2)}`
+			item.__key = anonKey
+			byKey.set(anonKey, item)
 		}
 	}
 
@@ -110,12 +121,16 @@ export function useWorkspaceData() {
 	const [bots, setBots] = useState([])
 	const [selectedBotId, setSelectedBotId] = useState(() => {
 		const val = localStorage.getItem(SELECTED_BOT_STORAGE_KEY)
-		return val ? Number(val) : null
+		if (!val || val === "null" || val === "undefined") return null
+		const num = Number(val)
+		return Number.isNaN(num) ? null : num
 	})
 	const [conversations, setConversations] = useState([])
 	const [selectedConversationId, setSelectedConversationId] = useState(() => {
 		const val = localStorage.getItem(SELECTED_CONV_STORAGE_KEY)
-		return val ? Number(val) : null
+		if (!val || val === "null" || val === "undefined") return null
+		const num = Number(val)
+		return Number.isNaN(num) ? val : num
 	})
 	const [models, setModels] = useState([])
 	const [loading, setLoading] = useState(false)
@@ -235,11 +250,14 @@ export function useWorkspaceData() {
 				localStorage.removeItem(SELECTED_BOT_STORAGE_KEY)
 			}
 
+			const storedConv = localStorage.getItem(SELECTED_CONV_STORAGE_KEY)
+			const parsedStoredConv =
+				storedConv && storedConv !== "null" && storedConv !== "undefined"
+					? Number(storedConv)
+					: null
 			const targetConvId =
 				preferredConvId ||
-				(localStorage.getItem(SELECTED_CONV_STORAGE_KEY)
-					? Number(localStorage.getItem(SELECTED_CONV_STORAGE_KEY))
-					: null)
+				(!Number.isNaN(parsedStoredConv) ? parsedStoredConv : null)
 
 			const [, convs] = await Promise.all([loadModels(botId), loadConversations(botId)])
 
@@ -567,11 +585,24 @@ export function useWorkspaceData() {
 				if (cancelled) return
 				setLoading(false)
 				if (list.length > 0) {
-					const savedBotId = Number(localStorage.getItem(SELECTED_BOT_STORAGE_KEY))
-					const foundBot = savedBotId ? list.find((b) => b.id === savedBotId) : null
+					const rawSavedBotId = localStorage.getItem(SELECTED_BOT_STORAGE_KEY)
+					const savedBotId =
+						rawSavedBotId && rawSavedBotId !== "null" && rawSavedBotId !== "undefined"
+							? Number(rawSavedBotId)
+							: null
+					const foundBot =
+						savedBotId && !Number.isNaN(savedBotId) ? list.find((b) => b.id === savedBotId) : null
 					const botToSelect = foundBot || list[0]
-					const savedConvId = Number(localStorage.getItem(SELECTED_CONV_STORAGE_KEY))
-					selectBot(botToSelect.id, botToSelect.name, savedConvId)
+					const rawSavedConvId = localStorage.getItem(SELECTED_CONV_STORAGE_KEY)
+					const savedConvId =
+						rawSavedConvId && rawSavedConvId !== "null" && rawSavedConvId !== "undefined"
+							? Number(rawSavedConvId)
+							: null
+					selectBot(
+						botToSelect.id,
+						botToSelect.name,
+						savedConvId && !Number.isNaN(savedConvId) ? savedConvId : null,
+					)
 				}
 			})
 			.catch(() => {

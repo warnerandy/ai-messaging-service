@@ -123,11 +123,12 @@ export function deriveConversationState(messages) {
 }
 
 export function normalizeMessage(message, fallback = {}) {
+	if (!message || typeof message !== "object") return fallback || {}
 	const fromSuggestion =
 		message.fromSuggestion ??
 		message.is_suggestion ??
-		fallback.fromSuggestion ??
-		fallback.is_suggestion ??
+		fallback?.fromSuggestion ??
+		fallback?.is_suggestion ??
 		false
 
 	return {
@@ -448,7 +449,7 @@ export default function ChatView({
 
 	const hasUserPromptsRef = useRef(false)
 	hasUserPromptsRef.current =
-		(Array.isArray(messages) && messages.some((m) => !m.pending && m.role === "user")) ||
+		(Array.isArray(messages) && messages.some((m) => m && !m.pending && m.role === "user")) ||
 		Boolean(activeConv?.last_message_at)
 
 	const handleModeChange = useCallback(

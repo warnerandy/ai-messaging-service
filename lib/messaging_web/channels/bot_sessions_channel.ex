@@ -11,8 +11,6 @@ defmodule MessagingWeb.BotSessionsChannel do
          bot_token when not is_nil(bot_token) <- Bots.get_bot_token!(id, user.id) do
       topic = "bot_sessions:#{bot_token.id}"
       Phoenix.PubSub.subscribe(Messaging.PubSub, topic)
-      Phoenix.PubSub.subscribe(Messaging.PubSub, "bot_status:#{user.id}")
-      Phoenix.PubSub.subscribe(Messaging.PubSub, "bot:#{bot_token.id}")
 
       sessions = Chat.list_conversations_for_bot(bot_token.id)
 
