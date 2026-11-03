@@ -205,6 +205,40 @@ defmodule Messaging.Chat do
 
   defp ensure_external_session_id(attrs), do: attrs
 
+  defp extract_project_key(nil), do: nil
+
+  defp extract_project_key(%{} = meta) do
+    project = meta["project"] || meta[:project]
+    working_dir = meta["working_directory"] || meta[:working_directory]
+    cwd = meta["cwd"] || meta[:cwd]
+    working_dirs = meta["working_directories"] || meta[:working_directories]
+
+    cond do
+      is_map(project) and is_binary(project["name"] || project[:name]) and
+          (project["name"] || project[:name]) != "" ->
+        project["name"] || project[:name]
+
+      is_map(project) and is_binary(project["path"] || project[:path]) and
+          (project["path"] || project[:path]) != "" ->
+        project["path"] || project[:path]
+
+      is_binary(project) and project != "" ->
+        project
+
+      is_binary(working_dir) and working_dir != "" ->
+        working_dir
+
+      is_binary(cwd) and cwd != "" ->
+        cwd
+
+      is_list(working_dirs) and working_dirs != [] and is_binary(hd(working_dirs)) ->
+        hd(working_dirs)
+
+      true ->
+        nil
+    end
+  end
+
   def get_conversation_by_external_session(bot_token_id, external_session_id) do
     Conversation
     |> where(bot_token_id: ^normalize_conversation_id!(bot_token_id))
@@ -338,7 +372,7 @@ defmodule Messaging.Chat do
               external_session_id: item.session_id,
               title: title,
               status: item.status,
-              metadata: item.metadata
+              metadata: Map.put(item.metadata || %{}, "synced_by_bot", true)
             }
 
             {:ok, conv} = create_conversation(attrs)
@@ -362,9 +396,14 @@ defmodule Messaging.Chat do
                 item.status
               end
 
+            merged_meta =
+              cleared_meta
+              |> Map.merge(item.metadata || %{})
+              |> Map.put("synced_by_bot", true)
+
             update_attrs = %{
               status: new_status,
-              metadata: Map.merge(cleared_meta, item.metadata)
+              metadata: merged_meta
             }
 
             update_attrs =
@@ -384,27 +423,137 @@ defmodule Messaging.Chat do
       end)
       |> Enum.map(&resolve_conversation_timestamps(&1, %{}))
 
-    from(c in Conversation,
-      where:
-        c.bot_token_id == ^bot_token.id and not is_nil(c.external_session_id) and
-          c.external_session_id not in ^incoming_session_ids and c.status != "archived"
-    )
-    |> Repo.update_all(set: [status: "archived", updated_at: now])
+    # Identify incoming project scope
+    incoming_projects =
+      normalized_sessions
+      |> Enum.map(&extract_project_key(&1.metadata))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    # Find candidates for pruning:
+    # 1. Must belong to this bot_token
+    # 2. Must have an external_session_id
+    # 3. Must not be in incoming_session_ids
+    # 4. Must not already be archived
+    # 5. Must not be in an active state (running, thinking, waiting_for_input, needs_input)
+    candidate_conversations =
+      Conversation
+      |> where(bot_token_id: ^bot_token.id)
+      |> where([c], not is_nil(c.external_session_id))
+      |> where([c], c.external_session_id not in ^incoming_session_ids)
+      |> where(
+        [c],
+        c.status not in ["archived", "running", "thinking", "waiting_for_input", "needs_input"]
+      )
+      |> Repo.all()
+
+    candidate_ids = Enum.map(candidate_conversations, & &1.id)
+
+    conv_ids_with_user_messages =
+      if candidate_ids == [] do
+        MapSet.new()
+      else
+        from(m in Message,
+          where: m.conversation_id in ^candidate_ids and m.role == "user",
+          select: m.conversation_id,
+          distinct: true
+        )
+        |> Repo.all()
+        |> MapSet.new()
+      end
+
+    to_archive_ids =
+      candidate_conversations
+      |> Enum.filter(fn conv ->
+        synced_by_bot? =
+          conv.metadata &&
+            (conv.metadata["synced_by_bot"] == true or conv.metadata[:synced_by_bot] == true)
+
+        same_project? =
+          if incoming_projects == [] do
+            true
+          else
+            conv_project = extract_project_key(conv.metadata)
+            is_nil(conv_project) or conv_project in incoming_projects
+          end
+
+        has_user_messages? = MapSet.member?(conv_ids_with_user_messages, conv.id)
+
+        # Conversations with user messages are valuable conversation history and should NEVER be auto-archived!
+        # Only bot-synced sessions without user messages that are omitted can be archived.
+        synced_by_bot? and same_project? and not has_user_messages?
+      end)
+      |> Enum.map(& &1.id)
+
+    if to_archive_ids != [] do
+      from(c in Conversation, where: c.id in ^to_archive_ids)
+      |> Repo.update_all(set: [status: "archived", updated_at: now])
+
+      Enum.each(to_archive_ids, fn conv_id ->
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "conversation:#{conv_id}",
+          {:session_status_changed, conv_id, "archived", %{}}
+        )
+      end)
+    end
+
+    # Automatically restore any mistakenly auto-archived sessions that contain user messages
+    # (unless the user explicitly archived them via archive_conversation)
+    restore_candidates =
+      from(c in Conversation,
+        join: m in Message,
+        on: m.conversation_id == c.id,
+        where: c.bot_token_id == ^bot_token.id and c.status == "archived" and m.role == "user",
+        select: c,
+        distinct: true
+      )
+      |> Repo.all()
+
+    restore_candidate_ids =
+      restore_candidates
+      |> Enum.filter(fn conv ->
+        conv.metadata == nil or
+          (conv.metadata["explicitly_archived"] != true and
+             conv.metadata[:explicitly_archived] != true)
+      end)
+      |> Enum.map(& &1.id)
+
+    restored_convs =
+      if restore_candidate_ids != [] do
+        from(c in Conversation, where: c.id in ^restore_candidate_ids)
+        |> Repo.update_all(set: [status: "idle", updated_at: now])
+
+        Enum.each(restore_candidate_ids, fn conv_id ->
+          Phoenix.PubSub.broadcast(
+            Messaging.PubSub,
+            "conversation:#{conv_id}",
+            {:session_status_changed, conv_id, "idle", %{}}
+          )
+        end)
+
+        from(c in Conversation, where: c.id in ^restore_candidate_ids)
+        |> Repo.all()
+      else
+        []
+      end
+
+    all_synced = synced ++ restored_convs
 
     # Broadcast to bot session subscribers
     Phoenix.PubSub.broadcast(
       Messaging.PubSub,
       "bot_sessions:#{bot_token.id}",
-      {:bot_sessions_updated, bot_token.id, synced}
+      {:bot_sessions_updated, bot_token.id, all_synced}
     )
 
     Phoenix.PubSub.broadcast(
       Messaging.PubSub,
       "bot_status:#{bot_token.user_id}",
-      {:bot_sessions_updated, bot_token.id, synced}
+      {:bot_sessions_updated, bot_token.id, all_synced}
     )
 
-    {:ok, synced}
+    {:ok, all_synced}
   end
 
   def update_session_status(conversation_id, status, metadata \\ %{}) do
@@ -543,9 +692,10 @@ defmodule Messaging.Chat do
 
   def archive_conversation(conversation_id, user_id) do
     conversation = get_conversation!(conversation_id, user_id: user_id)
+    meta = Map.put(conversation.metadata || %{}, "explicitly_archived", true)
 
     case conversation
-         |> Conversation.changeset(%{status: "archived"})
+         |> Conversation.changeset(%{status: "archived", metadata: meta})
          |> Repo.update() do
       {:ok, updated} ->
         Phoenix.PubSub.broadcast(

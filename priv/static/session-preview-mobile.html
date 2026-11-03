@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en" class="dark" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#2489ff" />
+    <title>Mobile New Session Preview</title>
+    <link rel="stylesheet" href="assets/css/app.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background: #0f0f17;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        color: #f8fafc;
+        overflow-x: hidden;
+      }
+      .mobile-frame {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="mobile-frame">
+      <!-- Main Chat Area in Mobile View -->
+      <main class="chat-main" style="height: 100vh; display: flex; flex-direction: column;">
+        <!-- Mobile Topbar -->
+        <div class="chat-topbar" style="padding: 0.75rem 1rem 0.65rem;">
+          <div class="chat-topbar-primary" style="display: flex; align-items: center; justify-content: space-between;">
+            <div class="chat-topbar-left" style="display: flex; align-items: center; gap: 0.65rem;">
+              <button type="button" class="mobile-menu-btn" aria-label="Toggle sidebar" style="display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: #fff; cursor: pointer;">
+                <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
+                  <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+                </svg>
+              </button>
+              <div class="chat-title-group">
+                <h2 class="chat-title" style="font-size: 1rem; font-weight: 700; margin: 0;">Botamus Prime</h2>
+              </div>
+            </div>
+            <div class="chat-topbar-right" style="display: flex; align-items: center; gap: 0.5rem;">
+              <span class="connection-dot connection-dot--on"></span>
+              <span class="connection-label" style="font-size: 0.75rem; color: #94a3b8;">Online</span>
+              <button type="button" class="bot-config-btn" title="Bot Configuration" style="width: 32px; height: 32px; border-radius: 7px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: #94a3b8; cursor: pointer;">
+                ⚙️
+              </button>
+            </div>
+          </div>
+
+          <div class="chat-topbar-secondary" style="display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.35rem;">
+            <span class="bot-protocol-badge bot-protocol-badge--ahp">AHP</span>
+            <span class="chat-target-badge chat-target-badge--worktree" data-testid="chat-target-badge">
+              <span class="text-amber-400">⚡ Worktree:</span> main
+            </span>
+            <span class="chat-project-badge" style="font-size: 0.7rem; padding: 0.15rem 0.45rem; border-radius: 5px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: #cbd5e1;">
+              📁 ai-messaging-service
+            </span>
+          </div>
+        </div>
+
+        <!-- Chat messages scroll container with NewSessionCanvas -->
+        <div class="chat-messages" style="flex: 1; overflow-y: auto; padding: 1rem 0.85rem;">
+          <div class="new-session-canvas" data-testid="new-session-canvas" style="margin: 0.25rem 0 1rem;">
+            <!-- Canvas Header -->
+            <div class="canvas-header">
+              <div class="canvas-header-bot">
+                <div class="canvas-bot-avatar" style="width: 38px; height: 38px; font-size: 1.2rem;">🤖</div>
+                <div>
+                  <h1 class="canvas-bot-title">Start a conversation with Botamus Prime</h1>
+                  <p class="canvas-bot-subtitle">
+                    Configure your working copy, git branch, and execution mode.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Section 1: Git Working Copy & Worktree Selection -->
+            <div class="canvas-section" data-testid="canvas-git-section">
+              <div class="canvas-section-header">
+                <div class="canvas-section-title-wrap">
+                  <svg class="canvas-section-icon text-emerald-400" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                    <line x1="6" y1="3" x2="6" y2="15"></line>
+                    <circle cx="18" cy="6" r="3"></circle>
+                    <circle cx="6" cy="18" r="3"></circle>
+                    <path d="M18 9a9 9 0 0 1-9 9"></path>
+                  </svg>
+                  <div>
+                    <h2 class="canvas-section-title">Git Working Copy & Worktree</h2>
+                    <p class="canvas-section-desc">
+                      Execute edits directly on local branch or in an isolated git worktree.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="canvas-card-grid">
+                <!-- Direct Branch Option -->
+                <button type="button" class="canvas-target-card" data-testid="canvas-opt-direct-branch">
+                  <div class="canvas-target-card-top">
+                    <div class="canvas-card-icon-wrap text-emerald-400">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <line x1="6" y1="3" x2="6" y2="15"></line>
+                        <circle cx="18" cy="6" r="3"></circle>
+                        <circle cx="6" cy="18" r="3"></circle>
+                        <path d="M18 9a9 9 0 0 1-9 9"></path>
+                      </svg>
+                    </div>
+                    <span class="canvas-check-badge">Select</span>
+                  </div>
+                  <div class="canvas-target-card-body">
+                    <div class="canvas-target-card-title">Direct Branch</div>
+                    <div class="canvas-target-card-subtitle">
+                      Work directly on <strong class="text-emerald-300">main</strong>
+                    </div>
+                    <p class="canvas-target-card-desc">
+                      Changes are applied directly to your active branch.
+                    </p>
+                  </div>
+                </button>
+
+                <!-- Isolated Git Worktree Option (Selected) -->
+                <button type="button" class="canvas-target-card canvas-target-card--active canvas-target-card--worktree" data-testid="canvas-opt-worktree">
+                  <div class="canvas-target-card-top">
+                    <div class="canvas-card-icon-wrap text-amber-400">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+                      </svg>
+                    </div>
+                    <span class="canvas-check-badge canvas-check-badge--worktree">✓ Worktree Active</span>
+                  </div>
+                  <div class="canvas-target-card-body">
+                    <div class="canvas-target-card-title">New Git Worktree</div>
+                    <div class="canvas-target-card-subtitle">
+                      Isolated worktree against <strong class="text-amber-300">main</strong>
+                    </div>
+                    <p class="canvas-target-card-desc">
+                      Creates an isolated git worktree branch to keep your main workspace untouched.
+                    </p>
+                  </div>
+                </button>
+              </div>
+
+              <!-- Base Branch Box -->
+              <div class="canvas-branch-box">
+                <div class="canvas-branch-header">
+                  <span class="canvas-branch-label">Target Base Branch:</span>
+                  <span class="canvas-branch-current">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                    <strong>main</strong>
+                  </span>
+                  <button type="button" class="canvas-branch-edit-btn">Change Branch</button>
+                </div>
+
+                <div class="canvas-branch-pills">
+                  <span class="canvas-branch-pills-label">Branches:</span>
+                  <div class="canvas-branch-pills-list">
+                    <button type="button" class="canvas-branch-pill canvas-branch-pill--active">main</button>
+                    <button type="button" class="canvas-branch-pill">develop</button>
+                    <button type="button" class="canvas-branch-pill">feat/user-auth</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Section 2: Execution Mode -->
+            <div class="canvas-section" data-testid="canvas-mode-section">
+              <div class="canvas-section-header">
+                <div class="canvas-section-title-wrap">
+                  <svg class="canvas-section-icon text-sky-400" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                  </svg>
+                  <div>
+                    <h2 class="canvas-section-title">Execution Mode</h2>
+                    <p class="canvas-section-desc">Choose agent autonomy level.</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="canvas-mode-grid">
+                <button type="button" class="canvas-mode-card canvas-mode-card--interactive canvas-mode-card--active">
+                  <div class="canvas-mode-card-header">
+                    <span class="canvas-mode-card-icon">💬</span>
+                    <span class="canvas-mode-card-name">Interactive</span>
+                    <span class="canvas-mode-card-badge">Active</span>
+                  </div>
+                  <p class="canvas-mode-card-desc">
+                    Conversational turn-by-turn coding assistance.
+                  </p>
+                </button>
+
+                <button type="button" class="canvas-mode-card canvas-mode-card--plan">
+                  <div class="canvas-mode-card-header">
+                    <span class="canvas-mode-card-icon">📋</span>
+                    <span class="canvas-mode-card-name">Plan</span>
+                  </div>
+                  <p class="canvas-mode-card-desc">
+                    Generates a structured plan checklist before modifying code.
+                  </p>
+                </button>
+
+                <button type="button" class="canvas-mode-card canvas-mode-card--autopilot">
+                  <div class="canvas-mode-card-header">
+                    <span class="canvas-mode-card-icon">🚀</span>
+                    <span class="canvas-mode-card-name">Autopilot</span>
+                  </div>
+                  <p class="canvas-mode-card-desc">
+                    Autonomous multi-step execution until done.
+                  </p>
+                </button>
+              </div>
+            </div>
+
+            <!-- Section 3: Agent Role -->
+            <div class="canvas-section" data-testid="canvas-role-section">
+              <div class="canvas-section-header">
+                <div class="canvas-section-title-wrap">
+                  <svg class="canvas-section-icon text-indigo-400" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="9" cy="7" r="4"></circle>
+                    <polyline points="16 11 18 13 22 9"></polyline>
+                  </svg>
+                  <div>
+                    <h2 class="canvas-section-title">Agent Role</h2>
+                    <p class="canvas-section-desc">Active role specialization.</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="canvas-roles-list">
+                <button type="button" class="canvas-role-pill canvas-role-pill--active">
+                  <span class="canvas-role-pill-icon">🌐</span>
+                  <span class="canvas-role-pill-label">Workspace</span>
+                  <span class="canvas-role-pill-check">✓</span>
+                </button>
+                <button type="button" class="canvas-role-pill">
+                  <span class="canvas-role-pill-icon">💻</span>
+                  <span class="canvas-role-pill-label">Coder</span>
+                </button>
+                <button type="button" class="canvas-role-pill">
+                  <span class="canvas-role-pill-icon">🏛️</span>
+                  <span class="canvas-role-pill-label">Architect</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Section 4: Quick Starters -->
+            <div class="canvas-section">
+              <div class="canvas-section-header">
+                <div class="canvas-section-title-wrap">
+                  <span class="canvas-section-icon text-amber-400">✨</span>
+                  <div>
+                    <h2 class="canvas-section-title">Get Started</h2>
+                  </div>
+                </div>
+              </div>
+
+              <div class="canvas-starters-grid">
+                <button type="button" class="canvas-starter-card">
+                  <div class="canvas-starter-icon">📋</div>
+                  <div class="canvas-starter-info">
+                    <div class="canvas-starter-title">Plan Next Feature</div>
+                    <div class="canvas-starter-desc">Structured checklist on main</div>
+                  </div>
+                  <span class="canvas-starter-arrow">→</span>
+                </button>
+
+                <button type="button" class="canvas-starter-card">
+                  <div class="canvas-starter-icon">🔍</div>
+                  <div class="canvas-starter-info">
+                    <div class="canvas-starter-title">Explain Architecture</div>
+                    <div class="canvas-starter-desc">Explore modules & structure</div>
+                  </div>
+                  <span class="canvas-starter-arrow">→</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Composer area at bottom on mobile -->
+        <div class="chat-input-area" style="padding: 0 0.75rem 0.75rem;">
+          <div class="chat-input-form aui-composer-form">
+            <textarea class="chat-textarea" placeholder="What do you want to know?" rows="1" style="height: 42px; font-size: 0.88rem;"></textarea>
+            <div class="chat-input-actions" style="padding: 0.25rem 0.45rem 0.4rem;">
+              <div class="chat-input-left" style="gap: 0.3rem;">
+                <button type="button" class="file-input-btn" title="Add attachment" style="width: 30px; height: 30px; min-width: 30px; min-height: 30px;">📎</button>
+                <div class="aui-model-group">
+                  <select class="model-picker aui-select" style="height: 30px; font-size: 0.74rem;">
+                    <option>Claude 3.7</option>
+                    <option>GPT-4o</option>
+                  </select>
+                </div>
+                <div class="composer-dropdown-wrapper">
+                  <button type="button" class="aui-pill-btn" style="height: 30px; padding: 0 0.45rem; font-size: 0.74rem;">
+                    <span class="aui-pill-icon">🌐</span>
+                    <span class="aui-pill-caret">▾</span>
+                  </button>
+                </div>
+              </div>
+
+              <button type="button" class="send-btn send-btn--active" style="width: 30px; height: 30px; min-width: 30px; min-height: 30px;">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+                  <path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </body>
+</html>

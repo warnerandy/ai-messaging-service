@@ -300,7 +300,7 @@ defmodule MessagingWeb.AhpChannelTest do
          bot_token: bot,
          bot_socket: bot_socket
        } do
-    {:ok, _, _bot_channel} =
+    {:ok, _, bot_channel} =
       subscribe_and_join(bot_socket, BotChannel, "bot:#{bot.channel_code}", %{})
 
     {:ok, conv} =
@@ -368,6 +368,39 @@ defmodule MessagingWeb.AhpChannelTest do
         }
       }
     }
+
+    # Bot reports sync_sessions with its own known sessions (which doesn't include the new UUID yet)
+    ref_sync =
+      push(bot_channel, "sync_sessions", %{
+        "sessions" => [
+          %{
+            "session_id" => "other-existing-session",
+            "title" => "Other Existing Task",
+            "status" => "idle"
+          }
+        ]
+      })
+
+    assert_reply ref_sync, :ok, _
+
+    # The newly created session in Project Alpha MUST NOT be archived
+    refetched = Messaging.Chat.get_conversation!(conv_id, [])
+    assert refetched.status == "idle"
+    assert refetched.status != "archived"
+
+    # Bot sends status running for the user session
+    ref_status =
+      push(bot_channel, "session_status", %{
+        "conversation_id" => conv_id,
+        "status" => "running",
+        "metadata" => %{"step" => "Reviewing files"}
+      })
+
+    assert_reply ref_status, :ok
+
+    refetched2 = Messaging.Chat.get_conversation!(conv_id, [])
+    assert refetched2.status == "running"
+    assert refetched2.status != "archived"
   end
 
   test "syncs agent mode, use_worktree, base_branch, and agent_types bidirectionally", %{

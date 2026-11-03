@@ -1364,6 +1364,39 @@ Agents can stream live active processes and background worker execution states:
 }
 ```
 
+#### i. Agent Mode & Workspace Configuration (`event_type: "session_config"` or `"mode_change"`)
+Agents dynamically advertise and synchronize their supported execution modes, git worktree capability, repository branches, and specialized agent types:
+```json
+{
+  "topic": "bot:<CHANNEL_CODE>",
+  "event": "ahp_event",
+  "payload": {
+    "session_id": "session-backend-refactor",
+    "event_type": "session_config",
+    "data": {
+      "modes": [
+        {"id": "interactive", "label": "Interactive", "description": "Turn-by-turn guidance"},
+        {"id": "plan", "label": "Plan", "description": "Milestone planning"},
+        {"id": "autopilot", "label": "Autopilot", "description": "Autonomous execution"}
+      ],
+      "agent_mode": "plan",
+      "worktree_supported": true,
+      "use_worktree": true,
+      "base_branch": "main",
+      "branches": ["main", "master", "develop", "feature/refactor"],
+      "agent_types": [
+        {"id": "workspace", "label": "Workspace (@workspace)", "description": "Full workspace context"},
+        {"id": "coder", "label": "Coder", "description": "Code edits & implementation"},
+        {"id": "architect", "label": "System Architect", "description": "Architecture & planning"},
+        {"id": "reviewer", "label": "Reviewer", "description": "Code review & quality checks"}
+      ],
+      "agent_type": "architect"
+    }
+  },
+  "ref": "11"
+}
+```
+
 ---
 
 ### 6. Receiving User Interactions from the Service
@@ -1444,6 +1477,44 @@ When a user opens a session in the PWA or clicks the topbar "Sync" button, the s
 }
 ```
 If your agent host bridge tracks recent turns or unacknowledged messages, it can respond by emitting any missed messages via `send_message` or completion events via `ahp_event`.
+
+#### e. Session Configuration & Mode Updates (`session_config_changed`)
+When a user changes agent modes (interactive, plan, autopilot), switches between working directly on a branch vs an isolated worktree, updates the base branch, or selects a specialized agent type in the prompt area, the server pushes `session_config_changed` to the bot channel:
+```json
+{
+  "topic": "bot:<CHANNEL_CODE>",
+  "event": "session_config_changed",
+  "payload": {
+    "conversation_id": 42,
+    "external_session_id": "session-backend-refactor",
+    "agent_mode": "plan",
+    "use_worktree": true,
+    "base_branch": "main",
+    "agent_type": "architect",
+    "agent_types": ["workspace", "coder", "architect", "reviewer", "debugger"],
+    "metadata": {
+      "agent_mode": "plan",
+      "use_worktree": true,
+      "base_branch": "main",
+      "agent_type": "architect"
+    }
+  }
+}
+```
+Bots can also proactively push `update_session_config` to update or initialize these properties on the server:
+```json
+{
+  "topic": "bot:<CHANNEL_CODE>",
+  "event": "update_session_config",
+  "payload": {
+    "conversation_id": 42,
+    "agent_mode": "autopilot",
+    "use_worktree": false,
+    "base_branch": "feature/refactor"
+  },
+  "ref": "12"
+}
+```
 
 ---
 
@@ -1627,5 +1698,26 @@ When the bot emits a `question` AHP event, the chat renders a `QuestionApprovalC
 
 ### 6. Context Window Size Selector
 When models configured via `PUT /api/bot/models` specify `context_sizes` (e.g. `[4096, 8192, 16384, 32768, 128000]`), a context size selector dropdown appears in the chat header next to the model selector. Selected context sizes are passed with user messages as `context_size`.
+
+### 7. Synchronized Agent Modes, Git Worktree Isolation & Agent Roles (VS Code Parity)
+The prompt area mirrors VS Code agent controls directly above the input box:
+- **Agent Modes (`interactive`, `plan`, `autopilot`)**:
+  - `Interactive`: Default conversational coding mode with immediate turn-by-turn agent assistance.
+  - `Plan`: Dedicated planning mode where the agent analyzes tasks and formulates step-by-step implementation roadmaps before making file modifications.
+  - `Autopilot`: Autonomous execution mode permitting the agent to run multi-step actions and tool loops without requiring turn-by-turn prompts.
+- **Direct Branch vs Isolated Git Worktree (`use_worktree`, `base_branch`)**:
+  - Direct Branch Mode (`use_worktree: false`): Agent operates directly on the active checkout branch.
+  - Isolated Git Worktree Mode (`use_worktree: true`): Agent operates in a newly created, isolated git worktree branched off `base_branch` (e.g., `main` or `master`), preventing uncommitted workspace conflicts.
+  - Base Branch Selector: Interactive popover allowing users to view and update the base branch target.
+- **Dynamic Integration Options (No Hardcoding)**:
+  - **Dynamic Modes (`modes` / `agent_modes`)**: All rendered modes originate directly from what the integration advertises (e.g. `interactive`, `plan`, `autopilot`, or custom agent-defined modes). Rich metadata including labels, descriptions, and icons are preserved.
+  - **Repository Branches (`branches` / `available_branches`)**: The base branch popover dynamically displays available git branches discovered and synced from the integration, allowing one-click selection alongside custom input.
+  - **Worktree Capability (`worktree_supported`)**: Dynamically enabled or disabled based on whether the connected agent runtime supports isolated git worktrees.
+  - **Dynamic Agent Roles (`agent_types` / `roles`)**: Rather than a static list, the agent type picker dynamically renders the specialized roles advertised by the integration with custom labels and descriptions.
+- **Bidirectional Real-Time Synchronization**:
+  - User adjustments in the prompt area immediately emit `update_session_config` to `conversation:<id>` channel, persist into conversation metadata, and push `session_config_changed` to the bot WebSocket.
+  - Incoming bot events (`session_status` or `ahp_event` with `mode_change` or `session_config`) update the prompt controls in real time without refreshing the page.
+  - All outgoing user messages and asset uploads automatically bundle the active `agent_mode`, `use_worktree`, `base_branch`, and `agent_type` in turn metadata.
+
 
 

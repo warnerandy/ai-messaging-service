@@ -262,17 +262,28 @@ defmodule MessagingWeb.BotChannel do
         "agent_mode",
         "agentMode",
         "mode",
+        "modes",
+        "agent_modes",
+        "agentModes",
+        "supported_modes",
         "use_worktree",
         "useWorktree",
         "worktree",
+        "worktree_supported",
+        "supports_worktree",
+        "allow_worktree",
         "base_branch",
         "baseBranch",
         "branch",
         "git_branch",
+        "branches",
+        "available_branches",
+        "base_branches",
         "agent_type",
         "agentType",
         "agent_types",
-        "agentTypes"
+        "agentTypes",
+        "roles"
       ])
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()

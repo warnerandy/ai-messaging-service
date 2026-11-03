@@ -183,17 +183,28 @@ defmodule MessagingWeb.ConversationChannel do
           "agent_mode",
           "agentMode",
           "mode",
+          "modes",
+          "agent_modes",
+          "agentModes",
+          "supported_modes",
           "use_worktree",
           "useWorktree",
           "worktree",
+          "worktree_supported",
+          "supports_worktree",
+          "allow_worktree",
           "base_branch",
           "baseBranch",
           "branch",
           "git_branch",
+          "branches",
+          "available_branches",
+          "base_branches",
           "agent_type",
           "agentType",
           "agent_types",
           "agentTypes",
+          "roles",
           "metadata"
         ])
       else
@@ -210,22 +221,41 @@ defmodule MessagingWeb.ConversationChannel do
         true -> merged_config["worktree"]
       end
 
+    raw_worktree_supported =
+      cond do
+        not is_nil(merged_config["worktree_supported"]) -> merged_config["worktree_supported"]
+        not is_nil(merged_config["supports_worktree"]) -> merged_config["supports_worktree"]
+        not is_nil(merged_config["allow_worktree"]) -> merged_config["allow_worktree"]
+        true -> nil
+      end
+
     canonical =
       %{}
       |> maybe_put_field(
         "agent_mode",
         merged_config["agent_mode"] || merged_config["agentMode"] || merged_config["mode"]
       )
+      |> maybe_put_field(
+        "modes",
+        merged_config["modes"] || merged_config["agent_modes"] || merged_config["agentModes"] ||
+          merged_config["supported_modes"]
+      )
       |> maybe_put_field("use_worktree", normalize_bool(raw_worktree))
+      |> maybe_put_field("worktree_supported", normalize_bool(raw_worktree_supported))
       |> maybe_put_field(
         "base_branch",
         merged_config["base_branch"] || merged_config["baseBranch"] || merged_config["branch"] ||
           merged_config["git_branch"]
       )
+      |> maybe_put_field(
+        "branches",
+        merged_config["branches"] || merged_config["available_branches"] ||
+          merged_config["base_branches"]
+      )
       |> maybe_put_field("agent_type", merged_config["agent_type"] || merged_config["agentType"])
       |> maybe_put_field(
         "agent_types",
-        merged_config["agent_types"] || merged_config["agentTypes"]
+        merged_config["agent_types"] || merged_config["agentTypes"] || merged_config["roles"]
       )
 
     full_update = Map.merge(merged_config, canonical)
@@ -237,13 +267,14 @@ defmodule MessagingWeb.ConversationChannel do
             Messaging.PubSub,
             "bot:#{bot_token_id}",
             {:session_config_changed,
-             %{
+             canonical
+             |> Map.merge(%{
                "conversation_id" => conv_id,
                "session_id" => updated_conv.external_session_id,
                "external_session_id" => updated_conv.external_session_id,
                "config" => full_update,
                "metadata" => updated_conv.metadata
-             }}
+             })}
           )
         end
 

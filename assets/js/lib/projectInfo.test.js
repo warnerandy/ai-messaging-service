@@ -15,7 +15,11 @@ import {
 	getSessionProcesses,
 	orderSessionsHierarchically,
 	normalizeAgentMode,
+	normalizeAgentModes,
 	normalizeWorktree,
+	isWorktreeSupported,
+	normalizeBranches,
+	normalizeAgentTypes,
 	formatAgentType,
 	getAgentPromptConfig,
 } from "./projectInfo.js"
@@ -526,4 +530,88 @@ test("getAgentPromptConfig extracts and synchronizes mode, worktree, base_branch
 	assert.equal(config.baseBranch, "feature/auth-flow")
 	assert.equal(config.agentType, "architect")
 	assert.deepEqual(config.agentTypes, ["workspace", "coder", "architect", "reviewer", "tester"])
+})
+
+test("normalizeAgentModes dynamically extracts modes from integration", () => {
+	const defaultModes = normalizeAgentModes(null)
+	assert.equal(defaultModes.length, 3)
+	assert.equal(defaultModes[0].id, "interactive")
+	assert.equal(defaultModes[1].id, "plan")
+	assert.equal(defaultModes[2].id, "autopilot")
+
+	const customList = normalizeAgentModes(["chat", "plan", "review"])
+	assert.equal(customList.length, 3)
+	assert.equal(customList[0].id, "chat")
+	assert.equal(customList[0].label, "Interactive")
+	assert.equal(customList[2].id, "review")
+	assert.equal(customList[2].label, "Review")
+
+	const richObjects = normalizeAgentModes([
+		{ id: "interactive", label: "Interactive Assistant", icon: "chat" },
+		{ id: "planner", label: "Strategic Planner", description: "Creates roadmap" },
+	])
+	assert.equal(richObjects.length, 2)
+	assert.equal(richObjects[0].label, "Interactive Assistant")
+	assert.equal(richObjects[1].description, "Creates roadmap")
+})
+
+test("normalizeBranches extracts unique repository branch names", () => {
+	assert.deepEqual(normalizeBranches(["main", "master", "develop", "main"]), [
+		"main",
+		"master",
+		"develop",
+	])
+	assert.deepEqual(
+		normalizeBranches([{ name: "main" }, { branch: "feature/login" }]),
+		["main", "feature/login"],
+	)
+	assert.deepEqual(normalizeBranches("main, dev, staging"), ["main", "dev", "staging"])
+})
+
+test("isWorktreeSupported respects integration capabilities", () => {
+	assert.equal(isWorktreeSupported({ worktree_supported: false }), false)
+	assert.equal(isWorktreeSupported({ supports_worktree: true }), true)
+	assert.equal(isWorktreeSupported({}, { metadata: { worktree_supported: false } }), false)
+	assert.equal(isWorktreeSupported({}, { bot_type: "chat" }), false)
+})
+
+test("normalizeAgentTypes dynamically accepts roles from integration", () => {
+	const roles = normalizeAgentTypes([
+		{ id: "security", label: "Security Auditor", description: "Checks vulnerabilities" },
+		"debugger",
+	])
+	assert.equal(roles.length, 2)
+	assert.equal(roles[0].id, "security")
+	assert.equal(roles[0].label, "Security Auditor")
+	assert.equal(roles[0].description, "Checks vulnerabilities")
+	assert.equal(roles[1].id, "debugger")
+	assert.equal(roles[1].label, "Debugger")
+})
+
+test("getAgentPromptConfig dynamically populates options synced from integration", () => {
+	const conv = {
+		metadata: {
+			branches: ["main", "feature/copilot-sync", "dev"],
+			agent_modes: ["interactive", "plan", "review"],
+			agent_types: [
+				{ id: "architect", label: "Lead Architect" },
+				{ id: "tester", label: "QA Specialist" },
+			],
+			worktree_supported: true,
+			use_worktree: true,
+			base_branch: "feature/copilot-sync",
+		},
+	}
+
+	const cfg = getAgentPromptConfig({}, conv)
+	assert.equal(cfg.agentMode, "interactive")
+	assert.equal(cfg.useWorktree, true)
+	assert.equal(cfg.worktreeSupported, true)
+	assert.equal(cfg.baseBranch, "feature/copilot-sync")
+	assert.deepEqual(cfg.availableBranches, ["main", "feature/copilot-sync", "dev"])
+	assert.equal(cfg.modes.length, 3)
+	assert.equal(cfg.modes[2].id, "review")
+	assert.equal(cfg.agentType, "architect")
+	assert.equal(cfg.agentTypes.length, 2)
+	assert.equal(cfg.agentTypeItems[0].label, "Lead Architect")
 })

@@ -10,6 +10,7 @@ import AssistantChatComposer from "./AssistantChatComposer.jsx"
 import BotConfigModal from "./BotConfigModal.jsx"
 import SettingsModal from "./SettingsModal.jsx"
 import ProjectInfoModal from "./ProjectInfoModal.jsx"
+import NewSessionCanvas from "./NewSessionCanvas.jsx"
 import {
 	getProjectInfo,
 	formatSessionTitle,
@@ -18,6 +19,13 @@ import {
 	getParentSessionId,
 	getSessionSubagents,
 	getSessionProcesses,
+	getAgentPromptConfig,
+	normalizeAgentMode,
+	normalizeAgentModes,
+	normalizeWorktree,
+	isWorktreeSupported,
+	normalizeBranches,
+	normalizeAgentTypes,
 } from "../lib/projectInfo.js"
 import { formatQuestionAnswer, resolvePendingQuestion } from "../lib/ahpQuestion.js"
 import {
@@ -31,6 +39,7 @@ import {
 	getConversation,
 	getConversationChannel,
 	uploadConversationAsset,
+	updateConversation,
 } from "../lib/data.js"
 import {
 	notifyBotResponse,
@@ -152,7 +161,6 @@ export default function ChatView({
 	const [botIsTyping, setBotIsTyping] = useState(false)
 	const [sending, setSending] = useState(false)
 	const [selectedFile, setSelectedFile] = useState(null)
-	const [selectedAgentType, setSelectedAgentType] = useState("general")
 	const [selectedSkill, setSelectedSkill] = useState("none")
 	const [attachments, setAttachments] = useState([])
 	const [uploading, setUploading] = useState(false)
@@ -336,6 +344,131 @@ export default function ChatView({
 					: activeConv?.status || "idle"
 
 	const projectInfo = getProjectInfo(activeConv, effectiveMetadata)
+	const initialPromptConfig = getAgentPromptConfig(
+		effectiveMetadata,
+		activeConv,
+		projectInfo,
+		bot,
+	)
+	const [agentModes, setAgentModes] = useState(initialPromptConfig.modes)
+	const [agentMode, setAgentMode] = useState(initialPromptConfig.agentMode)
+	const [worktreeSupported, setWorktreeSupported] = useState(initialPromptConfig.worktreeSupported)
+	const [useWorktree, setUseWorktree] = useState(initialPromptConfig.useWorktree)
+	const [baseBranch, setBaseBranch] = useState(initialPromptConfig.baseBranch)
+	const [availableBranches, setAvailableBranches] = useState(initialPromptConfig.availableBranches)
+	const [agentTypes, setAgentTypes] = useState(initialPromptConfig.agentTypes)
+	const [selectedAgentType, setSelectedAgentType] = useState(initialPromptConfig.agentType)
+
+	const applyIncomingSessionConfig = useCallback(
+		(cfg) => {
+			if (!cfg || typeof cfg !== "object") return
+			setSessionMetadata((prev) => ({ ...prev, ...cfg }))
+			if (cfg.agent_mode || cfg.agentMode || cfg.mode) {
+				setAgentMode(normalizeAgentMode(cfg.agent_mode || cfg.agentMode || cfg.mode))
+			}
+			if (cfg.agent_modes || cfg.modes || cfg.supported_modes) {
+				setAgentModes(normalizeAgentModes(cfg.agent_modes || cfg.modes || cfg.supported_modes))
+			}
+			if (
+				cfg.worktree_supported !== undefined ||
+				cfg.supports_worktree !== undefined ||
+				cfg.allow_worktree !== undefined
+			) {
+				setWorktreeSupported(isWorktreeSupported(cfg, bot))
+			}
+			if (
+				cfg.use_worktree !== undefined ||
+				cfg.useWorktree !== undefined ||
+				cfg.worktree !== undefined
+			) {
+				setUseWorktree(
+					normalizeWorktree(
+						cfg.use_worktree !== undefined
+							? cfg.use_worktree
+							: cfg.useWorktree !== undefined
+								? cfg.useWorktree
+								: cfg.worktree,
+					),
+				)
+			}
+			if (cfg.base_branch || cfg.baseBranch || cfg.branch || cfg.git_branch) {
+				setBaseBranch(cfg.base_branch || cfg.baseBranch || cfg.branch || cfg.git_branch)
+			}
+			if (cfg.branches || cfg.available_branches || cfg.base_branches) {
+				setAvailableBranches(
+					normalizeBranches(cfg.branches || cfg.available_branches || cfg.base_branches),
+				)
+			}
+			if (cfg.agent_type || cfg.agentType) {
+				setSelectedAgentType(cfg.agent_type || cfg.agentType)
+			}
+			if (Array.isArray(cfg.agent_types || cfg.agentTypes || cfg.roles)) {
+				setAgentTypes(cfg.agent_types || cfg.agentTypes || cfg.roles)
+			}
+		},
+		[bot],
+	)
+
+	const handleModeChange = useCallback(
+		(newMode) => {
+			setAgentMode(newMode)
+			setSessionMetadata((prev) => ({ ...prev, agent_mode: newMode }))
+			channelRef.current?.push("update_session_config", { agent_mode: newMode })
+			onConversationStatusChange?.(selectedConversationId, null, { agent_mode: newMode })
+			if (selectedConversationId && token) {
+				updateConversation(token, selectedConversationId, {
+					metadata: { agent_mode: newMode },
+				}).catch(() => {})
+			}
+		},
+		[selectedConversationId, token, onConversationStatusChange],
+	)
+
+	const handleWorktreeChange = useCallback(
+		(newWorktree) => {
+			setUseWorktree(newWorktree)
+			setSessionMetadata((prev) => ({ ...prev, use_worktree: newWorktree }))
+			channelRef.current?.push("update_session_config", { use_worktree: newWorktree })
+			onConversationStatusChange?.(selectedConversationId, null, { use_worktree: newWorktree })
+			if (selectedConversationId && token) {
+				updateConversation(token, selectedConversationId, {
+					metadata: { use_worktree: newWorktree },
+				}).catch(() => {})
+			}
+		},
+		[selectedConversationId, token, onConversationStatusChange],
+	)
+
+	const handleBaseBranchChange = useCallback(
+		(newBranch) => {
+			setBaseBranch(newBranch)
+			setSessionMetadata((prev) => ({ ...prev, base_branch: newBranch }))
+			channelRef.current?.push("update_session_config", { base_branch: newBranch })
+			onConversationStatusChange?.(selectedConversationId, null, { base_branch: newBranch })
+			if (selectedConversationId && token) {
+				updateConversation(token, selectedConversationId, {
+					metadata: { base_branch: newBranch },
+				}).catch(() => {})
+			}
+		},
+		[selectedConversationId, token, onConversationStatusChange],
+	)
+
+	const handleAgentTypeChange = useCallback(
+		(newType) => {
+			setSelectedAgentType(newType)
+			setSessionMetadata((prev) => ({ ...prev, agent_type: newType }))
+			channelRef.current?.push("update_session_config", { agent_type: newType })
+			onConversationStatusChange?.(selectedConversationId, null, { agent_type: newType })
+			if (selectedConversationId && token) {
+				updateConversation(token, selectedConversationId, {
+					metadata: { agent_type: newType },
+				}).catch(() => {})
+			}
+		},
+		[selectedConversationId, token, onConversationStatusChange],
+	)
+
 	const isAhp =
 		bot?.bot_type === "ahp" ||
 		activeConv?.metadata?.bot_type === "ahp" ||
@@ -812,7 +945,7 @@ export default function ChatView({
 					setSessionStatus(newStatus)
 					const meta = payload.metadata || {}
 					if (payload.metadata) {
-						setSessionMetadata((prev) => ({ ...prev, ...payload.metadata }))
+						applyIncomingSessionConfig(payload.metadata)
 					}
 					if (meta.prompt_queue) setPromptQueue(meta.prompt_queue)
 					const resolvedQ = resolvePendingQuestion(newStatus, meta, payload.question)
@@ -874,6 +1007,14 @@ export default function ChatView({
 							newStatus,
 							meta,
 						)
+					}
+				})
+
+				ch.on("session_config_changed", (payload) => {
+					if (!payload) return
+					const meta = payload.metadata || payload.config || payload
+					if (meta && typeof meta === "object") {
+						applyIncomingSessionConfig(meta)
 					}
 				})
 
@@ -943,6 +1084,14 @@ export default function ChatView({
 								...prev,
 								changeset: data.changeset || data.files || data,
 							}))
+						}
+					} else if (
+						event_type === "session_config" ||
+						event_type === "mode_change" ||
+						event_type === "config"
+					) {
+						if (data && typeof data === "object") {
+							applyIncomingSessionConfig(data)
 						}
 					} else if (event_type === "subagent" || event_type === "subagents") {
 						if (data) {
@@ -1097,7 +1246,7 @@ export default function ChatView({
 							setSessionStatus(newStatus)
 							const meta = payload.metadata || {}
 							if (payload.metadata) {
-								setSessionMetadata((prev) => ({ ...prev, ...payload.metadata }))
+								applyIncomingSessionConfig(payload.metadata)
 								if (payload.metadata.thinking) {
 									setThinkingText((prev) => prev || payload.metadata.thinking)
 								}
@@ -1303,6 +1452,22 @@ export default function ChatView({
 		}
 
 		setSessionMetadata(activeConv?.metadata || {})
+		const initialCfg = getAgentPromptConfig(
+			activeConv?.metadata,
+			activeConv,
+			projectInfo,
+			bot,
+		)
+		setAgentModes(initialCfg.modes)
+		setAgentMode(initialCfg.agentMode)
+		setWorktreeSupported(initialCfg.worktreeSupported)
+		setUseWorktree(initialCfg.useWorktree)
+		setBaseBranch(initialCfg.baseBranch)
+		setAvailableBranches(initialCfg.availableBranches)
+		if (initialCfg.agentType) {
+			setSelectedAgentType(initialCfg.agentType)
+		}
+		setAgentTypes(initialCfg.agentTypes)
 		setThinkingText(activeConv?.metadata?.thinking || "")
 		setToolCalls(
 			Array.isArray(activeConv?.metadata?.tool_calls) ? activeConv.metadata.tool_calls : [],
@@ -1342,7 +1507,9 @@ export default function ChatView({
 				})
 				if (res?.conversation && res.conversation.id === selectedConversationId) {
 					const currentConv =
-						conversationsRef.current?.find((c) => c.id === selectedConversationId) || activeConv
+						conversationsRef.current?.find((c) => c.id === selectedConversationId) ||
+						activeConv ||
+						res.conversation
 					const convStatus = res.conversation.status || "idle"
 					const isLiveActive =
 						sessionStatus === "running" ||
@@ -1367,8 +1534,25 @@ export default function ChatView({
 					setSessionMetadata((prev) => ({
 						...convMeta,
 						...prev,
-						...(activeConv?.metadata || {}),
+						...(currentConv?.metadata || {}),
 					}))
+
+					const loadedCfg = getAgentPromptConfig(
+						convMeta,
+						res.conversation,
+						projectInfo,
+						bot,
+					)
+					setAgentModes(loadedCfg.modes)
+					setAgentMode(loadedCfg.agentMode)
+					setWorktreeSupported(loadedCfg.worktreeSupported)
+					setUseWorktree(loadedCfg.useWorktree)
+					setBaseBranch(loadedCfg.baseBranch)
+					setAvailableBranches(loadedCfg.availableBranches)
+					setAgentTypes(loadedCfg.agentTypes)
+					if (loadedCfg.agentType) {
+						setSelectedAgentType(loadedCfg.agentType)
+					}
 
 					if (convMeta.prompt_queue) {
 						setPromptQueue(convMeta.prompt_queue)
@@ -1380,10 +1564,10 @@ export default function ChatView({
 						setToolCalls((prev) => (prev.length > 0 ? prev : convMeta.tool_calls))
 					}
 
-					const effectiveStatus = isLiveActive ? activeConv.status : convStatus
+					const effectiveStatus = isLiveActive ? (currentConv?.status || convStatus) : convStatus
 					const effectiveMeta = {
 						...convMeta,
-						...(activeConv?.metadata || {}),
+						...(currentConv?.metadata || {}),
 					}
 					const resolvedQ = resolvePendingQuestion(
 						effectiveStatus,
@@ -1472,6 +1656,9 @@ export default function ChatView({
 		const optimisticId = `optimistic-${Date.now()}`
 		const metadata = {
 			agent_type: selectedAgentType,
+			agent_mode: agentMode,
+			use_worktree: useWorktree,
+			base_branch: baseBranch,
 			skill: selectedSkill,
 			...(opts.metadata || {}),
 			...(opts.is_steer ? { is_steer: true } : {}),
@@ -1555,6 +1742,9 @@ export default function ChatView({
 				url: primary.previewUrl,
 				filename: primary.name,
 				agent_type: selectedAgentType,
+				agent_mode: agentMode,
+				use_worktree: useWorktree,
+				base_branch: baseBranch,
 				skill: selectedSkill,
 				attachments: currentAttachments.map((a) => ({
 					name: a.name,
@@ -1601,6 +1791,9 @@ export default function ChatView({
 					filename: uploadedList[0].filename,
 					attachments: uploadedList,
 					agent_type: selectedAgentType,
+					agent_mode: agentMode,
+					use_worktree: useWorktree,
+					base_branch: baseBranch,
 					skill: selectedSkill,
 					...(opts.metadata || {}),
 					...(is_steer ? { is_steer: true } : {}),
@@ -2134,6 +2327,28 @@ export default function ChatView({
 						>
 							{bot?.bot_type === "ahp" ? "AHP Protocol" : "Chat Protocol"}
 						</span>
+						{/* Target Branch and Worktree Badge */}
+						{(activeConv?.metadata?.base_branch || activeConv?.metadata?.branch || baseBranch) && (
+							<span
+								className={`chat-target-badge ${useWorktree ? "chat-target-badge--worktree" : "chat-target-badge--branch"}`}
+								title={
+									useWorktree
+										? `Working in isolated git worktree against base branch "${baseBranch}".`
+										: `Working directly on branch "${baseBranch}".`
+								}
+								data-testid="chat-target-badge"
+							>
+								{useWorktree ? (
+									<>
+										<span className="text-amber-400">⚡ Worktree:</span> {baseBranch}
+									</>
+								) : (
+									<>
+										<span className="text-emerald-400">🌿 Branch:</span> {baseBranch}
+									</>
+								)}
+							</span>
+						)}
 						{isSessionNested(activeConv, conversations) && (
 							<span
 								className="chat-nested-badge"
@@ -2347,16 +2562,28 @@ export default function ChatView({
 					</div>
 				)}
 				{!isLoadingMessages && messages.length === 0 && (
-					<div className="chat-welcome">
-						<p className="chat-welcome-text">
-							Start a conversation with <strong>{bot?.name || "your bot"}</strong>
-						</p>
-						<span
-							className={`bot-protocol-badge bot-protocol-badge--${bot?.bot_type === "ahp" ? "ahp" : "chat"}`}
-						>
-							{bot?.bot_type === "ahp" ? "AHP Protocol" : "Chat Protocol"}
-						</span>
-					</div>
+					<NewSessionCanvas
+						bot={bot}
+						isAhp={isAhp}
+						projectInfo={projectInfo}
+						modes={agentModes}
+						mode={agentMode}
+						onModeChange={handleModeChange}
+						worktreeSupported={worktreeSupported}
+						useWorktree={useWorktree}
+						onWorktreeChange={handleWorktreeChange}
+						baseBranch={baseBranch}
+						availableBranches={availableBranches}
+						onBaseBranchChange={handleBaseBranchChange}
+						agentTypes={agentTypes}
+						agentType={selectedAgentType}
+						onAgentTypeChange={handleAgentTypeChange}
+						onSelectStarter={(prompt) => {
+							setInputValue(prompt)
+							inputRef.current?.focus?.()
+						}}
+						disabled={sending || uploading}
+					/>
 				)}
 				{messages.map((msg) => (
 					<MessageBubbleView
@@ -2417,7 +2644,7 @@ export default function ChatView({
 				selectedContextSize={selectedContextSize}
 				onSelectContextSize={setSelectedContextSize}
 				selectedAgentType={selectedAgentType}
-				onSelectAgentType={setSelectedAgentType}
+				onSelectAgentType={handleAgentTypeChange}
 				selectedSkill={selectedSkill}
 				onSelectSkill={setSelectedSkill}
 				attachments={attachments}
@@ -2428,6 +2655,17 @@ export default function ChatView({
 				onViewProgress={handleViewProgress}
 				onStop={handleStop}
 				inputRef={inputRef}
+				modes={agentModes}
+				agentMode={agentMode}
+				onModeChange={handleModeChange}
+				worktreeSupported={worktreeSupported}
+				useWorktree={useWorktree}
+				onWorktreeChange={handleWorktreeChange}
+				baseBranch={baseBranch}
+				availableBranches={availableBranches}
+				onBaseBranchChange={handleBaseBranchChange}
+				agentTypes={agentTypes}
+				isAHP={isAhp}
 			/>
 
 			{/* Settings Modal (Alerts, Working States Showcase) */}

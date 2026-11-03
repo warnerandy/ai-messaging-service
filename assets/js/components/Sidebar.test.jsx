@@ -769,6 +769,47 @@ describe("Sidebar", () => {
 		expect(alarmIndicator).toHaveAttribute("aria-label", "Alarm active")
 	})
 
+	it("renders branch pill and worktree pill in row 2 of conversation items", () => {
+		const { container } = render(
+			<Sidebar
+				bots={[{ id: "bot-1", name: "AHP Agent", bot_type: "ahp" }]}
+				selectedBotId="bot-1"
+				conversations={[
+					{
+						id: "conv-branch-1",
+						title: "Branch Session",
+						status: "idle",
+						metadata: { base_branch: "feat/user-auth", use_worktree: false },
+					},
+					{
+						id: "conv-worktree-1",
+						title: "Worktree Session",
+						status: "idle",
+						metadata: { base_branch: "main", use_worktree: true },
+					},
+				]}
+				selectedConversationId="conv-branch-1"
+				onSelectConversation={vi.fn()}
+				onCreateConversation={vi.fn()}
+				onSelectBot={vi.fn()}
+				onBotsChange={vi.fn()}
+				onDeleteBot={vi.fn()}
+				userEmail="user@example.com"
+				onLogout={vi.fn()}
+				isOpen
+				appConnection="online"
+			/>,
+		)
+
+		const branchPill = container.querySelector('[data-testid="conv-branch-pill"]')
+		expect(branchPill).toBeInTheDocument()
+		expect(branchPill).toHaveTextContent("🌿 feat/user-auth")
+
+		const worktreePill = container.querySelector('[data-testid="conv-worktree-pill"]')
+		expect(worktreePill).toBeInTheDocument()
+		expect(worktreePill).toHaveTextContent("⚡ worktree: main")
+	})
+
 	describe("groupSessionsByProject and project groups", () => {
 		beforeEach(() => {
 			localStorage.setItem("messaging.group_by_project", "true")

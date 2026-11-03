@@ -24,6 +24,7 @@ vi.mock("../lib/data.js", () => ({
 	getConversation: vi.fn(),
 	getConversationChannel: vi.fn(),
 	uploadConversationAsset: vi.fn(),
+	updateConversation: vi.fn().mockResolvedValue({}),
 }))
 
 vi.mock("../lib/notifications.js", () => ({
@@ -138,7 +139,7 @@ describe("ChatView", () => {
 		)
 
 		expect(screen.getByText("ai-messaging-service")).toBeInTheDocument()
-		expect(screen.getByText("master")).toBeInTheDocument()
+		expect(screen.getAllByText("master").length).toBeGreaterThanOrEqual(1)
 	})
 
 	it("opens project info modal when clicking project badge", async () => {
@@ -670,5 +671,113 @@ describe("normalizeMessage", () => {
 		await user.click(viewProgressBtn)
 		expect(expandListener).toHaveBeenCalledTimes(1)
 		window.removeEventListener("expand-live-thinking", expandListener)
+	})
+
+	it("renders agent prompt controls and syncs agent mode, worktree, base branch, and agent type", async () => {
+		const user = userEvent.setup()
+
+		render(
+			<ChatView
+				token="fake"
+				bot={{ id: 1, name: "Atlas", bot_type: "ahp", is_connected: true }}
+				conversations={[
+					{
+						id: 10,
+						title: "Active Dev Session",
+						status: "idle",
+						metadata: {
+							agent_mode: "interactive",
+							use_worktree: false,
+							base_branch: "feature/login",
+							agent_type: "workspace",
+						},
+					},
+				]}
+				selectedConversationId={10}
+				models={[{ name: "gpt-4o" }]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		// 1. Verify agent prompt controls render
+		expect(screen.getByTestId("agent-prompt-controls")).toBeInTheDocument()
+
+		// 2. Verify all modes are present and 'Interactive' is active
+		const interactiveTab = screen.getByRole("tab", { name: /interactive mode/i })
+		const planTab = screen.getByRole("tab", { name: /plan mode/i })
+		const autopilotTab = screen.getByRole("tab", { name: /autopilot mode/i })
+
+		expect(interactiveTab).toBeInTheDocument()
+		expect(planTab).toBeInTheDocument()
+		expect(autopilotTab).toBeInTheDocument()
+		expect(interactiveTab).toHaveAttribute("aria-selected", "true")
+
+		// 3. Verify Branch name is displayed
+		expect(screen.getAllByText("feature/login").length).toBeGreaterThan(0)
+		expect(screen.getAllByText(/Branch:/).length).toBeGreaterThan(0)
+
+		// 4. Click 'Plan' tab and verify it becomes selected and placeholder adapts
+		await user.click(planTab)
+		expect(planTab).toHaveAttribute("aria-selected", "true")
+		expect(screen.getByPlaceholderText(/Plan mode: Describe the feature or changes you want planned/i)).toBeInTheDocument()
+
+		// 5. Click 'Autopilot' tab and verify it becomes selected and placeholder adapts
+		await user.click(autopilotTab)
+		expect(autopilotTab).toHaveAttribute("aria-selected", "true")
+		expect(screen.getByPlaceholderText(/Autopilot mode: Describe what to build or fix autonomously/i)).toBeInTheDocument()
+	})
+
+	it("syncs dynamic agent modes, repository branches, and custom agent roles from the integration", async () => {
+		render(
+			<ChatView
+				token="fake"
+				bot={{
+					id: 1,
+					name: "Atlas",
+					bot_type: "ahp",
+					is_connected: true,
+					metadata: {
+						agent_modes: [
+							{ id: "chat", label: "Interactive Assistant" },
+							{ id: "audit", label: "Security Audit" },
+						],
+						branches: ["main", "feature/custom-sync", "hotfix/patch"],
+						agent_types: [
+							{ id: "sec_engineer", label: "Security Engineer", description: "Performs audit" },
+						],
+					},
+				}}
+				conversations={[
+					{
+						id: 11,
+						title: "Security Review Session",
+						status: "idle",
+						metadata: {
+							agent_mode: "chat",
+							base_branch: "feature/custom-sync",
+							agent_type: "sec_engineer",
+						},
+					},
+				]}
+				selectedConversationId={11}
+				models={[{ name: "gpt-4o" }]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		// 1. Dynamic modes from bot metadata
+		expect(screen.getAllByText("Interactive Assistant").length).toBeGreaterThan(0)
+		expect(screen.getAllByText("Security Audit").length).toBeGreaterThan(0)
+
+		// 2. Custom agent type from bot metadata
+		expect(screen.getAllByText("Security Engineer").length).toBeGreaterThan(0)
+
+		// 3. Branches from repository in popover
+		fireEvent.click(screen.getByLabelText(/configure working branch and worktree/i))
+		expect(screen.getByRole("button", { name: /hotfix\/patch/i })).toBeInTheDocument()
 	})
 })

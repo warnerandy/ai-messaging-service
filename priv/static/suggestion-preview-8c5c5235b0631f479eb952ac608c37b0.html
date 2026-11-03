@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en" class="dark" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#2489ff" />
+    <title>Bot Suggestion Visual Preview</title>
+    <link rel="stylesheet" href="/assets/css/app.css" />
+    <style>
+      .preview-shell {
+        min-height: 100dvh;
+        background: var(--bg-primary);
+        color: var(--text-primary);
+      }
+
+      .preview-topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.75rem 1.5rem;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .preview-title {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 600;
+      }
+
+      .preview-badge {
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid rgba(36, 137, 255, 0.45);
+        background: rgba(36, 137, 255, 0.1);
+        color: var(--accent);
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        padding: 0.2rem 0.55rem;
+        border-radius: 999px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="preview-shell" data-testid="suggestion-preview-page">
+      <div class="preview-topbar">
+        <h1 class="preview-title">Suggestion Preview</h1>
+        <span class="preview-badge">Visual Test Fixture</span>
+      </div>
+
+      <div class="chat-messages" data-testid="suggestion-preview-messages">
+        <div class="msg msg--bot">
+          <div class="msg-avatar">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2a7 7 0 00-7 7v1a2 2 0 00-2 2v2a2 2 0 002 2h1a7 7 0 0012 0h1a2 2 0 002-2v-2a2 2 0 00-2-2V9a7 7 0 00-7-7z" stroke="currentColor" stroke-width="1.5"></path><circle cx="9" cy="11" r="1.25" fill="currentColor"></circle><circle cx="15" cy="11" r="1.25" fill="currentColor"></circle></svg>
+          </div>
+          <div class="msg-content">
+            <div class="msg-bubble msg-bubble--bot">
+              <p class="msg-text">Idle state (none selected)</p>
+            </div>
+            <div class="msg-suggestions">
+              <button type="button" class="suggestion-chip">Summarize latest messages</button>
+              <button type="button" class="suggestion-chip">Draft a reply</button>
+              <button type="button" class="suggestion-chip">Ask a follow-up</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="msg msg--bot">
+          <div class="msg-avatar">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2a7 7 0 00-7 7v1a2 2 0 00-2 2v2a2 2 0 002 2h1a7 7 0 0012 0h1a2 2 0 002-2v-2a2 2 0 00-2-2V9a7 7 0 00-7-7z" stroke="currentColor" stroke-width="1.5"></path><circle cx="9" cy="11" r="1.25" fill="currentColor"></circle><circle cx="15" cy="11" r="1.25" fill="currentColor"></circle></svg>
+          </div>
+          <div class="msg-content">
+            <div class="msg-bubble msg-bubble--bot">
+              <p class="msg-text">Used state (one selected)</p>
+            </div>
+            <div class="msg-suggestions">
+              <button type="button" class="suggestion-chip suggestion-chip--dismissed" disabled>Summarize latest messages</button>
+              <button type="button" class="suggestion-chip suggestion-chip--used" disabled>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                Draft a reply
+                <span class="suggestion-chip__sent">Sent</span>
+              </button>
+              <button type="button" class="suggestion-chip suggestion-chip--dismissed" disabled>Ask a follow-up</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="msg msg--user">
+          <div class="msg-bubble">
+            <span class="msg-suggestion-origin">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+              Suggestion
+            </span>
+            <p class="msg-text">Draft a reply</p>
+            <span class="msg-status msg-status--delivered">Delivered</span>
+          </div>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>

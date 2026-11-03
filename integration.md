@@ -90,6 +90,24 @@ Rather than displaying agent interactions as conventional chat speech bubbles, t
   - One-click token regeneration (`POST /api/bot-tokens/:id/regenerate`) without tearing down existing sessions.
 - **Context Window Negotiation**: Dynamic token context size selector (`context_sizes: [4096, 8192, 16384, 32768, 128000]`).
 
+### 8. VS Code Parity: Synchronized Modes, Git Worktrees & Specialized Agent Types
+The chat prompt composer area replicates VS Code Copilot/agent capabilities, with all options dynamically advertised and synchronized from the connected integration without hardcoded presets:
+- **Dynamic Agent Execution Modes (`modes` / `agent_mode`)**:
+  - Rendered dynamically from what the integration advertises (`interactive`, `plan`, `autopilot`, or custom agent-defined modes).
+  - Mode objects with custom titles, descriptions, and icons are preserved.
+- **Repository Branches & Isolated Git Worktree (`worktree_supported`, `use_worktree`, `branches`, `base_branch`)**:
+  - Dynamically detects worktree capability from the connected agent (`worktree_supported`).
+  - Git branches discovered and reported by the integration (`branches` / `available_branches`) are listed in the popover for one-click selection alongside custom input.
+  - Toggles between modifying the checked-out branch directly or creating an isolated git worktree branched from `base_branch`.
+- **Specialized Agent Roles (`agent_types`, `agent_type`)**:
+  - Dynamic role selection populated directly from what the integration provides (`workspace`, `coder`, `architect`, `reviewer`, `debugger`, or custom roles).
+  - Preserves custom role labels and descriptions advertised by the agent host.
+- **Bidirectional WebSocket & Turn Synchronization**:
+  - Prompt area controls immediately push `update_session_config` to Phoenix channels and persist into conversation metadata.
+  - Connected agents receive `session_config_changed` events over `bot:<CHANNEL_CODE>`.
+  - Incoming agent mode, branch, worktree, or role changes dynamically update the prompt area in real time.
+  - All submitted user messages and asset payloads include the active mode, worktree toggle, base branch, and agent type in their metadata envelope.
+
 ---
 
 For complete request/response schemas, WebSocket event formats, and runnable client bridge scripts, see **[`integrate.md`](./integrate.md)**.

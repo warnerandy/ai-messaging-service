@@ -772,6 +772,28 @@ export default function Sidebar({
 									{projectInfo.name}
 								</span>
 							)}
+							{/* Branch & Worktree Badges */}
+							{conv.metadata?.use_worktree ? (
+								<span
+									className="conv-worktree-pill"
+									title={
+										conv.metadata?.base_branch
+											? `Isolated Git Worktree (base: ${conv.metadata.base_branch})`
+											: "Isolated Git Worktree"
+									}
+									data-testid="conv-worktree-pill"
+								>
+									⚡ worktree{conv.metadata?.base_branch ? `: ${conv.metadata.base_branch}` : ""}
+								</span>
+							) : (conv.metadata?.base_branch || conv.metadata?.branch || conv.metadata?.git_branch) ? (
+								<span
+									className="conv-branch-pill"
+									title={`Branch: ${conv.metadata.base_branch || conv.metadata.branch || conv.metadata.git_branch}`}
+									data-testid="conv-branch-pill"
+								>
+									🌿 {conv.metadata.base_branch || conv.metadata.branch || conv.metadata.git_branch}
+								</span>
+							) : null}
 							{(status === "waiting_for_input" || status === "needs_input") && (
 								<span
 									className="conv-action-icon conv-action-icon--waiting"

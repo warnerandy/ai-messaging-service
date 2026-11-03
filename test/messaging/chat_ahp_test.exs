@@ -87,6 +87,177 @@ defmodule Messaging.ChatAhpTest do
       assert refetched.status == "archived"
     end
 
+    test "does not archive user-created sessions when routine sync_bot_sessions omits them", %{
+      user: user,
+      bot_token: bot
+    } do
+      # 1. User creates a new session in AIMS on an existing project
+      {:ok, user_conv} =
+        Chat.create_conversation(%{
+          user_id: user.id,
+          bot_token_id: bot.id,
+          title: "My Project Session",
+          external_session_id: "user-uuid-123",
+          status: "idle",
+          metadata: %{
+            "project" => %{
+              "name" => "my-project",
+              "path" => "/home/user/my-project"
+            }
+          }
+        })
+
+      # 2. User sends a message
+      {:ok, _msg} =
+        Chat.create_message(%{
+          conversation_id: user_conv.id,
+          user_id: user.id,
+          role: "user",
+          body: "Hello agent, do task X"
+        })
+
+      # 3. Bot sends routine sync_sessions reporting only its own sessions
+      bot_sessions = [
+        %{
+          "session_id" => "bot-existing-sess",
+          "title" => "Bot Task",
+          "status" => "idle"
+        }
+      ]
+
+      assert {:ok, _} = Chat.sync_bot_sessions(bot, bot_sessions)
+
+      # 4. User's conversation MUST NOT be archived!
+      refetched = Chat.get_conversation!(user_conv.id, [])
+      assert refetched.status == "idle"
+      assert refetched.status != "archived"
+    end
+
+    test "does not archive sessions belonging to another project when bot reports sessions for one project",
+         %{bot_token: bot} do
+      # Project A session (bot managed)
+      {:ok, _} =
+        Chat.sync_bot_sessions(bot, [
+          %{
+            "session_id" => "proj-a-sess",
+            "title" => "Project A Session",
+            "status" => "idle",
+            "metadata" => %{"project" => %{"name" => "Project A"}}
+          }
+        ])
+
+      # Project B session (bot managed)
+      {:ok, _} =
+        Chat.sync_bot_sessions(bot, [
+          %{
+            "session_id" => "proj-b-sess",
+            "title" => "Project B Session",
+            "status" => "idle",
+            "metadata" => %{"project" => %{"name" => "Project B"}}
+          }
+        ])
+
+      # Bot subsequently syncs only Project A sessions
+      {:ok, _} =
+        Chat.sync_bot_sessions(bot, [
+          %{
+            "session_id" => "proj-a-sess",
+            "title" => "Project A Session Updated",
+            "status" => "running",
+            "metadata" => %{"project" => %{"name" => "Project A"}}
+          }
+        ])
+
+      # Project B session must NOT be archived because incoming sync was scoped to Project A
+      proj_b_conv = Chat.get_conversation_by_external_session(bot.id, "proj-b-sess")
+      assert proj_b_conv.status == "idle"
+      assert proj_b_conv.status != "archived"
+    end
+
+    test "does not archive bot-managed sessions that have recent user activity", %{
+      user: user,
+      bot_token: bot
+    } do
+      # Bot creates a session
+      {:ok, [conv]} =
+        Chat.sync_bot_sessions(bot, [
+          %{
+            "session_id" => "active-user-sess",
+            "title" => "Active Session",
+            "status" => "idle"
+          }
+        ])
+
+      # User interacts with it
+      {:ok, _msg} =
+        Chat.create_message(%{
+          conversation_id: conv.id,
+          user_id: user.id,
+          role: "user",
+          body: "Keep working on this"
+        })
+
+      # Bot sends sync_sessions omitting this session
+      {:ok, _} =
+        Chat.sync_bot_sessions(bot, [
+          %{
+            "session_id" => "other-sess",
+            "title" => "Other Session",
+            "status" => "idle"
+          }
+        ])
+
+      # Because the session has user activity, it should NOT be archived
+      refetched = Chat.get_conversation!(conv.id, [])
+      assert refetched.status == "idle"
+    end
+
+    test "restores mistakenly archived sessions that have user messages during routine sync", %{
+      user: user,
+      bot_token: bot
+    } do
+      # Bot creates a session
+      {:ok, [conv]} =
+        Chat.sync_bot_sessions(bot, [
+          %{
+            "session_id" => "mistakenly-archived-sess",
+            "title" => "Mistakenly Archived",
+            "status" => "idle"
+          }
+        ])
+
+      # User interacts with it
+      {:ok, _msg} =
+        Chat.create_message(%{
+          conversation_id: conv.id,
+          user_id: user.id,
+          role: "user",
+          body: "Hello world"
+        })
+
+      # Manually set to archived without explicitly_archived metadata (simulating the bug)
+      conv
+      |> Messaging.Chat.Conversation.changeset(%{status: "archived"})
+      |> Messaging.Repo.update!()
+
+      assert Chat.get_conversation!(conv.id, []).status == "archived"
+
+      # Next routine sync runs
+      assert {:ok, synced} =
+               Chat.sync_bot_sessions(bot, [
+                 %{
+                   "session_id" => "another-session",
+                   "title" => "Another",
+                   "status" => "idle"
+                 }
+               ])
+
+      # The session should be restored to "idle" and included in synced list
+      refetched = Chat.get_conversation!(conv.id, [])
+      assert refetched.status == "idle"
+      assert Enum.any?(synced, &(&1.id == conv.id and &1.status == "idle"))
+    end
+
     test "synchronizes nested sub-sessions preserving parent_session_id and nesting metadata",
          %{bot_token: bot} do
       sessions = [

@@ -54,6 +54,18 @@ export default function AssistantChatComposer({
 	onViewProgress,
 	onStop,
 	inputRef: externalInputRef,
+	modes,
+	agentMode = "interactive",
+	onModeChange,
+	worktreeSupported = true,
+	useWorktree = false,
+	onWorktreeChange,
+	baseBranch = "main",
+	onBaseBranchChange,
+	availableBranches = [],
+	agentTypes = ["workspace", "coder", "architect", "reviewer"],
+	isAHP = true,
+	showPromptControls = true,
 }) {
 	const internalInputRef = useRef(null)
 	const inputRef = externalInputRef || internalInputRef
@@ -166,8 +178,14 @@ export default function AssistantChatComposer({
 		if (effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy) {
 			return "Steer running agent with an instruction (or ask a question)..."
 		}
+		if (agentMode === "plan") {
+			return "Plan mode: Describe the feature or changes you want planned..."
+		}
+		if (agentMode === "autopilot") {
+			return "Autopilot mode: Describe what to build or fix autonomously..."
+		}
 		return "What do you want to know?"
-	}, [effectiveStatus, isAgentBusy])
+	}, [effectiveStatus, isAgentBusy, agentMode])
 
 	const isSubmitDisabled = disabled || uploading || (!value.trim() && attachments.length === 0)
 
@@ -224,6 +242,26 @@ export default function AssistantChatComposer({
 						)}
 					</div>
 				</div>
+			)}
+
+			{/* Agent Mode, Worktree, Base Branch, and Agent Type Controls */}
+			{showPromptControls && (
+				<AgentPromptControls
+					modes={modes}
+					mode={agentMode}
+					onModeChange={onModeChange}
+					worktreeSupported={worktreeSupported}
+					useWorktree={useWorktree}
+					onWorktreeChange={onWorktreeChange}
+					baseBranch={baseBranch}
+					availableBranches={availableBranches}
+					onBaseBranchChange={onBaseBranchChange}
+					agentType={selectedAgentType}
+					onAgentTypeChange={onSelectAgentType}
+					agentTypes={agentTypes}
+					disabled={disabled || uploading}
+					isAHP={isAHP}
+				/>
 			)}
 
 			{/* @assistant-ui/react Root Form Container */}

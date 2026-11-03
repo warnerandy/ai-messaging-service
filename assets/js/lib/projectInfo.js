@@ -1060,6 +1060,27 @@ export function orderSessionsHierarchically(conversations = []) {
 	return result
 }
 
+export const DEFAULT_AGENT_MODES = [
+	{
+		id: "interactive",
+		label: "Interactive",
+		icon: "interactive",
+		description: "Interactive: Turn-by-turn conversational coding assistance",
+	},
+	{
+		id: "plan",
+		label: "Plan",
+		icon: "plan",
+		description: "Plan: Agent produces a structured milestone checklist before making code changes",
+	},
+	{
+		id: "autopilot",
+		label: "Autopilot",
+		icon: "autopilot",
+		description: "Autopilot: Autonomous multi-step execution until objective is achieved",
+	},
+]
+
 export const DEFAULT_AGENT_TYPES = [
 	{
 		id: "workspace",
@@ -1082,11 +1103,67 @@ export const DEFAULT_AGENT_TYPES = [
 	},
 ]
 
-export function normalizeAgentMode(rawMode) {
+export function formatModeLabel(mode) {
+	if (!mode || typeof mode !== "string") return "Interactive"
+	const m = mode.trim()
+	const lower = m.toLowerCase()
+	if (lower === "interactive" || lower === "chat") return "Interactive"
+	if (lower === "plan" || lower === "planning") return "Plan"
+	if (lower === "autopilot" || lower === "auto" || lower === "autonomous") return "Autopilot"
+	return m.charAt(0).toUpperCase() + m.slice(1)
+}
+
+export function normalizeAgentModes(rawModes) {
+	if (rawModes === null || rawModes === undefined) {
+		return DEFAULT_AGENT_MODES.map((m) => ({ ...m }))
+	}
+	if (!Array.isArray(rawModes)) {
+		return DEFAULT_AGENT_MODES.map((m) => ({ ...m }))
+	}
+	if (rawModes.length === 0) {
+		return []
+	}
+
+	return rawModes
+		.map((item) => {
+			if (typeof item === "string") {
+				const id = item.trim()
+				if (!id) return null
+				const known = DEFAULT_AGENT_MODES.find((d) => d.id === id.toLowerCase())
+				if (known) return { ...known, id }
+				return {
+					id,
+					label: formatModeLabel(id),
+					icon: id.toLowerCase(),
+					description: `${formatModeLabel(id)} mode`,
+				}
+			}
+			if (typeof item === "object" && item !== null) {
+				const id = String(item.id || item.mode || item.name || "").trim()
+				if (!id) return null
+				const label = item.label || item.title || formatModeLabel(id)
+				const icon = item.icon || id.toLowerCase()
+				const description = item.description || `${label} mode`
+				return { ...item, id, label, icon, description }
+			}
+			return null
+		})
+		.filter(Boolean)
+}
+
+export function normalizeAgentMode(rawMode, customModes = []) {
 	if (!rawMode || typeof rawMode !== "string") return "interactive"
 	const m = rawMode.trim().toLowerCase()
 	if (m === "plan" || m === "planning") return "plan"
 	if (m === "autopilot" || m === "auto" || m === "autonomous") return "autopilot"
+	if (
+		Array.isArray(customModes) &&
+		customModes.some(
+			(mode) => (typeof mode === "object" ? mode.id : mode) === rawMode.trim(),
+		)
+	) {
+		return rawMode.trim()
+	}
 	return "interactive"
 }
 
@@ -1095,10 +1172,105 @@ export function normalizeWorktree(val) {
 	return false
 }
 
-export function formatAgentType(type) {
+export function isWorktreeSupported(meta = {}, bot = null, _projectInfo = null) {
+	if (meta && meta.worktree_supported !== undefined) return Boolean(meta.worktree_supported)
+	if (meta && meta.supports_worktree !== undefined) return Boolean(meta.supports_worktree)
+	if (meta && meta.allow_worktree !== undefined) return Boolean(meta.allow_worktree)
+
+	if (bot?.metadata?.worktree_supported !== undefined) return Boolean(bot.metadata.worktree_supported)
+	if (bot?.metadata?.supports_worktree !== undefined) return Boolean(bot.metadata.supports_worktree)
+	if (bot?.metadata?.allow_worktree !== undefined) return Boolean(bot.metadata.allow_worktree)
+
+	if (bot?.bot_type === "chat") return false
+	return true
+}
+
+export function normalizeBranches(rawBranches) {
+	if (!rawBranches) return []
+	let list = []
+	if (Array.isArray(rawBranches)) {
+		list = rawBranches
+	} else if (typeof rawBranches === "string") {
+		list = rawBranches.includes(",")
+			? rawBranches.split(",")
+			: [rawBranches]
+	}
+
+	const seen = new Set()
+	const result = []
+
+	for (const item of list) {
+		const name = (
+			typeof item === "string"
+				? item
+				: item?.name || item?.branch || item?.git_branch || ""
+		).trim()
+
+		if (name && !seen.has(name)) {
+			seen.add(name)
+			result.push(name)
+		}
+	}
+
+	return result
+}
+
+export function normalizeAgentTypes(rawTypes) {
+	if (rawTypes === null || rawTypes === undefined) {
+		return DEFAULT_AGENT_TYPES.map((t) => ({ ...t }))
+	}
+	if (!Array.isArray(rawTypes)) {
+		return DEFAULT_AGENT_TYPES.map((t) => ({ ...t }))
+	}
+	if (rawTypes.length === 0) {
+		return []
+	}
+
+	return rawTypes
+		.map((item) => {
+			if (typeof item === "string") {
+				const id = item.trim()
+				if (!id) return null
+				const known = DEFAULT_AGENT_TYPES.find((d) => d.id === id.toLowerCase())
+				if (known) return { ...known, id }
+				return {
+					id,
+					label: id.startsWith("@") ? id : id.charAt(0).toUpperCase() + id.slice(1),
+					icon: id.toLowerCase(),
+					description: "",
+				}
+			}
+			if (typeof item === "object" && item !== null) {
+				const id = String(item.id || item.name || item.type || "").trim()
+				if (!id) return null
+				const label =
+					item.label ||
+					item.title ||
+					(id.startsWith("@") ? id : id.charAt(0).toUpperCase() + id.slice(1))
+				const icon = item.icon || id.toLowerCase()
+				const description = item.description || ""
+				return { ...item, id, label, icon, description }
+			}
+			return null
+		})
+		.filter(Boolean)
+}
+
+export function formatAgentType(type, agentTypes = []) {
 	if (!type || typeof type !== "string") return "Workspace"
 	const t = type.trim()
 	if (t.startsWith("@")) return t
+
+	if (Array.isArray(agentTypes) && agentTypes.length > 0) {
+		const found = agentTypes.find((item) => {
+			const itemId = typeof item === "object" ? item.id : item
+			return itemId && String(itemId).toLowerCase() === t.toLowerCase()
+		})
+		if (found && typeof found === "object" && found.label) {
+			return found.label
+		}
+	}
+
 	const found = DEFAULT_AGENT_TYPES.find((d) => d.id === t.toLowerCase())
 	if (found) return found.label
 	return t.charAt(0).toUpperCase() + t.slice(1)
@@ -1115,9 +1287,23 @@ export function getAgentPromptConfig(
 		...(sessionMetadata || {}),
 	}
 
-	const rawMode = meta.agent_mode || meta.agentMode || meta.mode
-	const agentMode = normalizeAgentMode(rawMode)
+	const rawModes =
+		meta.agent_modes ||
+		meta.modes ||
+		meta.supported_modes ||
+		bot?.metadata?.agent_modes ||
+		bot?.metadata?.modes ||
+		bot?.metadata?.supported_modes
+	const modes = normalizeAgentModes(rawModes)
+	const agentModes = modes.map((m) => m.id)
 
+	const rawMode = meta.agent_mode || meta.agentMode || meta.mode
+	let agentMode = normalizeAgentMode(rawMode)
+	if (modes.length > 0 && !modes.some((m) => m.id === agentMode)) {
+		agentMode = modes[0].id
+	}
+
+	const worktreeSupported = isWorktreeSupported(meta, bot, projectInfo)
 	const rawWorktree =
 		meta.use_worktree !== undefined
 			? meta.use_worktree
@@ -1126,9 +1312,20 @@ export function getAgentPromptConfig(
 				: meta.worktree !== undefined
 					? meta.worktree
 					: meta.working_mode === "worktree"
-	const useWorktree = normalizeWorktree(rawWorktree)
+	const useWorktree = worktreeSupported ? normalizeWorktree(rawWorktree) : false
 
-	const baseBranch =
+	const rawBranches =
+		meta.branches ||
+		meta.available_branches ||
+		meta.base_branches ||
+		meta.git_branches ||
+		meta.project?.branches ||
+		bot?.metadata?.branches ||
+		bot?.metadata?.available_branches ||
+		bot?.metadata?.base_branches
+	const availableBranches = normalizeBranches(rawBranches)
+
+	const projectBranch =
 		meta.base_branch ||
 		meta.baseBranch ||
 		meta.branch ||
@@ -1137,31 +1334,56 @@ export function getAgentPromptConfig(
 		conv?.metadata?.baseBranch ||
 		conv?.metadata?.branch ||
 		projectInfo?.branch ||
+		availableBranches[0] ||
 		"main"
+	const baseBranch = projectBranch
+
+	if (baseBranch && !availableBranches.includes(baseBranch)) {
+		availableBranches.unshift(baseBranch)
+	}
+
+	const rawAgentTypes =
+		meta.agent_types ||
+		meta.agentTypes ||
+		meta.roles ||
+		meta.subagents ||
+		bot?.metadata?.agent_types ||
+		bot?.metadata?.agentTypes ||
+		bot?.metadata?.roles
+	const agentTypeItems = normalizeAgentTypes(rawAgentTypes)
+	const agentTypes =
+		Array.isArray(rawAgentTypes) && rawAgentTypes.length > 0
+			? typeof rawAgentTypes[0] === "object"
+				? agentTypeItems
+				: rawAgentTypes.map((t) => String(t).trim()).filter(Boolean)
+			: agentTypeItems
+
+	const defaultTypeId =
+		agentTypeItems[0]?.id ||
+		(typeof agentTypes[0] === "object" ? agentTypes[0].id : agentTypes[0]) ||
+		"workspace"
 
 	const rawAgentType =
 		meta.agent_type ||
 		meta.agentType ||
 		conv?.metadata?.agent_type ||
 		conv?.metadata?.agentType ||
-		"workspace"
+		defaultTypeId
 	const agentType =
-		typeof rawAgentType === "string" && rawAgentType.trim() ? rawAgentType.trim() : "workspace"
-
-	let agentTypesList =
-		meta.agent_types || meta.agentTypes || bot?.metadata?.agent_types || bot?.metadata?.agentTypes
-	if (!Array.isArray(agentTypesList) || agentTypesList.length === 0) {
-		agentTypesList = ["workspace", "coder", "architect", "reviewer"]
-	}
+		typeof rawAgentType === "string" && rawAgentType.trim()
+			? rawAgentType.trim()
+			: defaultTypeId
 
 	return {
+		modes,
+		agentModes,
 		agentMode,
+		worktreeSupported,
 		useWorktree,
 		baseBranch,
+		availableBranches,
 		agentType,
-		agentTypes: agentTypesList
-			.map(String)
-			.map((s) => s.trim())
-			.filter(Boolean),
+		agentTypes,
+		agentTypeItems,
 	}
 }
