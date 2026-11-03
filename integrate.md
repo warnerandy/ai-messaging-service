@@ -1118,9 +1118,17 @@ Push `sync_sessions` over WebSocket (`bot:<CHANNEL_CODE>`):
         "status": "running",
         "last_user_input_time": "2026-10-07T12:30:00Z",
         "last_modified_time": "2026-10-07T12:45:00Z",
+        "agent_mode": "plan",
+        "use_worktree": true,
+        "base_branch": "main",
+        "agent_type": "architect",
         "metadata": {
           "step": "Running mix compile",
           "tool": "run_command",
+          "agent_mode": "plan",
+          "use_worktree": true,
+          "base_branch": "main",
+          "agent_type": "architect",
           "project": {
             "name": "ai-messaging-service",
             "path": "/home/dev/ai-messaging-service",
