@@ -6,6 +6,7 @@ import {
 } from "@assistant-ui/react"
 import PromptQueue from "./PromptQueue.jsx"
 import AgentPromptControls from "./AgentPromptControls.jsx"
+import { normalizeAgentTypes } from "../lib/projectInfo.js"
 
 export const AGENT_TYPES = [
 	{ id: "general", label: "Auto", icon: "🤖", title: "General Assistant (Adaptive)" },
@@ -63,7 +64,7 @@ export default function AssistantChatComposer({
 	baseBranch = "main",
 	onBaseBranchChange,
 	availableBranches = [],
-	agentTypes = ["workspace", "coder", "architect", "reviewer"],
+	agentTypes = null,
 	isAHP = true,
 	showPromptControls = true,
 }) {
@@ -156,9 +157,19 @@ export default function AssistantChatComposer({
 		[onAddAttachments],
 	)
 
+	const normalizedAgentList = useMemo(() => {
+		if (Array.isArray(agentTypes) && agentTypes.length > 0) {
+			return normalizeAgentTypes(agentTypes)
+		}
+		return AGENT_TYPES
+	}, [agentTypes])
+
 	const activeAgent = useMemo(
-		() => AGENT_TYPES.find((a) => a.id === selectedAgentType) || AGENT_TYPES[0],
-		[selectedAgentType],
+		() =>
+			normalizedAgentList.find((a) => a.id === selectedAgentType) ||
+			normalizedAgentList[0] ||
+			AGENT_TYPES[0],
+		[normalizedAgentList, selectedAgentType],
 	)
 
 	const activeSkill = useMemo(
@@ -418,8 +429,8 @@ export default function AssistantChatComposer({
 
 								{showAgentMenu && (
 									<div className="aui-dropdown-menu" data-testid="agent-type-menu">
-										<div className="aui-dropdown-header">Agent Type</div>
-										{AGENT_TYPES.map((agent) => (
+										<div className="aui-dropdown-header">Agent Role</div>
+										{normalizedAgentList.map((agent) => (
 											<button
 												key={agent.id}
 												type="button"
@@ -429,10 +440,14 @@ export default function AssistantChatComposer({
 													setShowAgentMenu(false)
 												}}
 											>
-												<span className="aui-item-icon">{agent.icon}</span>
+												<span className="aui-item-icon">{agent.icon || "🤖"}</span>
 												<div className="aui-item-text">
 													<div className="aui-item-title">{agent.label}</div>
-													<div className="aui-item-desc">{agent.title}</div>
+													{agent.description ? (
+														<div className="aui-item-desc">{agent.description}</div>
+													) : agent.title ? (
+														<div className="aui-item-desc">{agent.title}</div>
+													) : null}
 												</div>
 												{selectedAgentType === agent.id && (
 													<span className="aui-item-check">✓</span>

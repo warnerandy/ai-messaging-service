@@ -60,6 +60,8 @@ defmodule MessagingWeb.Router do
     get "/messages", MessageController, :index
     put "/messages/:id/acknowledge", MessageController, :acknowledge
     put "/status", StatusController, :update
+    put "/capabilities", StatusController, :update_capabilities
+    post "/capabilities", StatusController, :update_capabilities
     put "/models", ModelController, :update
     get "/channel", ChannelController, :show
     post "/conversations/:conversation_id/assets", AssetController, :upload

@@ -33,6 +33,7 @@ defmodule MessagingWeb.ConversationChannel do
          conversation_id: conversation.id,
          status: conversation.status,
          metadata: conversation.metadata,
+         bot_metadata: conversation.bot_token && conversation.bot_token.metadata,
          external_session_id: conversation.external_session_id
        },
        socket
@@ -255,7 +256,13 @@ defmodule MessagingWeb.ConversationChannel do
       |> maybe_put_field("agent_type", merged_config["agent_type"] || merged_config["agentType"])
       |> maybe_put_field(
         "agent_types",
-        merged_config["agent_types"] || merged_config["agentTypes"] || merged_config["roles"]
+        merged_config["agent_types"] || merged_config["agentTypes"] || merged_config["roles"] ||
+          merged_config["agent_roles"] || merged_config["agentRoles"]
+      )
+      |> maybe_put_field(
+        "agent_roles",
+        merged_config["agent_roles"] || merged_config["agentRoles"] || merged_config["roles"] ||
+          merged_config["agent_types"] || merged_config["agentTypes"]
       )
 
     full_update = Map.merge(merged_config, canonical)

@@ -71,6 +71,11 @@ defmodule MessagingWeb.BotChannel do
   end
 
   @impl true
+  def handle_info({:bot_updated, updated_bot}, socket) do
+    {:noreply, assign(socket, :bot_token, updated_bot)}
+  end
+
+  @impl true
   def handle_info({:create_session, payload}, socket) do
     Logger.info(
       "[BotChannel] pushing create_session session_id=#{payload["external_session_id"]} conv_id=#{payload["conversation_id"]} bot_token_id=#{socket.assigns.bot_token.id}"
@@ -184,20 +189,168 @@ defmodule MessagingWeb.BotChannel do
       {:reply, {:error, %{reason: "not_found"}}, socket}
   end
 
-  # Bot updates its working status
-  def handle_in("update_status", %{"is_working" => is_working}, socket) do
+  # Bot updates its working status and/or advertised capabilities
+  def handle_in("update_status", payload, socket) when is_map(payload) do
     bot_token = socket.assigns.bot_token
+    is_working = payload["is_working"]
+
+    extra_meta =
+      payload
+      |> Map.take([
+        "capabilities",
+        "agent_roles",
+        "agentRoles",
+        "agent_types",
+        "agentTypes",
+        "roles",
+        "modes",
+        "agent_modes",
+        "agentModes",
+        "supported_modes",
+        "worktree_supported",
+        "supports_worktree",
+        "allow_worktree",
+        "branches",
+        "available_branches",
+        "base_branches"
+      ])
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+      |> Map.new()
+
+    raw_meta = payload["metadata"] || %{}
+    data_meta = if is_map(raw_meta), do: Map.merge(raw_meta, extra_meta), else: extra_meta
+
+    attrs = %{}
+    attrs = if is_boolean(is_working), do: Map.put(attrs, :is_working, is_working), else: attrs
+
+    attrs =
+      if map_size(data_meta) > 0 do
+        Map.put(attrs, :metadata, Map.merge(bot_token.metadata || %{}, data_meta))
+      else
+        attrs
+      end
 
     Logger.info(
-      "[BotChannel] update_status is_working=#{is_working} bot_token_id=#{bot_token.id}"
+      "[BotChannel] update_status is_working=#{inspect(is_working)} bot_token_id=#{bot_token.id}"
     )
 
-    Bots.update_bot_status(bot_token, %{is_working: is_working})
-    {:reply, :ok, socket}
+    case Bots.update_bot_status(bot_token, attrs) do
+      {:ok, updated} ->
+        {:reply, {:ok, %{is_working: updated.is_working, metadata: updated.metadata}},
+         assign(socket, :bot_token, updated)}
+
+      {:error, changeset} ->
+        {:reply, {:error, %{errors: format_errors(changeset)}}, socket}
+    end
+  end
+
+  # Bot registers or synchronizes capabilities, agent roles, modes, or branches
+  def handle_in(event, payload, socket)
+      when event in [
+             "update_capabilities",
+             "register_capabilities",
+             "capabilities",
+             "set_capabilities",
+             "sync_capabilities",
+             "bot_info"
+           ] do
+    bot_token = socket.assigns.bot_token
+
+    extra_meta =
+      payload
+      |> Map.take([
+        "capabilities",
+        "agent_roles",
+        "agentRoles",
+        "agent_types",
+        "agentTypes",
+        "roles",
+        "modes",
+        "agent_modes",
+        "agentModes",
+        "supported_modes",
+        "worktree_supported",
+        "supports_worktree",
+        "allow_worktree",
+        "branches",
+        "available_branches",
+        "base_branches"
+      ])
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+      |> Map.new()
+
+    raw_meta = payload["metadata"] || payload["config"] || payload["data"] || payload
+
+    data_meta =
+      if is_map(raw_meta) do
+        Map.merge(raw_meta, extra_meta)
+      else
+        Map.put(extra_meta, "capabilities", raw_meta)
+      end
+
+    merged = Map.merge(bot_token.metadata || %{}, data_meta)
+
+    Logger.info("[BotChannel] #{event} bot_token_id=#{bot_token.id}")
+
+    case Bots.update_bot_status(bot_token, %{metadata: merged}) do
+      {:ok, updated} ->
+        {:reply, {:ok, %{metadata: updated.metadata}}, assign(socket, :bot_token, updated)}
+
+      {:error, changeset} ->
+        {:reply, {:error, %{errors: format_errors(changeset)}}, socket}
+    end
   end
 
   # Bot synchronizes active AHP sessions
-  def handle_in("sync_sessions", %{"sessions" => sessions}, socket) do
+  def handle_in("sync_sessions", payload, socket) when is_map(payload) do
+    bot_token = socket.assigns.bot_token
+    sessions = payload["sessions"] || []
+
+    # Extract any top-level capabilities, agent roles, modes, or branches advertised in sync_sessions
+    extra_bot_meta =
+      payload
+      |> Map.take([
+        "capabilities",
+        "agent_roles",
+        "agentRoles",
+        "agent_types",
+        "agentTypes",
+        "roles",
+        "modes",
+        "agent_modes",
+        "agentModes",
+        "supported_modes",
+        "worktree_supported",
+        "supports_worktree",
+        "allow_worktree",
+        "branches",
+        "available_branches",
+        "base_branches"
+      ])
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+      |> Map.new()
+
+    raw_meta = payload["metadata"] || %{}
+
+    extra_bot_meta =
+      if is_map(raw_meta) do
+        Map.merge(raw_meta, extra_bot_meta)
+      else
+        extra_bot_meta
+      end
+
+    socket =
+      if map_size(extra_bot_meta) > 0 do
+        merged = Map.merge(bot_token.metadata || %{}, extra_bot_meta)
+
+        case Bots.update_bot_status(bot_token, %{metadata: merged}) do
+          {:ok, updated} -> assign(socket, :bot_token, updated)
+          _ -> socket
+        end
+      else
+        socket
+      end
+
     bot_token = socket.assigns.bot_token
 
     Logger.info(
@@ -226,7 +379,7 @@ defmodule MessagingWeb.BotChannel do
         }
       end)
 
-    {:reply, {:ok, %{sessions: serialized}}, socket}
+    {:reply, {:ok, %{sessions: serialized, metadata: bot_token.metadata}}, socket}
   end
 
   # Bot updates sub-chat / session status (e.g. idle, running, waiting_for_input)
@@ -283,12 +436,46 @@ defmodule MessagingWeb.BotChannel do
         "agentType",
         "agent_types",
         "agentTypes",
-        "roles"
+        "roles",
+        "agent_roles",
+        "agentRoles",
+        "capabilities"
       ])
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()
 
     metadata = Map.merge(extra_meta, raw_metadata)
+
+    # If session advertised bot-level capabilities or roles, preserve them on the bot token as well
+    bot_capabilities =
+      metadata
+      |> Map.take([
+        "agent_roles",
+        "agentRoles",
+        "agent_types",
+        "agentTypes",
+        "roles",
+        "capabilities",
+        "modes",
+        "agent_modes",
+        "branches",
+        "available_branches",
+        "worktree_supported"
+      ])
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+      |> Map.new()
+
+    socket =
+      if map_size(bot_capabilities) > 0 do
+        merged = Map.merge(bot_token.metadata || %{}, bot_capabilities)
+
+        case Bots.update_bot_status(bot_token, %{metadata: merged}) do
+          {:ok, updated} -> assign(socket, :bot_token, updated)
+          _ -> socket
+        end
+      else
+        socket
+      end
 
     Logger.info(
       "[BotChannel] session_status conversation_id=#{conv.id} status=#{status} bot_token_id=#{bot_token.id}"
@@ -354,8 +541,39 @@ defmodule MessagingWeb.BotChannel do
       event_type in ["plan", "changeset"] and is_map(data) ->
         Chat.update_session_status(conv.id, conv.status, %{event_type => data})
 
-      event_type in ["session_config", "mode_change", "config"] and is_map(data) ->
+      event_type in [
+        "session_config",
+        "mode_change",
+        "config",
+        "capabilities",
+        "capabilities_sync",
+        "agent_roles",
+        "roles"
+      ] and is_map(data) ->
         Chat.update_session_metadata(conv.id, data)
+
+        bot_roles =
+          data
+          |> Map.take([
+            "agent_roles",
+            "agentRoles",
+            "agent_types",
+            "agentTypes",
+            "roles",
+            "capabilities",
+            "modes",
+            "agent_modes",
+            "branches",
+            "available_branches",
+            "worktree_supported"
+          ])
+          |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+          |> Map.new()
+
+        if map_size(bot_roles) > 0 do
+          new_meta = Map.merge(bot_token.metadata || %{}, bot_roles)
+          Bots.update_bot_status(bot_token, %{metadata: new_meta})
+        end
 
       true ->
         :ok

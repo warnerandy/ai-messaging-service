@@ -71,6 +71,18 @@ defmodule Messaging.Bots do
           {:bot_status_changed, updated}
         )
 
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "bot_sessions:#{updated.id}",
+          {:bot_updated, updated}
+        )
+
+        Phoenix.PubSub.broadcast(
+          Messaging.PubSub,
+          "bot:#{updated.id}",
+          {:bot_updated, updated}
+        )
+
       _ ->
         :ok
     end)

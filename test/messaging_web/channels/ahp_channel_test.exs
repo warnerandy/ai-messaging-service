@@ -482,4 +482,95 @@ defmodule MessagingWeb.AhpChannelTest do
     assert status_meta["base_branch"] == "main"
     assert status_meta["agent_type"] == "coder"
   end
+
+  test "syncs agent_roles and capabilities via sync_sessions, update_capabilities, and session_status",
+       %{
+         user: user,
+         bot_token: bot,
+         bot_socket: bot_socket,
+         user_socket: user_socket
+       } do
+    {:ok, _, bot_channel} =
+      subscribe_and_join(bot_socket, BotChannel, "bot:#{bot.channel_code}", %{})
+
+    # 1. Bot pushes sync_sessions with top-level agent_roles and capabilities
+    ref =
+      push(bot_channel, "sync_sessions", %{
+        "agent_roles" => [
+          %{"id" => "sec_auditor", "label" => "Security Auditor"},
+          %{"id" => "db_admin", "label" => "Database Specialist"}
+        ],
+        "worktree_supported" => true,
+        "sessions" => [
+          %{
+            "session_id" => "sess-cap-test",
+            "title" => "Capabilities Test Session",
+            "status" => "idle"
+          }
+        ]
+      })
+
+    assert_reply ref, :ok, %{sessions: _sessions, metadata: updated_bot_meta}
+
+    assert_push "create_session", %{"session_id" => "sess-cap-test"}
+    assert_push "request_session_sync", %{"session_id" => "sess-cap-test"}
+
+    assert updated_bot_meta["agent_roles"] == [
+             %{"id" => "sec_auditor", "label" => "Security Auditor"},
+             %{"id" => "db_admin", "label" => "Database Specialist"}
+           ]
+
+    assert updated_bot_meta["worktree_supported"] == true
+
+    # 2. Join bot_sessions channel to verify it receives bot metadata
+    {:ok, resp, _sessions_channel} =
+      subscribe_and_join(
+        user_socket,
+        MessagingWeb.BotSessionsChannel,
+        "bot_sessions:#{bot.id}",
+        %{}
+      )
+
+    assert resp.bot.metadata["agent_roles"] == [
+             %{"id" => "sec_auditor", "label" => "Security Auditor"},
+             %{"id" => "db_admin", "label" => "Database Specialist"}
+           ]
+
+    # 3. Bot pushes update_capabilities event
+    ref2 =
+      push(bot_channel, "update_capabilities", %{
+        "capabilities" => %{
+          "agent_roles" => [
+            %{"id" => "devops", "label" => "DevOps Engineer"}
+          ],
+          "modes" => ["interactive", "plan", "autopilot"]
+        }
+      })
+
+    assert_reply ref2, :ok, %{metadata: cap_meta}
+
+    assert cap_meta["capabilities"]["agent_roles"] == [
+             %{"id" => "devops", "label" => "DevOps Engineer"}
+           ]
+
+    # 4. Create a new conversation and verify it inherits bot capabilities and transmits them in create_session push
+    {:ok, new_conv} =
+      Messaging.Chat.create_conversation(%{
+        user_id: user.id,
+        bot_token_id: bot.id,
+        title: "New Session Capabilities Test"
+      })
+
+    assert new_conv.metadata["agent_roles"] != nil
+
+    new_conv_id = new_conv.id
+
+    assert_push "create_session", %{
+      "conversation_id" => ^new_conv_id,
+      "agent_roles" => pushed_roles
+    }
+
+    assert is_list(pushed_roles)
+    assert length(pushed_roles) > 0
+  end
 end

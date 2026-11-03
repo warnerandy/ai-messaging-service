@@ -413,6 +413,13 @@ export function useWorkspaceData() {
 			)
 		})
 
+		channel.on("bot_updated", (payload) => {
+			if (!payload?.bot || cancelled) return
+			setBots((prev) =>
+				prev.map((b) => (b.id === payload.bot.id ? { ...b, ...payload.bot } : b)),
+			)
+		})
+
 		channel.on("bot_sessions_updated", (payload) => {
 			if (!payload?.sessions || cancelled) return
 			setConversations((prev) => {
@@ -466,6 +473,11 @@ export function useWorkspaceData() {
 			.join()
 			.receive("ok", (resp) => {
 				if (cancelled) return
+				if (resp?.bot) {
+					setBots((prev) =>
+						prev.map((b) => (b.id === resp.bot.id ? { ...b, ...resp.bot } : b)),
+					)
+				}
 				if (Array.isArray(resp?.sessions)) {
 					setConversations((prev) => {
 						const map = new Map(prev.map((c) => [c.id, c]))

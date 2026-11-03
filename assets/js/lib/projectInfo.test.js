@@ -586,6 +586,17 @@ test("normalizeAgentTypes dynamically accepts roles from integration", () => {
 	assert.equal(roles[0].description, "Checks vulnerabilities")
 	assert.equal(roles[1].id, "debugger")
 	assert.equal(roles[1].label, "Debugger")
+
+	// Object / dictionary format:
+	const objRoles = normalizeAgentTypes({
+		frontend: { label: "UI Specialist", description: "React / CSS" },
+		backend: "API Engineer",
+	})
+	assert.equal(objRoles.length, 2)
+	assert.equal(objRoles[0].id, "frontend")
+	assert.equal(objRoles[0].label, "UI Specialist")
+	assert.equal(objRoles[1].id, "backend")
+	assert.equal(objRoles[1].label, "API Engineer")
 })
 
 test("getAgentPromptConfig dynamically populates options synced from integration", () => {
@@ -593,7 +604,7 @@ test("getAgentPromptConfig dynamically populates options synced from integration
 		metadata: {
 			branches: ["main", "feature/copilot-sync", "dev"],
 			agent_modes: ["interactive", "plan", "review"],
-			agent_types: [
+			agent_roles: [
 				{ id: "architect", label: "Lead Architect" },
 				{ id: "tester", label: "QA Specialist" },
 			],
@@ -614,4 +625,23 @@ test("getAgentPromptConfig dynamically populates options synced from integration
 	assert.equal(cfg.agentType, "architect")
 	assert.equal(cfg.agentTypes.length, 2)
 	assert.equal(cfg.agentTypeItems[0].label, "Lead Architect")
+
+	// Capabilities nested in bot metadata
+	const botWithCaps = {
+		id: 1,
+		metadata: {
+			capabilities: {
+				agent_roles: [
+					{ id: "devops", label: "Cloud & CI/CD", description: "Kubernetes & Pipelines" },
+				],
+				worktree_supported: true,
+				modes: [{ id: "autopilot", label: "Autopilot" }],
+			},
+		},
+	}
+	const botCfg = getAgentPromptConfig({}, null, null, botWithCaps)
+	assert.equal(botCfg.agentTypes.length, 1)
+	assert.equal(botCfg.agentTypeItems[0].id, "devops")
+	assert.equal(botCfg.agentTypeItems[0].label, "Cloud & CI/CD")
+	assert.equal(botCfg.worktreeSupported, true)
 })

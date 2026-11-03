@@ -1181,10 +1181,12 @@ export function isWorktreeSupported(meta = {}, bot = null, _projectInfo = null) 
 	if (meta && meta.worktree_supported !== undefined) return Boolean(meta.worktree_supported)
 	if (meta && meta.supports_worktree !== undefined) return Boolean(meta.supports_worktree)
 	if (meta && meta.allow_worktree !== undefined) return Boolean(meta.allow_worktree)
+	if (meta && meta.capabilities?.worktree_supported !== undefined) return Boolean(meta.capabilities.worktree_supported)
 
 	if (bot?.metadata?.worktree_supported !== undefined) return Boolean(bot.metadata.worktree_supported)
 	if (bot?.metadata?.supports_worktree !== undefined) return Boolean(bot.metadata.supports_worktree)
 	if (bot?.metadata?.allow_worktree !== undefined) return Boolean(bot.metadata.allow_worktree)
+	if (bot?.metadata?.capabilities?.worktree_supported !== undefined) return Boolean(bot.metadata.capabilities.worktree_supported)
 
 	if (bot?.bot_type === "chat") return false
 	return true
@@ -1224,14 +1226,38 @@ export function normalizeAgentTypes(rawTypes) {
 	if (rawTypes === null || rawTypes === undefined) {
 		return DEFAULT_AGENT_TYPES.map((t) => ({ ...t }))
 	}
-	if (!Array.isArray(rawTypes)) {
+	let list = rawTypes
+	if (!Array.isArray(rawTypes) && typeof rawTypes === "object") {
+		if (Array.isArray(rawTypes.agent_roles)) {
+			list = rawTypes.agent_roles
+		} else if (Array.isArray(rawTypes.agentRoles)) {
+			list = rawTypes.agentRoles
+		} else if (Array.isArray(rawTypes.agent_types)) {
+			list = rawTypes.agent_types
+		} else if (Array.isArray(rawTypes.agentTypes)) {
+			list = rawTypes.agentTypes
+		} else if (Array.isArray(rawTypes.roles)) {
+			list = rawTypes.roles
+		} else {
+			list = Object.entries(rawTypes).map(([key, val]) => {
+				if (typeof val === "string") {
+					return { id: key, label: val, description: val }
+				}
+				if (typeof val === "object" && val !== null) {
+					return { id: key, ...val }
+				}
+				return { id: key }
+			})
+		}
+	}
+	if (!Array.isArray(list)) {
 		return DEFAULT_AGENT_TYPES.map((t) => ({ ...t }))
 	}
-	if (rawTypes.length === 0) {
+	if (list.length === 0) {
 		return []
 	}
 
-	return rawTypes
+	return list
 		.map((item) => {
 			if (typeof item === "string") {
 				const id = item.trim()
@@ -1246,7 +1272,7 @@ export function normalizeAgentTypes(rawTypes) {
 				}
 			}
 			if (typeof item === "object" && item !== null) {
-				const id = String(item.id || item.name || item.type || "").trim()
+				const id = String(item.id || item.name || item.type || item.role || "").trim()
 				if (!id) return null
 				const label =
 					item.label ||
@@ -1295,10 +1321,16 @@ export function getAgentPromptConfig(
 	const rawModes =
 		meta.agent_modes ||
 		meta.modes ||
+		meta.agentModes ||
 		meta.supported_modes ||
+		meta.capabilities?.modes ||
+		meta.capabilities?.agent_modes ||
 		bot?.metadata?.agent_modes ||
 		bot?.metadata?.modes ||
-		bot?.metadata?.supported_modes
+		bot?.metadata?.agentModes ||
+		bot?.metadata?.supported_modes ||
+		bot?.metadata?.capabilities?.modes ||
+		bot?.metadata?.capabilities?.agent_modes
 	const modes = normalizeAgentModes(rawModes)
 	const agentModes = modes.map((m) => m.id)
 
@@ -1325,9 +1357,11 @@ export function getAgentPromptConfig(
 		meta.base_branches ||
 		meta.git_branches ||
 		meta.project?.branches ||
+		meta.capabilities?.branches ||
 		bot?.metadata?.branches ||
 		bot?.metadata?.available_branches ||
-		bot?.metadata?.base_branches
+		bot?.metadata?.base_branches ||
+		bot?.metadata?.capabilities?.branches
 	const availableBranches = normalizeBranches(rawBranches)
 
 	const projectBranch =
@@ -1348,13 +1382,30 @@ export function getAgentPromptConfig(
 	}
 
 	const rawAgentTypes =
+		meta.agent_roles ||
+		meta.agentRoles ||
 		meta.agent_types ||
 		meta.agentTypes ||
 		meta.roles ||
 		meta.subagents ||
+		meta.capabilities?.agent_roles ||
+		meta.capabilities?.agentRoles ||
+		meta.capabilities?.agent_types ||
+		meta.capabilities?.agentTypes ||
+		meta.capabilities?.roles ||
+		meta.capabilities?.subagents ||
+		bot?.metadata?.agent_roles ||
+		bot?.metadata?.agentRoles ||
 		bot?.metadata?.agent_types ||
 		bot?.metadata?.agentTypes ||
-		bot?.metadata?.roles
+		bot?.metadata?.roles ||
+		bot?.metadata?.subagents ||
+		bot?.metadata?.capabilities?.agent_roles ||
+		bot?.metadata?.capabilities?.agentRoles ||
+		bot?.metadata?.capabilities?.agent_types ||
+		bot?.metadata?.capabilities?.agentTypes ||
+		bot?.metadata?.capabilities?.roles ||
+		bot?.metadata?.capabilities?.subagents
 	const agentTypeItems = normalizeAgentTypes(rawAgentTypes)
 	const agentTypes =
 		Array.isArray(rawAgentTypes) && rawAgentTypes.length > 0

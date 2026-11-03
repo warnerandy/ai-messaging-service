@@ -188,6 +188,52 @@ defmodule Messaging.Chat do
       end
     end
 
+    bot_token =
+      if bot_token_id do
+        Repo.get(Messaging.Bots.BotToken, bot_token_id)
+      end
+
+    bot_meta = if bot_token, do: bot_token.metadata || %{}, else: %{}
+
+    bot_capabilities =
+      bot_meta
+      |> Map.take([
+        "capabilities",
+        "agent_roles",
+        "agentRoles",
+        "agent_types",
+        "agentTypes",
+        "roles",
+        "modes",
+        "agent_modes",
+        "agentModes",
+        "supported_modes",
+        "worktree_supported",
+        "supports_worktree",
+        "allow_worktree",
+        "branches",
+        "available_branches",
+        "base_branches",
+        "base_branch",
+        "agent_mode",
+        "agent_type"
+      ])
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+      |> Map.new()
+
+    raw_conv_meta = attrs[:metadata] || attrs["metadata"] || %{}
+    merged_conv_meta = Map.merge(bot_capabilities, raw_conv_meta)
+
+    attrs =
+      cond do
+        Map.has_key?(attrs, :user_id) or Map.has_key?(attrs, :bot_token_id) or
+          Map.has_key?(attrs, :title) or Map.has_key?(attrs, :metadata) ->
+          Map.put(attrs, :metadata, merged_conv_meta)
+
+        true ->
+          Map.put(attrs, "metadata", merged_conv_meta)
+      end
+
     %Conversation{}
     |> Conversation.changeset(attrs)
     |> Repo.insert()
@@ -199,15 +245,38 @@ defmodule Messaging.Chat do
           {:conversation_created, conv}
         )
 
-        create_payload = %{
-          "conversation_id" => conv.id,
-          "session_id" => conv.external_session_id,
-          "external_session_id" => conv.external_session_id,
-          "title" => conv.title,
-          "status" => conv.status,
-          "metadata" => conv.metadata || %{},
-          "created_at" => DateTime.to_iso8601(conv.inserted_at)
-        }
+        create_payload =
+          %{
+            "conversation_id" => conv.id,
+            "session_id" => conv.external_session_id,
+            "external_session_id" => conv.external_session_id,
+            "title" => conv.title,
+            "status" => conv.status,
+            "metadata" => conv.metadata || %{},
+            "capabilities" => (conv.metadata || %{})["capabilities"] || bot_meta["capabilities"],
+            "agent_roles" =>
+              (conv.metadata || %{})["agent_roles"] || (conv.metadata || %{})["agent_types"] ||
+                bot_meta["agent_roles"] || bot_meta["agent_types"],
+            "agent_types" =>
+              (conv.metadata || %{})["agent_types"] || (conv.metadata || %{})["agent_roles"] ||
+                bot_meta["agent_types"] || bot_meta["agent_roles"],
+            "modes" =>
+              (conv.metadata || %{})["modes"] || (conv.metadata || %{})["agent_modes"] ||
+                bot_meta["modes"] || bot_meta["agent_modes"],
+            "branches" =>
+              (conv.metadata || %{})["branches"] ||
+                (conv.metadata || %{})["available_branches"] ||
+                bot_meta["branches"] || bot_meta["available_branches"],
+            "base_branch" => (conv.metadata || %{})["base_branch"] || bot_meta["base_branch"],
+            "agent_mode" => (conv.metadata || %{})["agent_mode"] || bot_meta["agent_mode"],
+            "agent_type" => (conv.metadata || %{})["agent_type"] || bot_meta["agent_type"],
+            "use_worktree" => (conv.metadata || %{})["use_worktree"],
+            "worktree_supported" =>
+              (conv.metadata || %{})["worktree_supported"] || bot_meta["worktree_supported"],
+            "created_at" => DateTime.to_iso8601(conv.inserted_at)
+          }
+          |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+          |> Map.new()
 
         Phoenix.PubSub.broadcast(
           Messaging.PubSub,

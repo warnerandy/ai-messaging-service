@@ -366,13 +366,20 @@ export default function ChatView({
 			if (cfg.agent_mode || cfg.agentMode || cfg.mode) {
 				setAgentMode(normalizeAgentMode(cfg.agent_mode || cfg.agentMode || cfg.mode))
 			}
-			if (cfg.agent_modes || cfg.modes || cfg.supported_modes) {
-				setAgentModes(normalizeAgentModes(cfg.agent_modes || cfg.modes || cfg.supported_modes))
+			const incomingModes =
+				cfg.agent_modes ||
+				cfg.modes ||
+				cfg.supported_modes ||
+				cfg.capabilities?.modes ||
+				cfg.capabilities?.agent_modes
+			if (incomingModes) {
+				setAgentModes(normalizeAgentModes(incomingModes))
 			}
 			if (
 				cfg.worktree_supported !== undefined ||
 				cfg.supports_worktree !== undefined ||
-				cfg.allow_worktree !== undefined
+				cfg.allow_worktree !== undefined ||
+				cfg.capabilities?.worktree_supported !== undefined
 			) {
 				setWorktreeSupported(isWorktreeSupported(cfg, bot))
 			}
@@ -394,20 +401,50 @@ export default function ChatView({
 			if (cfg.base_branch || cfg.baseBranch || cfg.branch || cfg.git_branch) {
 				setBaseBranch(cfg.base_branch || cfg.baseBranch || cfg.branch || cfg.git_branch)
 			}
-			if (cfg.branches || cfg.available_branches || cfg.base_branches) {
-				setAvailableBranches(
-					normalizeBranches(cfg.branches || cfg.available_branches || cfg.base_branches),
-				)
+			const incomingBranches =
+				cfg.branches ||
+				cfg.available_branches ||
+				cfg.base_branches ||
+				cfg.capabilities?.branches
+			if (incomingBranches) {
+				setAvailableBranches(normalizeBranches(incomingBranches))
 			}
 			if (cfg.agent_type || cfg.agentType) {
 				setSelectedAgentType(cfg.agent_type || cfg.agentType)
 			}
-			if (Array.isArray(cfg.agent_types || cfg.agentTypes || cfg.roles)) {
-				setAgentTypes(cfg.agent_types || cfg.agentTypes || cfg.roles)
+			const incomingRoles =
+				cfg.agent_roles ||
+				cfg.agentRoles ||
+				cfg.agent_types ||
+				cfg.agentTypes ||
+				cfg.roles ||
+				cfg.capabilities?.agent_roles ||
+				cfg.capabilities?.agentRoles ||
+				cfg.capabilities?.roles ||
+				cfg.capabilities?.agent_types ||
+				cfg.capabilities?.agentTypes
+			if (incomingRoles) {
+				setAgentTypes(normalizeAgentTypes(incomingRoles))
 			}
 		},
 		[bot],
 	)
+
+	// Keep prompt options (roles, modes, branches, worktree) in sync when bot changes or updates
+	useEffect(() => {
+		if (!bot) return
+		const cfg = getAgentPromptConfig(sessionMetadata, activeConv, projectInfo, bot)
+		if (cfg.modes && cfg.modes.length > 0) {
+			setAgentModes(cfg.modes)
+		}
+		if (cfg.agentTypes && cfg.agentTypes.length > 0) {
+			setAgentTypes(cfg.agentTypes)
+		}
+		setWorktreeSupported(cfg.worktreeSupported)
+		if (cfg.availableBranches && cfg.availableBranches.length > 0) {
+			setAvailableBranches(cfg.availableBranches)
+		}
+	}, [bot])
 
 	const handleModeChange = useCallback(
 		(newMode) => {
@@ -1088,7 +1125,11 @@ export default function ChatView({
 					} else if (
 						event_type === "session_config" ||
 						event_type === "mode_change" ||
-						event_type === "config"
+						event_type === "config" ||
+						event_type === "capabilities" ||
+						event_type === "capabilities_sync" ||
+						event_type === "agent_roles" ||
+						event_type === "roles"
 					) {
 						if (data && typeof data === "object") {
 							applyIncomingSessionConfig(data)

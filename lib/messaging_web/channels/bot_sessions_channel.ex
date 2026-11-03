@@ -11,6 +11,8 @@ defmodule MessagingWeb.BotSessionsChannel do
          bot_token when not is_nil(bot_token) <- Bots.get_bot_token!(id, user.id) do
       topic = "bot_sessions:#{bot_token.id}"
       Phoenix.PubSub.subscribe(Messaging.PubSub, topic)
+      Phoenix.PubSub.subscribe(Messaging.PubSub, "bot_status:#{user.id}")
+      Phoenix.PubSub.subscribe(Messaging.PubSub, "bot:#{bot_token.id}")
 
       sessions = Chat.list_conversations_for_bot(bot_token.id)
 
@@ -34,7 +36,16 @@ defmodule MessagingWeb.BotSessionsChannel do
           }
         end)
 
-      {:ok, %{bot_token_id: bot_token.id, sessions: serialized},
+      bot_payload = %{
+        id: bot_token.id,
+        name: bot_token.name,
+        bot_type: bot_token.bot_type,
+        metadata: bot_token.metadata || %{},
+        is_connected: bot_token.is_connected,
+        is_working: bot_token.is_working
+      }
+
+      {:ok, %{bot_token_id: bot_token.id, sessions: serialized, bot: bot_payload},
        assign(socket, :bot_token_id, bot_token.id)}
     else
       _ -> {:error, %{reason: "unauthorized"}}
@@ -108,6 +119,42 @@ defmodule MessagingWeb.BotSessionsChannel do
       conversation_id: conv_id,
       updated_at: timestamp
     })
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:bot_updated, updated_bot}, socket) do
+    if updated_bot.id == socket.assigns[:bot_token_id] do
+      push(socket, "bot_updated", %{
+        bot: %{
+          id: updated_bot.id,
+          name: updated_bot.name,
+          bot_type: updated_bot.bot_type,
+          metadata: updated_bot.metadata || %{},
+          is_connected: updated_bot.is_connected,
+          is_working: updated_bot.is_working
+        }
+      })
+    end
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:bot_status_changed, updated_bot}, socket) do
+    if updated_bot.id == socket.assigns[:bot_token_id] do
+      push(socket, "bot_updated", %{
+        bot: %{
+          id: updated_bot.id,
+          name: updated_bot.name,
+          bot_type: updated_bot.bot_type,
+          metadata: updated_bot.metadata || %{},
+          is_connected: updated_bot.is_connected,
+          is_working: updated_bot.is_working
+        }
+      })
+    end
 
     {:noreply, socket}
   end
