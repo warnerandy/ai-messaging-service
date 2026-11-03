@@ -212,6 +212,42 @@ defmodule Messaging.ChatAhpTest do
       assert refetched.status == "idle"
     end
 
+    test "create_message syncs session config metadata from user message into conversation metadata",
+         %{user: user, bot_token: bot} do
+      {:ok, conv} =
+        Chat.create_conversation(%{
+          user_id: user.id,
+          bot_token_id: bot.id,
+          title: "New Planning Session",
+          status: "idle",
+          metadata: %{}
+        })
+
+      assert conv.metadata["agent_mode"] == nil
+
+      # User submits first prompt with selected options
+      {:ok, _msg} =
+        Chat.create_message(%{
+          conversation_id: conv.id,
+          user_id: user.id,
+          role: "user",
+          body: "Plan the architecture",
+          metadata: %{
+            "agent_mode" => "plan",
+            "use_worktree" => true,
+            "base_branch" => "feature/v2",
+            "agent_type" => "architect"
+          }
+        })
+
+      # Conversation metadata is now updated with the user-selected options
+      refetched = Chat.get_conversation!(conv.id, [])
+      assert refetched.metadata["agent_mode"] == "plan"
+      assert refetched.metadata["use_worktree"] == true
+      assert refetched.metadata["base_branch"] == "feature/v2"
+      assert refetched.metadata["agent_type"] == "architect"
+    end
+
     test "prunes older abandoned default generic sessions that have no user messages", %{
       bot_token: bot
     } do

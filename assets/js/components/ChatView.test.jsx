@@ -780,4 +780,43 @@ describe("normalizeMessage", () => {
 		fireEvent.click(screen.getByLabelText(/configure working branch and worktree/i))
 		expect(screen.getByRole("button", { name: /hotfix\/patch/i })).toBeInTheDocument()
 	})
+
+	it("does not send update_session_config or updateConversation when selecting options on a new session", async () => {
+		const user = userEvent.setup()
+		const data = await import("../lib/data.js")
+		data.updateConversation.mockClear()
+
+		render(
+			<ChatView
+				token="fake"
+				bot={{ id: 1, name: "Atlas", bot_type: "ahp", is_connected: true }}
+				conversations={[
+					{
+						id: 12,
+						title: "Brand New Task",
+						status: "idle",
+						metadata: {},
+					},
+				]}
+				selectedConversationId={12}
+				models={[{ name: "gpt-4o" }]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		// Click Plan tab
+		const planTab = screen.getByRole("tab", { name: /plan mode/i })
+		await user.click(planTab)
+		expect(planTab).toHaveAttribute("aria-selected", "true")
+
+		// Click Autopilot tab
+		const autopilotTab = screen.getByRole("tab", { name: /autopilot mode/i })
+		await user.click(autopilotTab)
+		expect(autopilotTab).toHaveAttribute("aria-selected", "true")
+
+		// Verify updateConversation was NOT called over the wire
+		expect(data.updateConversation).not.toHaveBeenCalled()
+	})
 })

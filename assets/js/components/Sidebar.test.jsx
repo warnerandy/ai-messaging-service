@@ -1158,6 +1158,60 @@ describe("Sidebar", () => {
 			expect(backendHeader).toHaveAttribute("aria-expanded", "true")
 			expect(screen.getByText("Fix Migration Lock")).toBeInTheDocument()
 		})
+
+		it("deduplicates conversations by id and external_session_id so only 1 session item appears per session", () => {
+			const duplicateConversations = [
+				{
+					id: 101,
+					external_session_id: "ext-101",
+					title: "morpheus-ui Session",
+					status: "idle",
+					metadata: { project: { name: "morpheus-ui" } },
+				},
+				// Duplicate object with same id as number
+				{
+					id: 101,
+					external_session_id: "ext-101",
+					title: "morpheus-ui Session",
+					status: "idle",
+					metadata: { project: { name: "morpheus-ui" } },
+				},
+				// Duplicate object with id as string
+				{
+					id: "101",
+					external_session_id: "ext-101",
+					title: "morpheus-ui Session",
+					status: "idle",
+					metadata: { project: { name: "morpheus-ui" } },
+				},
+				{
+					id: 102,
+					external_session_id: "ext-102",
+					title: "Triage UI bugs",
+					status: "running",
+					metadata: { project: { name: "morpheus-ui" } },
+				},
+			]
+
+			render(
+				<Sidebar
+					token="token"
+					bots={[{ id: "bot-1", name: "AHP Agent", bot_type: "ahp" }]}
+					selectedBotId="bot-1"
+					conversations={duplicateConversations}
+					selectedConversationId={101}
+					onSelectConversation={vi.fn()}
+					isOpen
+				/>,
+			)
+
+			// There should only be 1 instance of morpheus-ui Session rendered, NOT 3
+			const sessionItems = screen.getAllByText("morpheus-ui Session")
+			expect(sessionItems).toHaveLength(1)
+
+			// Badge should show 2 total sessions under morpheus-ui
+			expect(screen.getByText("2")).toBeInTheDocument()
+		})
 	})
 
 	it("dispatches sync-active-conversation event when clicking already active conversation", async () => {

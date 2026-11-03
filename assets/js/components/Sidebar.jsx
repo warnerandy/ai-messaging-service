@@ -62,9 +62,23 @@ export function groupSessionsByProject(conversations = []) {
 
 	for (const conv of conversations) {
 		if (!conv) continue
-		const convKey = conv.id ?? conv.external_session_id
-		if (convKey && seenIds.has(convKey)) continue
-		if (convKey) seenIds.add(convKey)
+		const idStr = conv.id != null ? String(conv.id) : null
+		const extIdStr =
+			conv.external_session_id != null && conv.external_session_id !== ""
+				? String(conv.external_session_id)
+				: null
+		const metaSidStr =
+			conv.metadata?.session_id != null && conv.metadata.session_id !== ""
+				? String(conv.metadata.session_id)
+				: null
+
+		if (idStr && seenIds.has(idStr)) continue
+		if (extIdStr && seenIds.has(extIdStr)) continue
+		if (metaSidStr && seenIds.has(metaSidStr)) continue
+
+		if (idStr) seenIds.add(idStr)
+		if (extIdStr) seenIds.add(extIdStr)
+		if (metaSidStr) seenIds.add(metaSidStr)
 
 		const projectInfo = getSessionProjectInfo(conv)
 		let projectName = (projectInfo?.name || "").trim()
@@ -528,7 +542,10 @@ export default function Sidebar({
 						if (!c || c.status === "archived") return false
 
 						// Always keep current selected conversation visible so user doesn't lose context
-						const isSelected = c.id === selectedConversationId
+						const isSelected =
+							selectedConversationId != null &&
+							c.id != null &&
+							String(c.id) === String(selectedConversationId)
 						if (isSelected) return true
 
 						// Automatically hide idle/done conversations older than 5 days
@@ -642,21 +659,33 @@ export default function Sidebar({
 			? formatSessionTitle(parentConv.title || parentConv.external_session_id)
 			: parentId
 
+		const isSelected =
+			selectedConversationId != null &&
+			conv.id != null &&
+			String(conv.id) === String(selectedConversationId)
+
+		const itemKey =
+			conv.id != null
+				? `conv-${conv.id}`
+				: conv.external_session_id
+					? `conv-ext-${conv.external_session_id}`
+					: `conv-item-${parentId || "anon"}-${tooltipText || ""}`
+
 		return (
 			<div
-				key={conv.id}
-				className={`conv-item-wrapper ${isNested ? "conv-item-wrapper--nested" : ""} ${conv.id === selectedConversationId ? "conv-item-wrapper--active" : ""}`}
+				key={itemKey}
+				className={`conv-item-wrapper ${isNested ? "conv-item-wrapper--nested" : ""} ${isSelected ? "conv-item-wrapper--active" : ""}`}
 			>
 				<button
 					type="button"
-					className={`conv-item conv-item--two-row ${isNested ? "conv-item--nested" : ""} ${conv.id === selectedConversationId ? "conv-item--active" : ""} ${isDone ? "conv-item--done" : ""}`}
+					className={`conv-item conv-item--two-row ${isNested ? "conv-item--nested" : ""} ${isSelected ? "conv-item--active" : ""} ${isDone ? "conv-item--done" : ""}`}
 					data-nested={isNested ? "true" : undefined}
 					data-parent-id={parentId || undefined}
 					onClick={() => {
 						if (onSelectConversation) {
 							onSelectConversation(conv.id)
 						}
-						if (conv.id === selectedConversationId) {
+						if (isSelected) {
 							window.dispatchEvent(
 								new CustomEvent("sync-active-conversation", {
 									detail: { conversationId: conv.id },

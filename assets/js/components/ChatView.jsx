@@ -446,16 +446,24 @@ export default function ChatView({
 		}
 	}, [bot])
 
+	const hasUserPromptsRef = useRef(false)
+	hasUserPromptsRef.current =
+		(Array.isArray(messages) && messages.some((m) => !m.pending && m.role === "user")) ||
+		Boolean(activeConv?.last_message_at)
+
 	const handleModeChange = useCallback(
 		(newMode) => {
 			setAgentMode(newMode)
 			setSessionMetadata((prev) => ({ ...prev, agent_mode: newMode }))
-			channelRef.current?.push("update_session_config", { agent_mode: newMode })
 			onConversationStatusChange?.(selectedConversationId, null, { agent_mode: newMode })
-			if (selectedConversationId && token) {
-				updateConversation(token, selectedConversationId, {
-					metadata: { agent_mode: newMode },
-				}).catch(() => {})
+			// On a new session without user prompts, do not send anything over the wire until a prompt is submitted
+			if (hasUserPromptsRef.current) {
+				channelRef.current?.push("update_session_config", { agent_mode: newMode })
+				if (selectedConversationId && token) {
+					updateConversation(token, selectedConversationId, {
+						metadata: { agent_mode: newMode },
+					}).catch(() => {})
+				}
 			}
 		},
 		[selectedConversationId, token, onConversationStatusChange],
@@ -465,12 +473,15 @@ export default function ChatView({
 		(newWorktree) => {
 			setUseWorktree(newWorktree)
 			setSessionMetadata((prev) => ({ ...prev, use_worktree: newWorktree }))
-			channelRef.current?.push("update_session_config", { use_worktree: newWorktree })
 			onConversationStatusChange?.(selectedConversationId, null, { use_worktree: newWorktree })
-			if (selectedConversationId && token) {
-				updateConversation(token, selectedConversationId, {
-					metadata: { use_worktree: newWorktree },
-				}).catch(() => {})
+			// On a new session without user prompts, do not send anything over the wire until a prompt is submitted
+			if (hasUserPromptsRef.current) {
+				channelRef.current?.push("update_session_config", { use_worktree: newWorktree })
+				if (selectedConversationId && token) {
+					updateConversation(token, selectedConversationId, {
+						metadata: { use_worktree: newWorktree },
+					}).catch(() => {})
+				}
 			}
 		},
 		[selectedConversationId, token, onConversationStatusChange],
@@ -480,12 +491,15 @@ export default function ChatView({
 		(newBranch) => {
 			setBaseBranch(newBranch)
 			setSessionMetadata((prev) => ({ ...prev, base_branch: newBranch }))
-			channelRef.current?.push("update_session_config", { base_branch: newBranch })
 			onConversationStatusChange?.(selectedConversationId, null, { base_branch: newBranch })
-			if (selectedConversationId && token) {
-				updateConversation(token, selectedConversationId, {
-					metadata: { base_branch: newBranch },
-				}).catch(() => {})
+			// On a new session without user prompts, do not send anything over the wire until a prompt is submitted
+			if (hasUserPromptsRef.current) {
+				channelRef.current?.push("update_session_config", { base_branch: newBranch })
+				if (selectedConversationId && token) {
+					updateConversation(token, selectedConversationId, {
+						metadata: { base_branch: newBranch },
+					}).catch(() => {})
+				}
 			}
 		},
 		[selectedConversationId, token, onConversationStatusChange],
@@ -495,12 +509,15 @@ export default function ChatView({
 		(newType) => {
 			setSelectedAgentType(newType)
 			setSessionMetadata((prev) => ({ ...prev, agent_type: newType }))
-			channelRef.current?.push("update_session_config", { agent_type: newType })
 			onConversationStatusChange?.(selectedConversationId, null, { agent_type: newType })
-			if (selectedConversationId && token) {
-				updateConversation(token, selectedConversationId, {
-					metadata: { agent_type: newType },
-				}).catch(() => {})
+			// On a new session without user prompts, do not send anything over the wire until a prompt is submitted
+			if (hasUserPromptsRef.current) {
+				channelRef.current?.push("update_session_config", { agent_type: newType })
+				if (selectedConversationId && token) {
+					updateConversation(token, selectedConversationId, {
+						metadata: { agent_type: newType },
+					}).catch(() => {})
+				}
 			}
 		},
 		[selectedConversationId, token, onConversationStatusChange],

@@ -391,7 +391,9 @@ export function isSessionNested(conv, allConversations = []) {
 						typeof child === "object"
 							? String(child.session_id || child.conversation_id || child.id || "")
 							: String(child)
-					return (convId && childStr === convId) || (convExtId && childStr === convExtId)
+					const trimmedChild = childStr.trim()
+					if (!trimmedChild) return false
+					return (convId && trimmedChild === convId) || (convExtId && trimmedChild === convExtId)
 				})
 				if (isMatch) return true
 			}
@@ -452,7 +454,9 @@ export function findParentSession(conv, allConversations = []) {
 						typeof child === "object"
 							? String(child.session_id || child.conversation_id || child.id || "")
 							: String(child)
-					return (convId && childStr === convId) || (convExtId && childStr === convExtId)
+					const trimmedChild = childStr.trim()
+					if (!trimmedChild) return false
+					return (convId && trimmedChild === convId) || (convExtId && trimmedChild === convExtId)
 				})
 				if (isMatch) return c
 			}
@@ -1011,6 +1015,19 @@ export function orderSessionsHierarchically(conversations = []) {
 		return conversations
 	}
 
+	function getSessionLookupKeys(item) {
+		if (!item) return []
+		const keys = []
+		if (item.id != null) keys.push(String(item.id))
+		if (item.external_session_id != null && item.external_session_id !== "") {
+			keys.push(String(item.external_session_id))
+		}
+		if (item.metadata?.session_id != null && item.metadata.session_id !== "") {
+			keys.push(String(item.metadata.session_id))
+		}
+		return keys
+	}
+
 	const conversationSet = new Set(conversations)
 	const childrenByParent = new Map()
 	const topLevel = []
@@ -1019,11 +1036,12 @@ export function orderSessionsHierarchically(conversations = []) {
 		if (!conv) continue
 		const parent = findParentSession(conv, conversations)
 		if (parent && conversationSet.has(parent)) {
-			const parentKey = parent.id ?? parent.external_session_id
-			if (!childrenByParent.has(parentKey)) {
-				childrenByParent.set(parentKey, [])
+			const parentKeys = getSessionLookupKeys(parent)
+			const primaryKey = parentKeys[0] || (parent.id ?? parent.external_session_id)
+			if (!childrenByParent.has(primaryKey)) {
+				childrenByParent.set(primaryKey, [])
 			}
-			childrenByParent.get(parentKey).push(conv)
+			childrenByParent.get(primaryKey).push(conv)
 		} else {
 			topLevel.push(conv)
 		}
@@ -1034,16 +1052,21 @@ export function orderSessionsHierarchically(conversations = []) {
 	const visitedKeys = new Set()
 
 	function appendItem(item) {
-		const itemKey = item.id ?? item.external_session_id
-		if (visited.has(item) || (itemKey && visitedKeys.has(itemKey))) return
+		if (!item) return
+		const keys = getSessionLookupKeys(item)
+		const alreadyVisited = visited.has(item) || keys.some((k) => visitedKeys.has(k))
+		if (alreadyVisited) return
+
 		visited.add(item)
-		if (itemKey) visitedKeys.add(itemKey)
+		keys.forEach((k) => visitedKeys.add(k))
 		result.push(item)
 
-		const children = childrenByParent.get(itemKey)
-		if (children && children.length > 0) {
-			for (const child of children) {
-				appendItem(child)
+		for (const k of keys) {
+			const children = childrenByParent.get(k)
+			if (children && children.length > 0) {
+				for (const child of children) {
+					appendItem(child)
+				}
 			}
 		}
 	}
@@ -1054,10 +1077,12 @@ export function orderSessionsHierarchically(conversations = []) {
 
 	// Safety fallback: append any orphaned items that weren't visited
 	for (const item of conversations) {
-		const itemKey = item?.id ?? item?.external_session_id
-		if (!visited.has(item) && (!itemKey || !visitedKeys.has(itemKey))) {
+		if (!item) continue
+		const keys = getSessionLookupKeys(item)
+		const alreadyVisited = visited.has(item) || keys.some((k) => visitedKeys.has(k))
+		if (!alreadyVisited) {
 			visited.add(item)
-			if (itemKey) visitedKeys.add(itemKey)
+			keys.forEach((k) => visitedKeys.add(k))
 			result.push(item)
 		}
 	}

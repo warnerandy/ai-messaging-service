@@ -155,12 +155,15 @@ defmodule Messaging.Chat do
     title = attrs[:title] || attrs["title"]
     bot_token_id = attrs[:bot_token_id] || attrs["bot_token_id"]
 
-    if is_binary(title) and String.ends_with?(title, " Session") and not is_nil(bot_token_id) do
+    if is_binary(title) and (String.ends_with?(title, " Session") or title == "Session") and
+         not is_nil(bot_token_id) do
       prior_empty_ids =
         from(c in Conversation,
           left_join: m in Message,
           on: m.conversation_id == c.id and m.role == "user",
-          where: c.bot_token_id == ^bot_token_id and c.title == ^title and c.status == "idle",
+          where:
+            c.bot_token_id == ^bot_token_id and c.title == ^title and
+              c.status in ["idle", "new", "draft"],
           where: is_nil(m.id),
           select: c.id
         )
@@ -448,12 +451,30 @@ defmodule Messaging.Chat do
 
     incoming_session_ids = Enum.map(normalized_sessions, & &1.session_id)
 
-    existing_conversations =
+    all_existing_conversations =
       Conversation
       |> where(bot_token_id: ^bot_token.id)
-      |> where([c], not is_nil(c.external_session_id))
       |> Repo.all()
-      |> Map.new(fn c -> {c.external_session_id, c} end)
+
+    existing_conversations =
+      Enum.reduce(all_existing_conversations, %{}, fn c, acc ->
+        meta = c.metadata || %{}
+
+        keys =
+          [
+            c.external_session_id,
+            to_string(c.id),
+            meta["session_id"],
+            meta[:session_id],
+            meta["external_session_id"],
+            meta[:external_session_id]
+          ]
+          |> Enum.reject(&(is_nil(&1) or &1 == ""))
+
+        Enum.reduce(keys, acc, fn k, inner_acc ->
+          Map.put_new(inner_acc, k, c)
+        end)
+      end)
 
     synced =
       Enum.map(normalized_sessions, fn item ->
@@ -970,6 +991,37 @@ defmodule Messaging.Chat do
 
         from(c in Conversation, where: c.id == ^message.conversation_id)
         |> Repo.update_all(set: [updated_at: now])
+
+        # If user message includes session configuration metadata, sync it into conversation.metadata
+        config_updates =
+          if message.role == "user" and is_map(message.metadata) do
+            message.metadata
+            |> Map.take([
+              "agent_mode",
+              "agentMode",
+              "mode",
+              "use_worktree",
+              "useWorktree",
+              "worktree",
+              "base_branch",
+              "baseBranch",
+              "branch",
+              "git_branch",
+              "agent_type",
+              "agentType",
+              "skill"
+            ])
+            |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+            |> Map.new()
+          else
+            %{}
+          end
+
+        if config_updates != %{} do
+          conv = get_conversation!(message.conversation_id, [])
+          merged = Map.merge(conv.metadata || %{}, config_updates)
+          conv |> Conversation.changeset(%{metadata: merged}) |> Repo.update()
+        end
 
         # Broadcast to conversation subscribers
         Phoenix.PubSub.broadcast(
