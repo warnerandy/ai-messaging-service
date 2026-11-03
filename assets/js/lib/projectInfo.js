@@ -1031,13 +1031,15 @@ export function orderSessionsHierarchically(conversations = []) {
 
 	const result = []
 	const visited = new Set()
+	const visitedKeys = new Set()
 
 	function appendItem(item) {
-		if (visited.has(item)) return
+		const itemKey = item.id ?? item.external_session_id
+		if (visited.has(item) || (itemKey && visitedKeys.has(itemKey))) return
 		visited.add(item)
+		if (itemKey) visitedKeys.add(itemKey)
 		result.push(item)
 
-		const itemKey = item.id ?? item.external_session_id
 		const children = childrenByParent.get(itemKey)
 		if (children && children.length > 0) {
 			for (const child of children) {
@@ -1052,7 +1054,10 @@ export function orderSessionsHierarchically(conversations = []) {
 
 	// Safety fallback: append any orphaned items that weren't visited
 	for (const item of conversations) {
-		if (!visited.has(item)) {
+		const itemKey = item?.id ?? item?.external_session_id
+		if (!visited.has(item) && (!itemKey || !visitedKeys.has(itemKey))) {
+			visited.add(item)
+			if (itemKey) visitedKeys.add(itemKey)
 			result.push(item)
 		}
 	}

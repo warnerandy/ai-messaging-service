@@ -216,7 +216,8 @@ defmodule Messaging.ChatAhpTest do
       bot_token: bot
     } do
       # 1. Simulate an older abandoned generic session created 10 minutes ago
-      ten_mins_ago = DateTime.utc_now() |> DateTime.add(-600, :second) |> DateTime.truncate(:second)
+      ten_mins_ago =
+        DateTime.utc_now() |> DateTime.add(-600, :second) |> DateTime.truncate(:second)
 
       {:ok, old_conv} =
         Chat.create_conversation(%{
