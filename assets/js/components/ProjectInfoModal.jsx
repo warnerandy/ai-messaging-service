@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react"
+import { GitForkIcon, GitBranchIcon } from "./Icons.jsx"
 
 export default function ProjectInfoModal({
 	isOpen,
@@ -235,9 +236,15 @@ export default function ProjectInfoModal({
 										className={`chat-target-badge ${isWorktree ? "chat-target-badge--worktree" : "chat-target-badge--branch"}`}
 									>
 										{isWorktree ? (
-											<span className="text-amber-400">⚡ Isolated Worktree</span>
+											<span className="text-amber-400">
+												<GitForkIcon size={12} className="inline mr-1" />
+												Isolated Worktree
+											</span>
 										) : (
-											<span className="text-emerald-400">🌿 Direct Branch</span>
+											<span className="text-emerald-400">
+												<GitBranchIcon size={12} className="inline mr-1" />
+												Direct Branch
+											</span>
 										)}
 									</span>
 								</div>

@@ -1,8 +1,10 @@
 {
-  "name": "messaging-pwa-e2e",
+  "name": "aims-pwa",
   "version": "1.0.0",
-  "description": "E2E tests for messaging PWA",
+  "description": "Mobile-first AI Messaging Service & AHP Proxy Web UI",
   "scripts": {
+    "dev": "vite --config assets/vite.config.js",
+    "build": "vite build --config assets/vite.config.js",
     "format": "oxfmt --write assets/js",
     "format:check": "oxfmt --check assets/js",
     "test:unit": "vitest run --config assets/vite.config.js",

@@ -1,33 +1,44 @@
-# Botamus Prime
+# Botamus Prime (Rust + AHP + `@assistant-ui/react`)
 
-A real-time AI messaging PWA built with **Phoenix** (Elixir) on the backend and **React** on the frontend. Users create bot tokens, connect external AI bots via WebSockets, and chat with them through a polished mobile-first interface.
+A mobile-first AI messaging & **Agent Host Protocol (AHP)** web application written in **Rust** (`axum`, `tokio`, `sqlx`, `ahp`, `ahp-types`, `ahp-ws`) on the backend and **React 19 + `@assistant-ui/react`** on the frontend.
+
+The AHP bot integration acts as a bidirectional proxy (`aims-proxy`) for a local AHP server on its host machine, delivering full **VS Code Agents Window** parity in a mobile-first web UI — including creating new sessions with workspace directory, git branch, isolated git worktree, execution mode (`Interactive`, `Plan`, `Autopilot`), and agent role selection, plus instant mobile clipboard image paste and on-the-fly photo attachments.
 
 ---
 
 ## Architecture Overview
 
 ```
-┌───────────────────────────────────────────────────┐
-│  React PWA (Vite + Tailwind)                      │
-│  assets/js/app.jsx                                │
-│  - Auth, Sidebar, ChatView, MessageBubble         │
-└────────────┬────────────────────────┬─────────────┘
-             │ REST API               │ WebSocket
-             │ /api/*                 │ /socket (UserSocket)
-             ▼                        ▼
-┌───────────────────────────────────────────────────┐
-│  Phoenix Backend (Bandit)                         │
-│  MessagingWeb.Router                              │
-│  - Public, User, and Bot API pipelines            │
-│  - ConversationChannel (real-time messages)       │
-└────────────┬────────────────────────┬─────────────┘
-             │                        │ WebSocket
-             │ Postgres (Ecto)        │ /bot (BotSocket)
-             ▼                        ▼
-┌──────────────────┐    ┌─────────────────────────┐
-│  Database        │    │  External AI Bot Client  │
-│  (PostgreSQL 16) │    │  Connects via BotChannel │
-└──────────────────┘    └─────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│  Mobile-First React PWA (Vite + Tailwind + @assistant-ui) │
+│  assets/js/app.jsx                                        │
+│  - AssistantRuntimeProvider + useExternalStoreRuntime     │
+│  - AttachmentAdapter (mobile clipboard image paste)       │
+│  - NewSessionCanvas (VS Code Agents session creation)     │
+│  - AssistantChatComposer, LiveThinking, SubagentsPanel    │
+└──────────────┬─────────────────────────────┬──────────────┘
+               │ REST API                    │ WebSocket
+               │ /api/*                      │ /socket/websocket
+               ▼                             ▼
+┌───────────────────────────────────────────────────────────┐
+│  aims-server (Rust + Axum + Tokio + SQLx + ahp)           │
+│  crates/aims-server                                       │
+│  - BotAhpMirror (ahp::MultiHostStateMirror + reducers)    │
+│  - User, Bot, Conversation, Message & Asset REST routes   │
+│  - Real-time WebSocket pub/sub hub                        │
+└──────────────┬─────────────────────────────┬──────────────┘
+               │ PostgreSQL 16               │ WebSocket (/bot/websocket)
+               ▼                             ▼
+┌──────────────────────┐       ┌────────────────────────────┐
+│  PostgreSQL Database │       │  aims-proxy (Rust Binary)  │
+│  Auto-migrated       │       │  crates/aims-proxy         │
+└──────────────────────┘       └─────────────┬──────────────┘
+                                             │ ahp-ws (JSON-RPC 2.0)
+                                             ▼
+                               ┌────────────────────────────┐
+                               │  Local AHP Server on Host  │
+                               │  (ws://127.0.0.1:12345)    │
+                               └────────────────────────────┘
 ```
 
 ---
@@ -36,293 +47,84 @@ A real-time AI messaging PWA built with **Phoenix** (Elixir) on the backend and 
 
 | Layer | Technology |
 |-------|-----------|
-| Language | Elixir 1.17 / OTP 27 |
-| Web Framework | Phoenix 1.8 |
-| HTTP Server | Bandit |
-| Database | PostgreSQL 16 |
-| Real-time | Phoenix Channels (WebSockets) |
-| Frontend | React 19, Vite 8, Tailwind CSS 4, HeroUI |
-| Auth | bcrypt + session tokens (API-based, no cookies) |
-| Deployment | Docker Compose |
-| Testing | ExUnit, Playwright (E2E), Vitest (unit) |
+| Backend Server | Rust (`axum 0.8`, `tokio`, `sqlx 0.8`, `tower-http`) |
+| AHP Protocol | Official Rust AHP crates: `ahp 1.0`, `ahp-types 1.0`, `ahp-ws 1.0` |
+| AHP Host Proxy | `aims-proxy` crate (`ahp::Client`, `ahp_ws::WebSocketTransport`, `ahp::MultiHostStateMirror`) |
+| Database | PostgreSQL 16 (with automatic schema initialization in `crates/aims-server/src/db.rs`) |
+| Frontend | React 19, `@assistant-ui/react`, Vite 8, Tailwind CSS 4 |
+| Testing | Cargo test (`cargo test`), Vitest (`npm run test:unit`), Playwright (`npm test`) |
 
 ---
 
 ## Project Structure
 
 ```
-├── lib/
-│   ├── messaging/                  # Business logic (contexts)
-│   │   ├── accounts/               # User, UserToken, Scope
-│   │   ├── accounts.ex             # Accounts context (register, login, tokens)
-│   │   ├── bots/                   # BotToken, BotModel schemas
-│   │   ├── bots.ex                 # Bots context (create, auth, models)
-│   │   ├── chat/                   # Conversation, Message schemas
-│   │   ├── chat.ex                 # Chat context (conversations, messages)
-│   │   ├── rate_limiter.ex         # ETS-based rate limiter
-│   │   └── application.ex          # OTP supervision tree
+├── Cargo.toml                      # Rust workspace manifest
+├── crates/
+│   ├── aims-server/                # Rust Web & WebSocket server
+│   │   └── src/
+│   │       ├── main.rs             # Server entrypoint
+│   │       ├── lib.rs              # AppState & Axum router assembly
+│   │       ├── ahp_mirror.rs       # AHP state mirror (ahp::MultiHostStateMirror + reducers)
+│   │       ├── ws.rs               # User (/socket/websocket) & Bot (/bot/websocket) WS handlers
+│   │       ├── routes.rs           # REST API & signed asset upload endpoints
+│   │       ├── db.rs               # SQLx PostgreSQL queries & auto-migrations
+│   │       └── auth.rs             # bcrypt passwords, session tokens, HMAC upload signatures
 │   │
-│   └── messaging_web/              # Web layer
-│       ├── router.ex               # All routes (browser, user API, bot API)
-│       ├── endpoint.ex             # Plug pipeline, socket mounts
-│       ├── channels/
-│       │   ├── user_socket.ex      # User WS auth (session token)
-│       │   ├── bot_socket.ex       # Bot WS auth (bot token)
-│       │   ├── conversation_channel.ex  # User ↔ frontend real-time
-│       │   └── bot_channel.ex      # Bot ↔ server real-time
-│       ├── controllers/
-│       │   ├── api/                # User-facing REST endpoints
-│       │   │   ├── auth_controller.ex
-│       │   │   ├── bot_token_controller.ex
-│       │   │   ├── bot_model_controller.ex
-│       │   │   ├── conversation_controller.ex
-│       │   │   ├── message_controller.ex
-│       │   │   └── ping_controller.ex
-│       │   ├── bot_api/            # Bot-facing REST endpoints
-│       │   │   ├── message_controller.ex
-│       │   │   ├── status_controller.ex
-│       │   │   ├── model_controller.ex
-│       │   │   └── channel_controller.ex
-│       │   └── app_controller.ex   # Serves the PWA index.html
-│       ├── api_auth.ex             # Plug: authenticate user API tokens
-│       └── bot_auth.ex             # Plug: authenticate bot API tokens
+│   └── aims-proxy/                 # Rust AHP proxy agent binary & library
+│       └── src/
+│           ├── main.rs             # CLI binary (`aims-proxy`)
+│           └── lib.rs              # Bridges local AHP server (`ahp-ws`) <-> `aims-server`
 │
-├── assets/                         # Frontend source
+├── assets/                         # Mobile-first React + @assistant-ui/react frontend
 │   ├── js/
-│   │   ├── app.jsx                 # React entry point
+│   │   ├── app.jsx                 # React entrypoint
+│   │   ├── runtime/
+│   │   │   └── ahpRuntime.js       # @assistant-ui runtime, AttachmentAdapter & clipboard paste
 │   │   ├── components/
-│   │   │   ├── AuthPanel.jsx       # Login / Register forms
-│   │   │   ├── Sidebar.jsx         # Bot list, create bot, logout
-│   │   │   ├── ChatView.jsx        # Messages, input, model picker
-│   │   │   ├── MessageBubble.jsx   # Individual message rendering
-│   │   │   ├── TypingIndicator.jsx # Bot thinking animation
-│   │   │   └── BotTokenReveal.jsx  # Copy-to-clipboard token display
-│   │   ├── hooks/
-│   │   │   └── useWorkspaceData.js # Main state/data hook
+│   │   │   ├── ChatView.jsx        # ThreadPrimitive, NewSessionCanvas, Inspector dock
+│   │   │   ├── NewSessionCanvas.jsx# VS Code Agents session setup (worktree, branch, dir, mode)
+│   │   │   ├── AssistantChatComposer.jsx # ComposerPrimitive + mobile clipboard image paste
+│   │   │   ├── LiveThinking.jsx    # Real-time AHP reasoning & tool call stream
+│   │   │   ├── QuestionApprovalCard.jsx # AHP ChatInputRequested interactive approvals
+│   │   │   └── SubagentsPanel.jsx  # Nested subagents & running terminal processes
 │   │   └── lib/
-│   │       ├── api.js              # fetch wrapper with auth
-│   │       ├── data.js             # API call functions
-│   │       ├── notifications.js    # Push notification helpers
-│   │       ├── renderMarkdown.js   # Markdown → HTML (marked + highlight.js)
-│   │       └── thinkingConfig.js   # Thinking blurbs and timer formatting
+│   │       └── phoenixSocket.js    # Zero-dependency WebSocket channel client
 │   ├── css/
-│   │   └── app.css                 # Tailwind + custom styles
-│   └── vite.config.js              # Vite build configuration
-│
-├── priv/
-│   ├── static/
-│   │   ├── index.html              # PWA shell (React mounts here)
-│   │   ├── manifest.webmanifest    # PWA manifest
-│   │   └── sw.js                   # Service worker
-│   └── repo/
-│       ├── migrations/             # Ecto database migrations
-│       └── seeds.exs               # Seed data
-│
-├── config/
-│   ├── config.exs                  # Shared config
-│   ├── dev.exs                     # Dev environment
-│   ├── test.exs                    # Test environment
-│   ├── prod.exs                    # Prod compile-time config
-│   └── runtime.exs                 # Prod runtime config (env vars)
-│
-├── test/
-│   ├── messaging/                  # Context unit tests
-│   ├── messaging_web/              # Controller/channel tests
-│   ├── e2e/                        # Playwright browser tests
-│   └── support/                    # Test fixtures & helpers
-│
-├── docker-compose.yml              # Postgres + app services
-├── Dockerfile                      # Multi-stage production build
-├── mix.exs                         # Elixir deps & project config
-└── package.json                    # Node deps & scripts
+│   │   └── app.css                 # Tailwind v4 + mobile-first responsive styles
+│   └── vite.config.js              # Vite + Vitest configuration
+└── priv/
+    └── static/                     # Built PWA assets, manifest.webmanifest, sw.js
 ```
 
 ---
 
-## Key Concepts
+## Running Locally
 
-### Authentication Flow
-
-1. **User registers/logs in** via `POST /api/register` or `POST /api/login`
-2. Server returns a **session token** (base64-encoded)
-3. Frontend stores token in `localStorage` and sends it as `Authorization: Bearer <token>` on API calls
-4. For WebSockets, the token is passed as a connect param to `UserSocket`
-
-### Bot Integration
-
-1. A user creates a **bot token** (`POST /api/bot-tokens`) — this returns a raw token (shown once)
-2. An external bot client connects to `ws://<host>/bot?token=<raw_token>` (BotSocket)
-3. The bot joins its channel (`bot:<channel_code>`) and receives `new_message` events when users send messages
-4. The bot responds by pushing messages via the channel or `POST /api/bot/messages`
-5. The bot can acknowledge messages (shows "thinking" animation) and update its status/models
-
-### Real-time Messaging
-
-- **ConversationChannel** (`/socket`, topic `conversation:<id>`): pushes `new_message`, `message_acknowledged`, and `bot_status_changed` to the user's browser
-- **BotChannel** (`/bot`, topic `bot:<channel_code>`): pushes `new_message` to the bot client when a user sends a message
-- PubSub bridges the two: when a bot posts a reply, it's broadcast to the conversation topic
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- Elixir 1.17+ / OTP 27+
-- PostgreSQL 16+
-- Node.js 20+ (for frontend build)
-- Docker & Docker Compose (optional, for containerized deployment)
-
-### Local Development
+### 1. Build Frontend Assets & Run Unit Tests
 
 ```bash
-# Install Elixir and Node dependencies, create DB, run migrations
-mix setup
-
-# Start the Phoenix server (with interactive shell)
-iex -S mix phx.server
-```
-
-The app is available at [http://localhost:4000](http://localhost:4000).
-
-### Environment Variables (Dev)
-
-The dev config auto-connects to a local Postgres. Override with:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DB_USERNAME` | `postgres` | Database user |
-| `DB_PASSWORD` | `postgres` | Database password |
-| `DB_HOST` | `localhost` | Database host |
-| `DB_PORT` | `5432` | Database port |
-| `DB_NAME` | `messaging_dev` | Database name |
-
-Or set `DATABASE_URL` as a single connection string.
-
-### Docker Compose (Production-like)
-
-```bash
-# Build assets, then build & start containers
-./scripts/rebuild_compose.sh
-```
-
-Set these env vars for production:
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `SECRET_KEY_BASE` | Yes | 64-byte secret (generate with `mix phx.gen.secret`) |
-| `DATABASE_URL` | Yes | Full Postgres connection URL |
-| `PHX_HOST` | Yes | Public hostname (e.g. `aims.example.com`) |
-| `CHECK_ORIGIN` | Recommended | Comma-separated allowed origins for WebSocket |
-| `PORT` | No (default 4000) | HTTP listen port |
-
----
-
-## API Routes
-
-### Public (no auth)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/register` | Create account |
-| POST | `/api/login` | Get session token |
-
-### User API (requires `Authorization: Bearer <token>`)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/ping` | Health check / connection test |
-| GET | `/api/bot-tokens` | List user's bots |
-| POST | `/api/bot-tokens` | Create a new bot token |
-| DELETE | `/api/bot-tokens/:id` | Revoke a bot token |
-| GET | `/api/bot-tokens/:id/models` | List bot's registered models |
-| POST | `/api/bot-tokens/:id/refresh-models` | Ask bot to refresh models |
-| GET | `/api/conversations` | List conversations |
-| POST | `/api/conversations` | Create a conversation |
-| GET | `/api/conversations/:id` | Get conversation with messages |
-| GET | `/api/conversations/:id/channel` | Get channel topic for WS |
-| POST | `/api/conversations/:id/messages` | Send a message |
-
-### Bot API (requires bot token via `Authorization: Bearer <token>`)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/bot/messages` | Send a reply message |
-| GET | `/api/bot/messages` | Get pending messages |
-| PUT | `/api/bot/messages/:id/acknowledge` | Mark message as seen |
-| PUT | `/api/bot/status` | Update bot online/working status |
-| PUT | `/api/bot/models` | Register available models |
-| GET | `/api/bot/channel` | Get bot's channel info |
-
----
-
-## WebSocket Channels
-
-### UserSocket (`/socket`)
-
-Connect with: `{ token: "<base64_session_token>" }`
-
-**ConversationChannel** (topic: `conversation:<id>`)
-- Server → Client events: `new_message`, `message_acknowledged`, `bot_status_changed`
-
-### BotSocket (`/bot`)
-
-Connect with: `{ token: "<raw_bot_token>" }`
-
-**BotChannel** (topic: `bot:<channel_code>`)
-- Server → Bot events: `new_message`
-- Bot → Server events: `bot_reply`, `acknowledge_message`, `status_update`
-
----
-
-## Running Tests
-
-```bash
-# Elixir unit & integration tests
-mix test
-
-# Run only previously failed tests
-mix test --failed
-
-# Frontend unit tests (Vitest)
+npm install
 npm run test:unit
-
-# E2E browser tests (Playwright — requires running server)
-npm test
+npm run build
 ```
 
----
-
-## Mix Aliases
-
-| Command | Description |
-|---------|-------------|
-| `mix setup` | Install deps, create DB, migrate, build assets |
-| `mix precommit` | Compile (warnings-as-errors), unlock unused deps, format, test |
-| `mix ecto.reset` | Drop + recreate + migrate + seed database |
-| `mix assets.build` | Build frontend via Vite |
-| `mix assets.deploy` | Production frontend build + digest |
-
----
-
-## Frontend Build
-
-The frontend uses **Vite** (not esbuild/tailwind mix tasks) for bundling:
+### 2. Run the Rust Server (`aims-server`)
 
 ```bash
-# Dev build
-npx vite build --config assets/vite.config.js
-
-# Production build (called by mix assets.deploy)
-npx vite build --config assets/vite.config.js --mode production
+export DATABASE_URL="postgres://postgres:postgres@localhost:5432/messaging_dev"
+export SECRET_KEY_BASE="your-64-byte-secret-key-base"
+cargo run -p aims-server
 ```
 
-Output goes to `priv/static/assets/`. The PWA shell at `priv/static/index.html` loads the bundled JS/CSS.
+### 3. Connect Your Local AHP Server via `aims-proxy`
 
-## Learn more
+Create an AHP bot in the Web UI to get a `<BOT_TOKEN>`, then run:
 
-* Official website: https://www.phoenixframework.org/
-* Guides: https://hexdocs.pm/phoenix/overview.html
-* Docs: https://hexdocs.pm/phoenix
-* Forum: https://elixirforum.com/c/phoenix-forum
-* Source: https://github.com/phoenixframework/phoenix
+```bash
+cargo run -p aims-proxy -- \
+  --ahp-url ws://127.0.0.1:12345 \
+  --server-url ws://127.0.0.1:4000/bot/websocket \
+  --token <BOT_TOKEN> \
+  --workdir /path/to/your/workspace
+```

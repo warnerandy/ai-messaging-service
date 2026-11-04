@@ -1,4 +1,5 @@
 import React from "react"
+import { ZapIcon, XIcon } from "./Icons.jsx"
 
 export default function PromptQueue({ queue = [], onRemovePrompt }) {
 	if (!queue || queue.length === 0) return null
@@ -6,7 +7,9 @@ export default function PromptQueue({ queue = [], onRemovePrompt }) {
 	return (
 		<div className="prompt-queue-container">
 			<div className="prompt-queue-header">
-				<span className="prompt-queue-icon">⚡</span>
+				<span className="prompt-queue-icon">
+					<ZapIcon size={14} />
+				</span>
 				<span className="prompt-queue-title">Queued Prompts ({queue.length})</span>
 				<span className="prompt-queue-hint">Will dispatch automatically when agent is idle</span>
 			</div>
@@ -30,7 +33,7 @@ export default function PromptQueue({ queue = [], onRemovePrompt }) {
 									title="Remove from queue"
 									aria-label="Remove prompt"
 								>
-									✕
+									<XIcon size={12} />
 								</button>
 							)}
 						</div>

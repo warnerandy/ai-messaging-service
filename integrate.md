@@ -32,6 +32,184 @@ Authorization: Bearer <BOT_TOKEN>
 
 ---
 
+## 🚀 Quickstart: Creating a New Integration
+
+Follow these steps to connect any agent, coding assistant, or bot to this platform:
+
+### Step 1: Create a Bot Token & Channel
+
+You can generate a bot token via the Web UI or via the REST API:
+
+#### Option A: Web UI
+1. Open the web app at `http://localhost:4002` (or `http://localhost:4000`).
+2. Log in and open the left sidebar.
+3. Click the **"+" (Create Bot)** icon next to **BOTS**.
+4. Configure:
+   - **Name**: e.g., `Local Coding Agent` or `Claude Code Runner`
+   - **Bot Type**: Select **Agent Host Protocol (AHP)** for coding agents (supports isolated git worktrees, active sub-sessions, tool calls, streaming reasoning, and question approvals) or **Chat Protocol** for conversational LLMs.
+5. Click **Create Bot** and copy the generated **Bot Token** and **Channel Code** displayed on the screen.
+
+#### Option B: REST API
+```bash
+curl -X POST http://localhost:4002/api/bot-tokens \
+  -H "Authorization: Bearer <YOUR_USER_SESSION_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Local Coding Agent",
+    "bot_type": "ahp",
+    "metadata": {
+      "worktree_supported": true,
+      "version": "1.0.0"
+    }
+  }'
+```
+
+**Response (201 Created):**
+```json
+{
+  "bot_token": {
+    "id": 1,
+    "name": "Local Coding Agent",
+    "bot_type": "ahp",
+    "channel_code": "4a7b9c1d",
+    "token": "bot_tok_1a2b3c4d5e6f...",
+    "metadata": { "worktree_supported": true }
+  }
+}
+```
+
+---
+
+### Step 2: Choose Your Integration Strategy
+
+| Strategy | Best For | Implementation |
+| :--- | :--- | :--- |
+| **Strategy 1: Rust `aims-proxy` CLI** *(Fastest & Recommended for AHP)* | Connecting an existing local AHP server (e.g. running on `ws://127.0.0.1:12345`) to `aims-server`. | Ready-to-run Rust binary (`crates/aims-proxy`) with zero code required. |
+| **Strategy 2: Custom Rust AHP Agent** | Building a brand new standalone autonomous agent in Rust using the `ahp` crate ecosystem. | Rust with `ahp`, `ahp-types`, `ahp-ws`, `tokio-tungstenite`. |
+| **Strategy 3: Python AHP Host Bridge** | Python-based agents (LangChain, AutoGen, custom LLMs, CLI agents). | Python script with `websocket-client`. |
+| **Strategy 4: TypeScript / Node.js Bridge** | Node.js, Electron, or VS Code extension integrations. | Node.js script using `phoenix-channels` or `ws`. |
+| **Strategy 5: Standard Chat Bot** | Direct conversational bot responding to user messages without AHP worktree or session tracking. | Python, Node.js, or cURL via REST polling or WebSocket. |
+
+---
+
+### Step 3: Run Your Integration
+
+#### Strategy 1: Using the Built-In Rust `aims-proxy` CLI
+
+The workspace includes a complete proxy binary at `crates/aims-proxy` that connects a local AHP server to `aims-server`:
+
+```bash
+# Direct run with CLI arguments:
+# cargo run -p aims-proxy -- <AHP_LOCAL_URL> <AIMS_SERVER_WS_URL> <AIMS_BOT_TOKEN>
+cargo run -p aims-proxy -- ws://127.0.0.1:12345 ws://localhost:4002/bot/websocket bot_tok_1a2b3c4d5e6f...
+```
+
+Or using environment variables:
+```bash
+export AHP_LOCAL_URL="ws://127.0.0.1:12345"
+export AIMS_SERVER_WS_URL="ws://localhost:4002/bot/websocket"
+export AIMS_BOT_TOKEN="bot_tok_1a2b3c4d5e6f..."
+export AHP_WORKING_DIRECTORY="/home/user/my-project"
+
+cargo run -p aims-proxy
+```
+
+#### Strategy 2: Writing a Standalone Rust Integration
+
+```rust
+use futures_util::{SinkExt, StreamExt};
+use serde_json::json;
+use tokio_tungstenite::connect_async;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let token = std::env::var("AIMS_BOT_TOKEN").expect("AIMS_BOT_TOKEN required");
+    let channel_code = std::env::var("AIMS_CHANNEL_CODE").expect("AIMS_CHANNEL_CODE required");
+    let ws_url = format!("ws://localhost:4002/bot/websocket?token={}&vsn=1.0.0", token);
+
+    let (mut ws, _) = connect_async(&ws_url).await?;
+    println!("Connected to aims-server WebSocket");
+
+    // 1. Join bot channel
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(json!({
+        "topic": format!("bot:{}", channel_code),
+        "event": "phx_join",
+        "payload": {},
+        "ref": "1"
+    }).to_string())).await?;
+
+    // 2. Publish initial models & capabilities
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(json!({
+        "topic": format!("bot:{}", channel_code),
+        "event": "set_models",
+        "payload": {
+            "models": [
+                { "name": "claude-3-7-sonnet", "context_sizes": [8000, 32000, 200000] },
+                { "name": "gpt-4o", "context_sizes": [4000, 16000, 128000] }
+            ]
+        },
+        "ref": "2"
+    }).to_string())).await?;
+
+    // 3. Main event loop: receive user prompts, turns, and steering
+    while let Some(Ok(msg)) = ws.next().await {
+        if let Ok(text) = msg.to_text() {
+            let data: serde_json::Value = serde_json::from_str(text)?;
+            if data["event"] == "new_message" {
+                let payload = &data["payload"];
+                let body = payload["body"].as_str().unwrap_or_default();
+                let conversation_id = payload["conversation_id"].as_i64().unwrap_or(0);
+                println!("Received prompt in conv {}: {}", conversation_id, body);
+
+                // Stream reasoning/thinking
+                ws.send(tokio_tungstenite::tungstenite::Message::Text(json!({
+                    "topic": format!("bot:{}", channel_code),
+                    "event": "ahp_event",
+                    "payload": {
+                        "session_id": payload["metadata"]["session_id"],
+                        "event_type": "thinking",
+                        "data": { "chunk": "Analyzing requirements...\n" }
+                    },
+                    "ref": "3"
+                }).to_string())).await?;
+
+                // Send assistant response
+                ws.send(tokio_tungstenite::tungstenite::Message::Text(json!({
+                    "topic": format!("bot:{}", channel_code),
+                    "event": "send_message",
+                    "payload": {
+                        "conversation_id": conversation_id,
+                        "body": format!("Echo response to: {}", body),
+                        "model": "claude-3-7-sonnet"
+                    },
+                    "ref": "4"
+                }).to_string())).await?;
+            }
+        }
+    }
+    Ok(())
+}
+```
+
+---
+
+### Step 4: Verify in the Web Interface
+
+1. Navigate to `http://localhost:4002`.
+2. The connected bot's green indicator shows **Online** in the sidebar and topbar.
+3. Click **"+ New Session"** (or click on the bot).
+4. You will see the **What are we building?** Copilot-style new session interface:
+   - **Environment**: "This Computer"
+   - **Workspace**: Select local directory or project root
+   - **Working Target**: Choose **New Worktree** (isolated git worktree) or **Direct Branch**
+   - **Base Branch**: Choose `main`, `master`, `develop`, etc.
+   - **Role**: Select `Workspace`, `Coder`, `Architect`, `Reviewer`
+5. Type your idea, paste an image/asset from your phone or clipboard, and send!
+
+---
+
+---
+
 ## User API
 
 ### Register
@@ -1528,7 +1706,155 @@ Bots can also proactively push `update_session_config` to update or initialize t
 
 ### 7. Complete Bridge Client Examples
 
-#### Python AHP Host Bridge
+#### Rust AHP Host Proxy (`aims-proxy`)
+The workspace includes a production-ready proxy binary at [`crates/aims-proxy`](crates/aims-proxy) that acts as a full bridge between a local Agent Host Protocol (AHP) server and `aims-server`.
+
+**Key Capabilities:**
+- Connects directly to local AHP servers (`ws://127.0.0.1:12345`) using `ahp` and `ahp-ws` (`WebSocketTransport`).
+- Subscribes to `ahp-root://` and maintains an in-memory `ahp::MultiHostStateMirror`.
+- Synchronizes workspace discovery, available branches, dynamic agent modes, and git worktrees.
+- Bridges all user turns, steering directives, question approvals, and prompt queuing.
+- Automatically handles mobile photo/image pasting and file attachments, converting them into AHP `MessageAttachment::EmbeddedResource` (base64) or `MessageAttachment::Resource` (URI).
+
+**Running the Proxy:**
+```bash
+# Direct execution:
+cargo run -p aims-proxy -- <AHP_LOCAL_URL> <AIMS_SERVER_WS_URL> <AIMS_BOT_TOKEN>
+
+# Example:
+cargo run -p aims-proxy -- ws://127.0.0.1:12345 ws://localhost:4002/bot/websocket bot_tok_xyz123...
+```
+
+**Environment Variables:**
+- `AHP_LOCAL_URL`: Local AHP server WebSocket URL (default: `ws://127.0.0.1:12345`)
+- `AIMS_SERVER_WS_URL`: Upstream `aims-server` WebSocket URL (default: `ws://127.0.0.1:4000/bot/websocket`)
+- `AIMS_BOT_TOKEN`: The bot authentication token
+- `AHP_WORKING_DIRECTORY`: Default project directory if not specified in session turns
+
+---
+
+#### Custom Rust AHP Bridge (using `ahp` crate)
+If you are developing a standalone coding agent in Rust, use the official `ahp`, `ahp-types`, and `ahp-ws` crates:
+
+```rust
+use std::sync::Arc;
+use ahp::{Client, ClientConfig, MultiHostStateMirror};
+use ahp::hosts::HostId;
+use ahp_ws::WebSocketTransport;
+use ahp_types::ROOT_RESOURCE_URI;
+use futures_util::{SinkExt, StreamExt};
+use serde_json::json;
+use tokio_tungstenite::connect_async;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let bot_token = std::env::var("AIMS_BOT_TOKEN")?;
+    let channel_code = std::env::var("AIMS_CHANNEL_CODE")?;
+    let aims_ws_url = format!("ws://localhost:4002/bot/websocket?token={}&vsn=1.0.0", bot_token);
+
+    // 1. Connect to aims-server WebSocket
+    let (mut upstream_ws, _) = connect_async(&aims_ws_url).await?;
+
+    // 2. Join bot channel
+    upstream_ws.send(tokio_tungstenite::tungstenite::Message::Text(json!({
+        "topic": format!("bot:{}", channel_code),
+        "event": "phx_join",
+        "payload": {},
+        "ref": "1"
+    }).to_string())).await?;
+
+    // 3. Sync initial active sessions with workspace & worktree details
+    upstream_ws.send(tokio_tungstenite::tungstenite::Message::Text(json!({
+        "topic": format!("bot:{}", channel_code),
+        "event": "sync_sessions",
+        "payload": {
+            "sessions": [
+                {
+                    "session_id": "sess-backend-dev",
+                    "title": "Backend Optimization",
+                    "status": "idle",
+                    "use_worktree": true,
+                    "base_branch": "main",
+                    "agent_mode": "plan",
+                    "agent_type": "architect",
+                    "metadata": {
+                        "worktree_supported": true,
+                        "branches": ["main", "develop", "feature/ahp"],
+                        "project": {
+                            "name": "my-app",
+                            "path": "/home/dev/my-app",
+                            "git_branch": "main"
+                        }
+                    }
+                }
+            ]
+        },
+        "ref": "2"
+    }).to_string())).await?;
+
+    // 4. Listen for turns, steering, and approvals
+    while let Some(Ok(msg)) = upstream_ws.next().await {
+        if let Ok(text) = msg.to_text() {
+            let data: serde_json::Value = serde_json::from_str(text)?;
+            let event = data["event"].as_str().unwrap_or_default();
+
+            match event {
+                "new_message" => {
+                    let payload = &data["payload"];
+                    let conv_id = payload["conversation_id"].as_i64().unwrap_or(0);
+                    let body = payload["body"].as_str().unwrap_or_default();
+                    let metadata = &payload["metadata"];
+                    let use_worktree = metadata["use_worktree"].as_bool().unwrap_or(false);
+                    let base_branch = metadata["base_branch"].as_str().unwrap_or("main");
+
+                    println!("Turn received: '{}' (worktree={}, branch={})", body, use_worktree, base_branch);
+
+                    // Inspect attachments (e.g. photos pasted from mobile)
+                    if let Some(attachments) = metadata["attachments"].as_array() {
+                        for att in attachments {
+                            println!("Attachment attached: {} ({})", att["name"], att["type"]);
+                        }
+                    }
+
+                    // Stream reasoning
+                    upstream_ws.send(tokio_tungstenite::tungstenite::Message::Text(json!({
+                        "topic": format!("bot:{}", channel_code),
+                        "event": "ahp_event",
+                        "payload": {
+                            "session_id": "sess-backend-dev",
+                            "event_type": "thinking",
+                            "data": { "chunk": "Formulating execution plan in worktree...\n" }
+                        },
+                        "ref": "3"
+                    }).to_string())).await?;
+
+                    // Send response
+                    upstream_ws.send(tokio_tungstenite::tungstenite::Message::Text(json!({
+                        "topic": format!("bot:{}", channel_code),
+                        "event": "send_message",
+                        "payload": {
+                            "conversation_id": conv_id,
+                            "body": format!("Task initialized on branch '{}' (worktree: {}). Ready for next instructions.", base_branch, use_worktree),
+                            "model": "claude-3-7-sonnet"
+                        },
+                        "ref": "4"
+                    }).to_string())).await?;
+                }
+                "steer_agent" => {
+                    println!("Mid-turn steering received: {:?}", data["payload"]);
+                }
+                "answer_question" => {
+                    println!("Question answered: {:?}", data["payload"]);
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+```
+
+---
 ```python
 import json
 import websocket
@@ -1726,6 +2052,42 @@ The prompt area mirrors VS Code agent controls directly above the input box:
   - User adjustments in the prompt area immediately emit `update_session_config` to `conversation:<id>` channel, persist into conversation metadata, and push `session_config_changed` to the bot WebSocket.
   - Incoming bot events (`session_status` or `ahp_event` with `mode_change` or `session_config`) update the prompt controls in real time without refreshing the page.
   - All outgoing user messages and asset uploads automatically bundle the active `agent_mode`, `use_worktree`, `base_branch`, and `agent_type` in turn metadata.
+
+### 8. Mobile Image & Asset Pasting (Phone Photo Attachments)
+The mobile-first web interface makes it seamless to snap a photo, upload an asset, or paste screenshots from a phone or desktop directly into chat:
+- **Instant Base64 Preview**: As soon as a photo is pasted or attached, the UI displays a thumbnail preview and bundles the asset details in the turn payload:
+  ```json
+  {
+    "name": "screenshot.png",
+    "type": "image/png",
+    "size": 142050,
+    "previewUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."
+  }
+  ```
+- **AHP Attachment Conversion**: The Rust server and `aims-proxy` automatically inspect incoming attachments and map them to standard AHP types:
+  - If `previewUrl` is a `data:` URI, it is extracted as `ahp_types::state::MessageAttachment::EmbeddedResource` containing the decoded bytes and mime-type.
+  - If `url` points to an uploaded file (`/uploads/:conversation_id/:filename`), it is mapped as `ahp_types::state::MessageAttachment::Resource` with its resource URI.
+- **Accessing Attachments in Integrations**:
+  In your bot's message handler, attachments are present in `turn.metadata.attachments`. For local AHP servers, `aims-proxy` automatically streams the image data to the local host runtime.
+
+### 9. New Session Creation & Git Worktree Lifecycle
+Creating a new session follows a clean lifecycle designed to prevent working tree conflicts:
+1. **Empty Draft State**: When the user clicks `+ New Session`, the UI renders the Copilot-style welcome canvas (`What are we building?`) with the docked pill bar.
+2. **Target Configuration**: The user can toggle between **New Worktree** (`use_worktree: true`) and **Direct Branch** (`use_worktree: false`), pick the base branch (`main`, `develop`), choose the workspace directory, and select agent roles.
+3. **Turn 1 Dispatch**: Upon submitting the first prompt, the payload includes:
+   ```json
+   {
+     "body": "Build authentication endpoints",
+     "metadata": {
+       "use_worktree": true,
+       "base_branch": "main",
+       "agent_mode": "interactive",
+       "working_directory": "/workspace/my-project"
+     }
+   }
+   ```
+4. **Session Lock**: Once the session is running on the host agent, the worktree configuration locks to preserve branch integrity, and the UI shifts seamlessly into execution and steering mode.
+
 
 
 

@@ -7,6 +7,7 @@ import {
 } from "@assistant-ui/react"
 import { VSCodeWorkingStateIcon, VSCodeGearIcon, VSCodeProgressBar } from "./VSCodeWorkingIcons.jsx"
 import { AssistantToolCallPart } from "./AssistantAgentProcess.jsx"
+import { FolderIcon, LayersIcon, CompassIcon, StopIcon } from "./Icons.jsx"
 
 export default function LiveThinking({
 	status = "idle",
@@ -198,7 +199,7 @@ export default function LiveThinking({
 									: "Changeset tracked"
 							}
 						>
-							📁{" "}
+							<FolderIcon size={12} className="inline mr-1" />
 							{Array.isArray(metadata.changeset?.files)
 								? `${metadata.changeset.files.length} files changed`
 								: "Changeset"}
@@ -207,7 +208,8 @@ export default function LiveThinking({
 
 					{metadata?.plan && (
 						<span className="live-tool-chip" title="Active Execution Plan">
-							📋 Plan
+							<LayersIcon size={12} className="inline mr-1" />
+							Plan
 						</span>
 					)}
 				</div>
@@ -220,13 +222,15 @@ export default function LiveThinking({
 							onClick={() => setShowSteerModal(!showSteerModal)}
 							title="Steer agent execution"
 						>
-							🧭 Steer
+							<CompassIcon size={13} className="inline mr-1" />
+							Steer
 						</button>
 					)}
 
 					{isBusy && onStop && (
 						<button type="button" className="btn-stop" onClick={onStop} title="Interrupt agent">
-							⏹ Stop
+							<StopIcon size={12} className="inline mr-1" />
+							Stop
 						</button>
 					)}
 

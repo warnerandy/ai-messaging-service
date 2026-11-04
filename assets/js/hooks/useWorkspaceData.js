@@ -301,9 +301,7 @@ export function useWorkspaceData() {
 				const externalSessionId =
 					opts.external_session_id ||
 					opts.externalSessionId ||
-					(typeof window !== "undefined" && window.crypto?.randomUUID?.()
-						? window.crypto.randomUUID()
-						: undefined)
+					undefined
 
 				const created = await createConversation(token, selectedBotId, {
 					title,

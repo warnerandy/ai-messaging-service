@@ -1,6 +1,6 @@
 import React from "react"
 import { describe, it, expect, vi } from "vitest"
-import { render, screen, fireEvent } from "@testing-library/react"
+import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import NewSessionCanvas from "./NewSessionCanvas.jsx"
 
@@ -13,7 +13,7 @@ describe("NewSessionCanvas", () => {
 
 		expect(screen.getByText("Start a conversation with Botamus Prime")).toBeInTheDocument()
 		expect(screen.getByText("AHP Protocol")).toBeInTheDocument()
-		expect(screen.getByText("📁 my-web-app")).toBeInTheDocument()
+		expect(screen.getByText("my-web-app")).toBeInTheDocument()
 		expect(screen.getByTestId("canvas-git-section")).toBeInTheDocument()
 	})
 
@@ -53,7 +53,7 @@ describe("NewSessionCanvas", () => {
 
 		const worktreeCard = screen.getByTestId("canvas-opt-worktree")
 		expect(worktreeCard).toHaveClass("canvas-target-card--active")
-		expect(screen.getByText("✓ Worktree Active")).toBeInTheDocument()
+		expect(screen.getByText(/Worktree Active/)).toBeInTheDocument()
 	})
 
 	it("displays available branches and allows selecting a branch", async () => {
@@ -99,6 +99,35 @@ describe("NewSessionCanvas", () => {
 		await user.click(screen.getByRole("button", { name: "Set Base Branch" }))
 
 		expect(onBaseBranchChange).toHaveBeenCalledWith("hotfix/v1.2")
+	})
+
+	it("allows configuring the AHP host workspace working directory", async () => {
+		const user = userEvent.setup()
+		const onWorkingDirectoryChange = vi.fn()
+
+		render(
+			<NewSessionCanvas
+				bot={defaultBot}
+				workingDirectory="/workspace/initial"
+				availableDirectories={["/workspace/initial", "/workspace/rust-service"]}
+				onWorkingDirectoryChange={onWorkingDirectoryChange}
+			/>,
+		)
+
+		expect(screen.getByTestId("canvas-workdir-current")).toHaveTextContent("/workspace/initial")
+
+		// Click a host workspace pill
+		await user.click(screen.getByRole("button", { name: "/workspace/rust-service" }))
+		expect(onWorkingDirectoryChange).toHaveBeenCalledWith("/workspace/rust-service")
+
+		// Edit custom path
+		await user.click(screen.getByTestId("canvas-workdir-edit-btn"))
+		const dirInput = screen.getByTestId("canvas-workdir-input")
+		await user.clear(dirInput)
+		await user.type(dirInput, "/home/dev/custom-repo")
+		await user.click(screen.getByTestId("canvas-workdir-submit-btn"))
+
+		expect(onWorkingDirectoryChange).toHaveBeenCalledWith("/home/dev/custom-repo")
 	})
 
 	it("renders execution mode cards and triggers onModeChange", async () => {

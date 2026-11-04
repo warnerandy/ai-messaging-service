@@ -1,5 +1,6 @@
 import React from "react"
 import { AssistantProcessTurn } from "./AssistantAgentProcess.jsx"
+import { CompassIcon, BotIcon, SlidersIcon, PaperclipIcon } from "./Icons.jsx"
 
 export default function MessageBubble({ message, onSuggestion, usedSuggestion }) {
 	const isUser = message.role === "user"
@@ -35,17 +36,20 @@ export default function MessageBubble({ message, onSuggestion, usedSuggestion })
 					)}
 					{(message.metadata?.is_steer || message.is_steer) && (
 						<span className="msg-steer-badge" title="Steering instruction sent to running agent">
-							🧭 Steer Instruction
+							<CompassIcon size={11} className="inline mr-1" />
+							Steer Instruction
 						</span>
 					)}
 					{message.metadata?.agent_type && message.metadata.agent_type !== "general" && (
 						<span className="msg-agent-badge" title={`Agent: ${message.metadata.agent_type}`}>
-							🤖 {message.metadata.agent_type}
+							<BotIcon size={11} className="inline mr-1" />
+							{message.metadata.agent_type}
 						</span>
 					)}
 					{message.metadata?.skill && message.metadata.skill !== "none" && (
 						<span className="msg-skill-badge" title={`Skill: ${message.metadata.skill}`}>
-							⚡ {message.metadata.skill}
+							<SlidersIcon size={11} className="inline mr-1" />
+							{message.metadata.skill}
 						</span>
 					)}
 					{message.metadata?.url && (
@@ -66,7 +70,8 @@ export default function MessageBubble({ message, onSuggestion, usedSuggestion })
 									rel="noreferrer"
 									className="msg-attachment-link"
 								>
-									📎 {message.metadata.filename || "Attachment"}
+									<PaperclipIcon size={12} className="inline mr-1" />
+									{message.metadata.filename || "Attachment"}
 								</a>
 							)}
 						</div>

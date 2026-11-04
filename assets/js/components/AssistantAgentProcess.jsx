@@ -8,6 +8,14 @@ import {
 } from "@assistant-ui/react"
 import { renderMarkdown } from "../lib/renderMarkdown.js"
 import { VSCodeWorkingStateIcon, VSCodeGearIcon } from "./VSCodeWorkingIcons.jsx"
+import {
+	SettingsIcon,
+	BotIcon,
+	FolderIcon,
+	CheckIcon,
+	FileCheckIcon,
+	LayersIcon,
+} from "./Icons.jsx"
 
 /**
  * Normalizes tool calls or process steps from a message's metadata into
@@ -407,12 +415,14 @@ export function AssistantProcessTurn({ message, onSuggestion, usedSuggestion }) 
 					)}
 					{toolParts.length > 0 && (
 						<span className="aui-turn-meta-chip">
-							⚙ {toolParts.length} {toolParts.length === 1 ? "process" : "processes"}
+							<SettingsIcon size={12} className="inline mr-1" />
+							{toolParts.length} {toolParts.length === 1 ? "process" : "processes"}
 						</span>
 					)}
 					{subagents.length > 0 && (
 						<span className="aui-turn-meta-chip aui-turn-meta-chip--subagent">
-							🤖 {subagents.length} {subagents.length === 1 ? "subagent" : "subagents"}
+							<BotIcon size={12} className="inline mr-1" />
+							{subagents.length} {subagents.length === 1 ? "subagent" : "subagents"}
 						</span>
 					)}
 					{changesetFiles.length > 0 && (
@@ -422,10 +432,16 @@ export function AssistantProcessTurn({ message, onSuggestion, usedSuggestion }) 
 								.map((f) => (typeof f === "string" ? f : f.path || f.file))
 								.join(", ")}
 						>
-							📁 {changesetFiles.length} {changesetFiles.length === 1 ? "file" : "files"}
+							<FolderIcon size={12} className="inline mr-1" />
+							{changesetFiles.length} {changesetFiles.length === 1 ? "file" : "files"}
 						</span>
 					)}
-					{hasProcessMetadata && <span className="aui-turn-status-done">✓ Completed</span>}
+					{hasProcessMetadata && (
+						<span className="aui-turn-status-done">
+							<CheckIcon size={11} className="inline mr-1" />
+							Completed
+						</span>
+					)}
 					{message.body && (
 						<button
 							type="button"
@@ -434,7 +450,17 @@ export function AssistantProcessTurn({ message, onSuggestion, usedSuggestion }) 
 							title={copied ? "Copied response to clipboard" : "Copy response"}
 							aria-label="Copy response"
 						>
-							{copied ? "✓ Copied" : "📋 Copy"}
+							{copied ? (
+								<>
+									<CheckIcon size={12} className="inline mr-1" />
+									Copied
+								</>
+							) : (
+								<>
+									<FileCheckIcon size={12} className="inline mr-1" />
+									Copy
+								</>
+							)}
 						</button>
 					)}
 				</div>
@@ -442,7 +468,10 @@ export function AssistantProcessTurn({ message, onSuggestion, usedSuggestion }) 
 				{/* Plan steps if included in turn metadata */}
 				{planSteps.length > 0 && (
 					<div className="aui-turn-plan" data-testid="aui-turn-plan">
-						<div className="aui-turn-plan__title">📋 Execution Plan</div>
+						<div className="aui-turn-plan__title">
+							<LayersIcon size={13} className="inline mr-1" />
+							Execution Plan
+						</div>
 						<ul className="aui-turn-plan__list">
 							{planSteps.map((stepItem, i) => {
 								const text =
@@ -460,7 +489,9 @@ export function AssistantProcessTurn({ message, onSuggestion, usedSuggestion }) 
 										key={i}
 										className={`aui-turn-plan__item ${done ? "aui-turn-plan__item--done" : ""}`}
 									>
-										<span className="aui-turn-plan__check">{done ? "✓" : "•"}</span>
+										<span className="aui-turn-plan__check">
+											{done ? <CheckIcon size={12} className="inline" /> : "•"}
+										</span>
 										<span>{text}</span>
 									</li>
 								)

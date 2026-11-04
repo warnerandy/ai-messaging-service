@@ -76,7 +76,7 @@ describe("AssistantAgentProcess (@assistant-ui/react integration)", () => {
 		expect(screen.getByText(/1 process/i)).toBeInTheDocument()
 		expect(screen.getByText(/1 subagent/i)).toBeInTheDocument()
 		expect(screen.getByText(/1 file/i)).toBeInTheDocument()
-		expect(screen.getByText(/✓ Completed/i)).toBeInTheDocument()
+		expect(screen.getByText(/Completed/i)).toBeInTheDocument()
 
 		// Execution plan rendered
 		expect(screen.getByTestId("aui-turn-plan")).toBeInTheDocument()
@@ -121,13 +121,13 @@ describe("AssistantAgentProcess (@assistant-ui/react integration)", () => {
 
 		const copyBtn = screen.getByRole("button", { name: /Copy response/i })
 		expect(copyBtn).toBeInTheDocument()
-		expect(copyBtn).toHaveTextContent("📋 Copy")
+		expect(copyBtn).toHaveTextContent("Copy")
 
 		await act(async () => {
 			fireEvent.click(copyBtn)
 		})
 
 		expect(writeTextMock).toHaveBeenCalledWith("Here is the refactored code explanation.")
-		expect(copyBtn).toHaveTextContent("✓ Copied")
+		expect(copyBtn).toHaveTextContent("Copied")
 	})
 })

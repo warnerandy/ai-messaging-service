@@ -124,7 +124,7 @@ describe("ProjectInfoModal", () => {
 
 		expect(screen.getByTestId("project-git-section")).toBeInTheDocument()
 		expect(screen.getByText("feature/worktree-branch")).toBeInTheDocument()
-		expect(screen.getByText("⚡ Isolated Worktree")).toBeInTheDocument()
+		expect(screen.getByText("Isolated Worktree")).toBeInTheDocument()
 		expect(
 			screen.getByText(/Working in isolated git worktree against base branch/i),
 		).toBeInTheDocument()

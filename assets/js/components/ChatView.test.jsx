@@ -138,7 +138,7 @@ describe("ChatView", () => {
 			/>,
 		)
 
-		expect(screen.getByText("ai-messaging-service")).toBeInTheDocument()
+		expect(screen.getAllByText("ai-messaging-service").length).toBeGreaterThanOrEqual(1)
 		expect(screen.getAllByText("master").length).toBeGreaterThanOrEqual(1)
 	})
 
@@ -604,7 +604,7 @@ describe("normalizeMessage", () => {
 		expect(stepElements.length).toBeGreaterThanOrEqual(1)
 		expect(screen.getAllByText("Running").length).toBeGreaterThanOrEqual(1)
 		expect(screen.getByTestId("chat-steering-bar")).toBeInTheDocument()
-		expect(screen.getByRole("button", { name: "🧭 Steer Agent" })).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "Steer Agent" })).toBeInTheDocument()
 	})
 
 	it("steers running agent when submitting a message in running state without sending use_worktree", async () => {
@@ -647,7 +647,7 @@ describe("normalizeMessage", () => {
 		expect(textarea).toBeInTheDocument()
 
 		await user.type(textarea, "Focus on backend API first")
-		const steerBtn = screen.getByRole("button", { name: "🧭 Steer Agent" })
+		const steerBtn = screen.getByRole("button", { name: "Steer Agent" })
 		expect(steerBtn).toBeInTheDocument()
 		await user.click(steerBtn)
 
@@ -793,7 +793,7 @@ describe("normalizeMessage", () => {
 
 		// Steering bar should NOT be in the document
 		expect(screen.queryByTestId("chat-steering-bar")).not.toBeInTheDocument()
-		expect(screen.queryByRole("button", { name: "🧭 Steer Agent" })).not.toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: "Steer Agent" })).not.toBeInTheDocument()
 
 		// Prompt input should be the normal question input (not steering)
 		const input = screen.getByPlaceholderText("Send an instruction or question...")
@@ -834,7 +834,7 @@ describe("normalizeMessage", () => {
 			/>,
 		)
 
-		const viewProgressBtn = await screen.findByRole("button", { name: "↓ View Progress" })
+		const viewProgressBtn = await screen.findByRole("button", { name: /View Progress/i })
 		expect(viewProgressBtn).toBeInTheDocument()
 
 		await user.click(viewProgressBtn)

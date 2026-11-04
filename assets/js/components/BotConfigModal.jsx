@@ -9,6 +9,7 @@ export default function BotConfigModal({ token, bot, onClose, onBotUpdated }) {
 	const [copiedWs, setCopiedWs] = useState(false)
 	const [copiedHttp, setCopiedHttp] = useState(false)
 	const [copiedTopic, setCopiedTopic] = useState(false)
+	const [copiedProxyCmd, setCopiedProxyCmd] = useState(false)
 	const [error, setError] = useState(null)
 
 	if (!bot) return null
@@ -16,8 +17,10 @@ export default function BotConfigModal({ token, bot, onClose, onBotUpdated }) {
 	const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:"
 	const host = window.location.host
 	const wsUrl = `${wsProtocol}//${host}/socket/websocket`
+	const proxyWsUrl = `${wsProtocol}//${host}/bot/websocket`
 	const httpUrl = `${window.location.origin}/api/bot`
 	const channelTopic = `bot:${bot.channel_code || bot.id}`
+	const proxyCliCmd = `aims-proxy --ahp-url ws://127.0.0.1:12345 --server-url ${proxyWsUrl} --token ${newKey || "<BOT_TOKEN>"}`
 
 	async function handleRegenerate() {
 		if (regenerating) return
@@ -118,6 +121,30 @@ export default function BotConfigModal({ token, bot, onClose, onBotUpdated }) {
 						</div>
 					</div>
 
+					<div className="config-section" data-testid="aims-proxy-cli-section">
+						<label className="config-section-title">Rust AHP Proxy Command (aims-proxy)</label>
+						<p className="config-section-desc">
+							Run the Rust AHP proxy on your machine to bridge your local AHP server:
+						</p>
+						<div className="copy-field">
+							<input
+								type="text"
+								readOnly
+								value={proxyCliCmd}
+								className="copy-input"
+								data-testid="aims-proxy-cli-input"
+							/>
+							<button
+								type="button"
+								className="copy-btn"
+								onClick={() => copyToClipboard(proxyCliCmd, setCopiedProxyCmd)}
+								data-testid="aims-proxy-cli-copy-btn"
+							>
+								{copiedProxyCmd ? "Copied!" : "Copy"}
+							</button>
+						</div>
+					</div>
+
 					{/* Token Regeneration */}
 					<div className="config-section config-section--danger">
 						<label className="config-section-title">Bot Secret Token</label>
@@ -129,7 +156,7 @@ export default function BotConfigModal({ token, bot, onClose, onBotUpdated }) {
 						{newKey ? (
 							<div className="token-reveal-box">
 								<div className="token-reveal-alert">
-									<span>🔑 New Token Generated! Save it now; it won't be shown again.</span>
+									<span>New Token Generated! Save it now; it won't be shown again.</span>
 								</div>
 								<div className="copy-field">
 									<input

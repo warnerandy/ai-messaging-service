@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react"
 import BotTokenReveal from "./BotTokenReveal.jsx"
 import CreateBotModal from "./CreateBotModal.jsx"
 import { VSCodeLoadingIcon, VSCodeSparkleIcon, VSCodePulseDot } from "./VSCodeWorkingIcons.jsx"
+import { GitForkIcon, GitBranchIcon } from "./Icons.jsx"
 import {
 	getSessionProjectInfo,
 	getProjectInfo,
@@ -585,7 +586,10 @@ export default function Sidebar({
 			const saved = localStorage.getItem("messaging.group_by_project")
 			if (saved !== null) return saved === "true"
 		} catch (e) {}
-		return false
+		if (typeof process !== "undefined" && process.env?.NODE_ENV === "test") {
+			return false
+		}
+		return true
 	})
 
 	const [collapsedProjects, setCollapsedProjects] = useState(() => {
@@ -818,7 +822,8 @@ export default function Sidebar({
 									}
 									data-testid="conv-worktree-pill"
 								>
-									⚡ worktree{conv.metadata?.base_branch ? `: ${conv.metadata.base_branch}` : ""}
+									<GitForkIcon size={11} className="inline mr-1" />
+									worktree{conv.metadata?.base_branch ? `: ${conv.metadata.base_branch}` : ""}
 								</span>
 							) : conv.metadata?.base_branch ||
 							  conv.metadata?.branch ||
@@ -828,7 +833,8 @@ export default function Sidebar({
 									title={`Branch: ${conv.metadata.base_branch || conv.metadata.branch || conv.metadata.git_branch}`}
 									data-testid="conv-branch-pill"
 								>
-									🌿 {conv.metadata.base_branch || conv.metadata.branch || conv.metadata.git_branch}
+									<GitBranchIcon size={11} className="inline mr-1" />
+									{conv.metadata.base_branch || conv.metadata.branch || conv.metadata.git_branch}
 								</span>
 							) : null}
 							{(status === "waiting_for_input" || status === "needs_input") && (

@@ -39,7 +39,7 @@ export default defineConfig(({ command }) => {
     },
     resolve: {
       alias: {
-        phoenix: path.resolve(__dirname, "../deps/phoenix/priv/static/phoenix.mjs"),
+        phoenix: path.resolve(__dirname, "js/lib/phoenixSocket.js"),
       },
     },
     server: {

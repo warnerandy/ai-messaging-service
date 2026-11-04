@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react"
 import { VSCodeWorkingStateIcon, VSCodeGearIcon } from "./VSCodeWorkingIcons.jsx"
+import { ZapIcon, TerminalIcon, FileCheckIcon, LayersIcon } from "./Icons.jsx"
 import {
 	formatSessionTitle,
 	getSessionSubagents,
@@ -268,7 +269,8 @@ export default function SubagentsPanel({
 								data-testid="open-subagents-from-bar"
 								title="Open running subagents panel"
 							>
-								⚡ Inspect Subagents{" "}
+								<ZapIcon size={13} className="inline mr-1" />
+								Inspect Subagents{" "}
 								{runningSubagents.length > 0 ? `(${runningSubagents.length})` : ""}
 							</button>
 						)}
@@ -302,7 +304,7 @@ export default function SubagentsPanel({
 							<div className="subagents-drawer__header">
 								<div className="subagents-drawer__title-group">
 									<span className="subagents-drawer__icon" aria-hidden="true">
-										⚡
+										<ZapIcon size={16} />
 									</span>
 									<div>
 										<h3 className="subagents-drawer__title">Agent Inspector</h3>
@@ -321,7 +323,7 @@ export default function SubagentsPanel({
 									data-testid="close-subagents-panel"
 									title="Close panel (Esc)"
 								>
-									✕ Close
+									Close
 								</button>
 							</div>
 
@@ -342,7 +344,7 @@ export default function SubagentsPanel({
 									}}
 									data-testid="tab-running-subagents"
 								>
-									<span className="subagents-tab__icon">⚡</span>
+									<span className="subagents-tab__icon"><ZapIcon size={14} /></span>
 									<span>Running ({runningSubagents.length})</span>
 								</button>
 								<button
@@ -353,7 +355,7 @@ export default function SubagentsPanel({
 									onClick={() => setActiveTab("processes")}
 									data-testid="tab-processes"
 								>
-									<span className="subagents-tab__icon">⚙️</span>
+									<span className="subagents-tab__icon"><TerminalIcon size={14} /></span>
 									<span>Processes ({processes.length})</span>
 								</button>
 								<button
@@ -364,7 +366,7 @@ export default function SubagentsPanel({
 									onClick={() => setActiveTab("changeset")}
 									data-testid="tab-changeset"
 								>
-									<span className="subagents-tab__icon">📝</span>
+									<span className="subagents-tab__icon"><FileCheckIcon size={14} /></span>
 									<span>Changes ({changesetFiles.length})</span>
 								</button>
 								<button
@@ -375,7 +377,7 @@ export default function SubagentsPanel({
 									onClick={() => setActiveTab("plan")}
 									data-testid="tab-plan"
 								>
-									<span className="subagents-tab__icon">📋</span>
+									<span className="subagents-tab__icon"><LayersIcon size={14} /></span>
 									<span>Plan ({planSteps.length})</span>
 								</button>
 								<button
@@ -811,7 +813,9 @@ export default function SubagentsPanel({
 													<div key={file.path || idx} className="subagent-card">
 														<div className="subagent-card__header">
 															<div className="subagent-card__name-group">
-																<span className="subagent-card__avatar">📄</span>
+																<span className="subagent-card__avatar">
+																	<FileCheckIcon size={14} />
+																</span>
 																<div>
 																	<div className="subagent-card__title" title={file.path}>
 																		{file.path ? file.path.split(/[/\\]/).pop() : "File"}

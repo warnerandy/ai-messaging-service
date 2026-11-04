@@ -7,6 +7,7 @@ import {
 	VSCodeLoadingIcon,
 	VSCodePulseDot,
 } from "./VSCodeWorkingIcons.jsx"
+import { BotIcon } from "./Icons.jsx"
 import {
 	getNotificationPermission,
 	requestNotificationPermission,
@@ -233,7 +234,9 @@ export default function SettingsModal({
 							className={`settings-tab-btn ${activeTab === "bot" ? "settings-tab-btn--active" : ""}`}
 							onClick={() => setActiveTab("bot")}
 						>
-							<span className="settings-tab-icon">🤖</span>
+							<span className="settings-tab-icon">
+								<BotIcon size={14} />
+							</span>
 							<span>Bot Config</span>
 						</button>
 					)}
@@ -340,7 +343,6 @@ export default function SettingsModal({
 							<div className="settings-card">
 								<div className="settings-card-header">
 									<div className="settings-card-title-group">
-										<span className="settings-card-icon">📱</span>
 										<div>
 											<h4 className="settings-card-title">Browser &amp; PWA Notifications</h4>
 											<p className="settings-card-desc">
@@ -359,10 +361,10 @@ export default function SettingsModal({
 										}`}
 									>
 										{permission === "granted"
-											? "✓ Enabled"
+											? "Enabled"
 											: permission === "denied"
-												? "✕ Blocked"
-												: "! Not Enabled"}
+												? "Blocked"
+												: "Not Enabled"}
 									</span>
 								</div>
 
@@ -386,18 +388,18 @@ export default function SettingsModal({
 										onClick={handleTestNotification}
 										disabled={testingNotification}
 									>
-										{testingNotification ? "🔔 Sending..." : "🔔 Test Native Notification"}
+										{testingNotification ? "Sending..." : "Test Native Notification"}
 									</button>
 								</div>
 
 								{notifFeedback === "sent" && (
 									<div className="settings-feedback-banner settings-feedback-banner--success">
-										<span>✓ Test notification sent! Check your notification tray or banner.</span>
+										<span>Test notification sent! Check your notification tray or banner.</span>
 									</div>
 								)}
 								{notifFeedback === "denied" && (
 									<div className="settings-feedback-banner settings-feedback-banner--warning">
-										<span>✕ Notifications are blocked or denied in your browser settings.</span>
+										<span>Notifications are blocked or denied in your browser settings.</span>
 									</div>
 								)}
 								{notifFeedback === "unsupported" && (
@@ -405,15 +407,15 @@ export default function SettingsModal({
 										<span>
 											{typeof navigator !== "undefined" &&
 											/iPhone|iPad|iPod/.test(navigator.userAgent)
-												? "ℹ️ On iOS, Apple requires adding Botamus to your Home Screen (Safari Share ➔ Add to Home Screen) to enable native notifications."
-												: "ℹ️ Native notifications are not supported in this browser."}
+												? "On iOS, Apple requires adding Botamus to your Home Screen (Safari Share ➔ Add to Home Screen) to enable native notifications."
+												: "Native notifications are not supported in this browser."}
 										</span>
 									</div>
 								)}
 								{notifFeedback === "error" && (
 									<div className="settings-feedback-banner settings-feedback-banner--warning">
 										<span>
-											✕ Failed to deliver notification. Check your system notification permissions.
+											Failed to deliver notification. Check your system notification permissions.
 										</span>
 									</div>
 								)}
@@ -478,7 +480,6 @@ export default function SettingsModal({
 							<div className="settings-card">
 								<div className="settings-card-header">
 									<div className="settings-card-title-group">
-										<span className="settings-card-icon">🔊</span>
 										<div>
 											<h4 className="settings-card-title">Sound Effects &amp; Haptic Vibration</h4>
 											<p className="settings-card-desc">
@@ -491,7 +492,7 @@ export default function SettingsModal({
 											isVibrationSupported() ? "granted" : "pending"
 										}`}
 									>
-										{isVibrationSupported() ? "📳 Haptics Ready" : "Vibration: Android only"}
+										{isVibrationSupported() ? "Haptics Ready" : "Vibration: Android only"}
 									</span>
 								</div>
 
@@ -501,21 +502,21 @@ export default function SettingsModal({
 										className="settings-btn settings-btn--secondary"
 										onClick={handleTestSound}
 									>
-										{testedSound ? "▶ Playing Chime..." : "▶ Test Audio Chime"}
+										{testedSound ? "Playing Chime..." : "Test Audio Chime"}
 									</button>
 									<button
 										type="button"
 										className="settings-btn settings-btn--secondary"
 										onClick={handleTestVibration}
 									>
-										{testedVibe ? "📳 Vibrating..." : "📳 Test Vibration"}
+										{testedVibe ? "Vibrating..." : "Test Vibration"}
 									</button>
 								</div>
 
 								{vibeStatus === "unsupported" && (
 									<div className="settings-feedback-banner settings-feedback-banner--warning">
 										<span>
-											ℹ️ Vibration is not supported on this device/browser. iOS Safari and desktop
+											Vibration is not supported on this device/browser. iOS Safari and desktop
 											PCs lack the Vibration API (supported on Android).
 										</span>
 									</div>
@@ -524,7 +525,7 @@ export default function SettingsModal({
 								{vibeStatus === "blocked" && (
 									<div className="settings-feedback-banner settings-feedback-banner--warning">
 										<span>
-											⚠️ Vibration was blocked by device or browser settings. Check if Do Not
+											Vibration was blocked by device or browser settings. Check if Do Not
 											Disturb or system Haptics is turned off.
 										</span>
 									</div>
@@ -625,7 +626,7 @@ export default function SettingsModal({
 								{newKey ? (
 									<div className="token-reveal-box">
 										<div className="token-reveal-alert">
-											<span>🔑 New Token Generated! Save it now; it won't be shown again.</span>
+											<span>New Token Generated! Save it now; it won't be shown again.</span>
 										</div>
 										<div className="copy-field">
 											<input

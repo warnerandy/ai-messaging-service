@@ -129,6 +129,59 @@ describe("AssistantChatComposer", () => {
 		expect(handleRemoveAttachment).toHaveBeenCalledWith("att-1")
 	})
 
+	it("attaches pasted images from mobile or desktop clipboard on the fly", () => {
+		const handleAddAttachments = vi.fn()
+		render(
+			<AssistantChatComposer
+				value=""
+				models={defaultModels}
+				selectedModel="gpt-4o"
+				onAddAttachments={handleAddAttachments}
+			/>,
+		)
+
+		const input = screen.getByPlaceholderText("What do you want to know?")
+		const pastedImageBlob = new Blob(["mobile-image"], { type: "image/png" })
+
+		fireEvent.paste(input, {
+			clipboardData: {
+				items: [
+					{
+						kind: "file",
+						type: "image/png",
+						getAsFile: () => pastedImageBlob,
+					},
+				],
+				files: [],
+			},
+		})
+
+		expect(handleAddAttachments).toHaveBeenCalledTimes(1)
+		const passedFiles = handleAddAttachments.mock.calls[0][0]
+		expect(passedFiles).toHaveLength(1)
+		expect(passedFiles[0].type).toBe("image/png")
+		expect(passedFiles[0].name).toMatch(/^pasted-image-.*\.png$/)
+	})
+
+	it("renders mobile camera/photo quick-attach button and triggers onAddAttachments", () => {
+		const handleAddAttachments = vi.fn()
+		render(
+			<AssistantChatComposer
+				value=""
+				models={defaultModels}
+				selectedModel="gpt-4o"
+				onAddAttachments={handleAddAttachments}
+			/>,
+		)
+
+		expect(screen.getByTestId("camera-attach-btn")).toBeInTheDocument()
+		const cameraInput = screen.getByTestId("camera-image-input")
+		const photoFile = new File(["photo-bytes"], "phone-photo.jpg", { type: "image/jpeg" })
+
+		fireEvent.change(cameraInput, { target: { files: [photoFile] } })
+		expect(handleAddAttachments).toHaveBeenCalledWith([photoFile])
+	})
+
 	it("renders steering bar and handles steer action when agent is running", () => {
 		const handleViewProgress = vi.fn()
 		const handleStop = vi.fn()
@@ -215,5 +268,32 @@ describe("AssistantChatComposer", () => {
 		const sendBtn = screen.getByLabelText("Send message")
 		expect(sendBtn).toBeInTheDocument()
 		expect(sendBtn).toBeDisabled()
+	})
+
+	it("allows selecting git worktree from docked pill bar on a new session", () => {
+		const handleWorktreeChange = vi.fn()
+		render(
+			<AssistantChatComposer
+				value=""
+				isNewSession={true}
+				models={defaultModels}
+				worktreeSupported={true}
+				useWorktree={false}
+				onWorktreeChange={handleWorktreeChange}
+				baseBranch="main"
+			/>,
+		)
+
+		const worktreePill = screen.getByTestId("aui-docked-worktree-pill")
+		expect(worktreePill).toBeInTheDocument()
+		expect(worktreePill).toHaveTextContent("Direct Branch")
+
+		// Clicking opens popover menu
+		fireEvent.click(worktreePill)
+		const worktreeOption = screen.getByTestId("aui-worktree-opt-worktree")
+		expect(worktreeOption).toBeInTheDocument()
+
+		fireEvent.click(worktreeOption)
+		expect(handleWorktreeChange).toHaveBeenCalledWith(true)
 	})
 })

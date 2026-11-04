@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react"
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "react"
 import { Socket } from "phoenix"
 import {
 	AssistantRuntimeProvider,
@@ -16,7 +16,13 @@ import BotConfigModal from "./BotConfigModal.jsx"
 import SettingsModal from "./SettingsModal.jsx"
 import ProjectInfoModal from "./ProjectInfoModal.jsx"
 import NewSessionCanvas from "./NewSessionCanvas.jsx"
+import { ZapIcon, SettingsIcon, FolderIcon } from "./Icons.jsx"
 import { convertToAssistantMessage } from "./AssistantAgentProcess.jsx"
+import {
+	normalizePastedFile,
+	readFileAsDataUrl,
+	createAhpAttachmentAdapter,
+} from "../runtime/ahpRuntime.js"
 import {
 	getProjectInfo,
 	formatSessionTitle,
@@ -173,18 +179,52 @@ export default function ChatView({
 	const [uploading, setUploading] = useState(false)
 
 	const handleAddAttachments = useCallback((newFiles) => {
-		const mapped = newFiles.map((file) => ({
-			id: `${file.name}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-			file,
-			name: file.name,
-			size: file.size,
-			type: file.type,
-			previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : null,
-		}))
+		const normalizedList = Array.from(newFiles || [])
+			.map((rawFile, idx) => normalizePastedFile(rawFile, idx))
+			.filter(Boolean)
+		if (normalizedList.length === 0) return
+
+		const mapped = normalizedList.map((file) => {
+			let previewUrl = null
+			if (file.type?.startsWith("image/") && typeof URL !== "undefined" && URL.createObjectURL) {
+				try {
+					previewUrl = URL.createObjectURL(file)
+				} catch {
+					previewUrl = null
+				}
+			}
+			return {
+				id: `${file.name}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+				file,
+				name: file.name,
+				size: file.size,
+				type: file.type,
+				previewUrl,
+				dataUrl: null,
+			}
+		})
 		setAttachments((prev) => [...prev, ...mapped])
-		if (newFiles[0]) {
-			setSelectedFile(newFiles[0])
+		if (normalizedList[0]) {
+			setSelectedFile(normalizedList[0])
 		}
+
+		// Populate inline base64 dataUrl for image attachments so AHP proxy can embed them directly
+		mapped.forEach((item) => {
+			if (item.type?.startsWith("image/")) {
+				readFileAsDataUrl(item.file)
+					.then((dataUrl) => {
+						if (!dataUrl) return
+						setAttachments((prev) =>
+							prev.map((att) =>
+								att.id === item.id
+									? { ...att, dataUrl, previewUrl: att.previewUrl || dataUrl }
+									: att,
+							),
+						)
+					})
+					.catch(() => {})
+			}
+		})
 	}, [])
 
 	const handleRemoveAttachment = useCallback((id) => {
@@ -373,6 +413,12 @@ export default function ChatView({
 	const [availableBranches, setAvailableBranches] = useState(initialPromptConfig.availableBranches)
 	const [agentTypes, setAgentTypes] = useState(initialPromptConfig.agentTypes)
 	const [selectedAgentType, setSelectedAgentType] = useState(initialPromptConfig.agentType)
+	const [workingDirectory, setWorkingDirectory] = useState(
+		effectiveMetadata?.working_directory || effectiveMetadata?.workingDirectory || "",
+	)
+	const [availableDirectories, setAvailableDirectories] = useState(
+		Array.isArray(bot?.metadata?.working_directories) ? bot.metadata.working_directories : [],
+	)
 
 	const applyIncomingSessionConfig = useCallback(
 		(cfg) => {
@@ -438,6 +484,14 @@ export default function ChatView({
 			if (incomingRoles) {
 				setAgentTypes(normalizeAgentTypes(incomingRoles))
 			}
+			if (cfg.working_directory || cfg.workingDirectory) {
+				setWorkingDirectory(cfg.working_directory || cfg.workingDirectory)
+			}
+			const incomingDirs =
+				cfg.working_directories || cfg.workingDirectories || cfg.capabilities?.working_directories
+			if (Array.isArray(incomingDirs)) {
+				setAvailableDirectories(incomingDirs.filter((d) => typeof d === "string" && d.trim()))
+			}
 		},
 		[bot],
 	)
@@ -484,7 +538,7 @@ export default function ChatView({
 
 	const handleWorktreeChange = useCallback(
 		(newWorktree) => {
-			if (activeConv?.external_session_id) {
+			if (hasUserPromptsRef.current) {
 				return
 			}
 			setUseWorktree(newWorktree)
@@ -500,7 +554,7 @@ export default function ChatView({
 				}
 			}
 		},
-		[activeConv?.external_session_id, selectedConversationId, token, onConversationStatusChange],
+		[selectedConversationId, token, onConversationStatusChange],
 	)
 
 	const handleBaseBranchChange = useCallback(
@@ -532,6 +586,23 @@ export default function ChatView({
 				if (selectedConversationId && token) {
 					updateConversation(token, selectedConversationId, {
 						metadata: { agent_type: newType },
+					}).catch(() => {})
+				}
+			}
+		},
+		[selectedConversationId, token, onConversationStatusChange],
+	)
+
+	const handleWorkingDirectoryChange = useCallback(
+		(newDir) => {
+			setWorkingDirectory(newDir)
+			setSessionMetadata((prev) => ({ ...prev, working_directory: newDir }))
+			onConversationStatusChange?.(selectedConversationId, null, { working_directory: newDir })
+			if (hasUserPromptsRef.current) {
+				channelRef.current?.push("update_session_config", { working_directory: newDir })
+				if (selectedConversationId && token) {
+					updateConversation(token, selectedConversationId, {
+						metadata: { working_directory: newDir },
 					}).catch(() => {})
 				}
 			}
@@ -1661,7 +1732,7 @@ export default function ChatView({
 						setToolCalls((prev) => (prev.length > 0 ? prev : convMeta.tool_calls))
 					}
 
-					const effectiveStatus = isLiveActive ? currentConv?.status || convStatus : convStatus
+					const effectiveStatus = currentConv?.status || convStatus
 					const effectiveMeta = {
 						...convMeta,
 						...(currentConv?.metadata || {}),
@@ -1756,7 +1827,7 @@ export default function ChatView({
 			hasUserPromptsRef.current ||
 			(Array.isArray(messages) && messages.some((m) => m && !m.pending && m.role === "user")) ||
 			Boolean(activeConv?.last_message_at)
-		const isExistingSession = Boolean(activeConv?.external_session_id) || hasUserPrompts || isSteer
+		const isExistingSession = hasUserPrompts || isSteer
 		const isNewSession = !isExistingSession
 
 		const metadata = {
@@ -1765,6 +1836,7 @@ export default function ChatView({
 			...(isNewSession && useWorktree !== undefined ? { use_worktree: useWorktree } : {}),
 			base_branch: baseBranch,
 			skill: selectedSkill,
+			...(workingDirectory ? { working_directory: workingDirectory } : {}),
 			...(opts.metadata || {}),
 			...(isSteer ? { is_steer: true } : {}),
 		}
@@ -1843,7 +1915,7 @@ export default function ChatView({
 			hasUserPromptsRef.current ||
 			(Array.isArray(messages) && messages.some((m) => m && !m.pending && m.role === "user")) ||
 			Boolean(activeConv?.last_message_at)
-		const isExistingSession = Boolean(activeConv?.external_session_id) || hasUserPrompts || is_steer
+		const isExistingSession = hasUserPrompts || is_steer
 		const isNewSession = !isExistingSession
 
 		const primary = currentAttachments[0]
@@ -1892,13 +1964,32 @@ export default function ChatView({
 		try {
 			const uploadedList = []
 			for (const att of currentAttachments) {
+				let inlineDataUrl = att.dataUrl || null
+				if (!inlineDataUrl && att.type?.startsWith("image/") && att.file) {
+					try {
+						inlineDataUrl = await readFileAsDataUrl(att.file)
+					} catch {
+						inlineDataUrl = null
+					}
+				}
 				const uploadResult = await uploadFile(att.file)
 				if (uploadResult?.url) {
 					uploadedList.push({
 						url: uploadResult.url,
 						filename: att.name,
+						name: att.name,
 						type: att.type,
 						size: att.size,
+						...(inlineDataUrl ? { data_url: inlineDataUrl } : {}),
+					})
+				} else if (inlineDataUrl) {
+					uploadedList.push({
+						url: inlineDataUrl,
+						filename: att.name,
+						name: att.name,
+						type: att.type,
+						size: att.size,
+						data_url: inlineDataUrl,
 					})
 				}
 			}
@@ -1916,6 +2007,7 @@ export default function ChatView({
 				...(isNewSession && useWorktree !== undefined ? { use_worktree: useWorktree } : {}),
 				base_branch: baseBranch,
 				skill: selectedSkill,
+				...(workingDirectory ? { working_directory: workingDirectory } : {}),
 				...(opts.metadata || {}),
 				...(is_steer ? { is_steer: true } : {}),
 			}
@@ -2238,9 +2330,20 @@ export default function ChatView({
 		}
 	}
 
+	const threadAttachmentAdapter = useMemo(
+		() =>
+			createAhpAttachmentAdapter({
+				uploadAsset: (file) => uploadFile(file),
+			}),
+		[selectedConversationId, token],
+	)
+
 	const threadRuntime = useExternalStoreRuntime({
 		isRunning: effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy,
 		messages,
+		adapters: {
+			attachments: threadAttachmentAdapter,
+		},
 		convertMessage: useCallback((m) => convertToAssistantMessage(m), []),
 		onNew: useCallback(async () => {
 			if (handleSend) {
@@ -2553,7 +2656,9 @@ export default function ChatView({
 									aria-label="Inspect running subagents and processes"
 									data-testid="open-subagents-drawer-btn"
 								>
-									<span className="chat-subagents-trigger-btn__icon">⚡</span>
+									<span className="chat-subagents-trigger-btn__icon">
+										<ZapIcon size={14} />
+									</span>
 									<span>
 										{runningSubagentsCount > 0
 											? `${runningSubagentsCount} Running`
@@ -2563,7 +2668,8 @@ export default function ChatView({
 									</span>
 									{runningProcessesCount > 0 && (
 										<span className="chat-subagents-trigger-btn__proc-chip">
-											⚙️ {runningProcessesCount}
+											<SettingsIcon size={12} className="inline mr-1" />
+											{runningProcessesCount}
 										</span>
 									)}
 								</button>
@@ -2706,7 +2812,9 @@ export default function ChatView({
 				<div
 					className={`chat-workspace-split ${inspectorOpen && isAhp ? "chat-workspace-split--with-inspector" : ""}`}
 				>
-					<div className="chat-thread-container">
+					<div
+						className={`chat-thread-container ${messages.length === 0 && !isLoadingMessages ? "chat-thread-container--empty" : ""}`}
+					>
 						{/* Messages & Assistant UI Unified Thread */}
 						<ThreadPrimitive.Root className="aui-thread-root">
 							<ThreadPrimitive.Viewport
@@ -2716,7 +2824,9 @@ export default function ChatView({
 							>
 								{isArchived && (
 									<div key="chat-archived-banner" className="chat-archived-banner">
-										<span className="chat-archived-banner-icon">📁</span>
+										<span className="chat-archived-banner-icon">
+											<FolderIcon size={16} />
+										</span>
 										<span className="chat-archived-banner-text">
 											This session is archived. You can review history or{" "}
 											<button
@@ -2736,6 +2846,9 @@ export default function ChatView({
 										bot={bot}
 										isAhp={isAhp}
 										projectInfo={projectInfo}
+										workingDirectory={workingDirectory}
+										availableDirectories={availableDirectories}
+										onWorkingDirectoryChange={handleWorkingDirectoryChange}
 										modes={agentModes}
 										mode={agentMode}
 										onModeChange={handleModeChange}
@@ -2857,9 +2970,13 @@ export default function ChatView({
 								agentTypes={agentTypes}
 								isAHP={isAhp}
 								isNewSession={
-									!selectedConversationId ||
-									(!activeConv?.external_session_id && messages.length === 0)
+									!selectedConversationId || (!activeConv?.external_session_id && messages.length === 0)
 								}
+								bot={bot}
+								projectInfo={projectInfo}
+								workingDirectory={workingDirectory}
+								availableDirectories={availableDirectories}
+								onWorkingDirectoryChange={handleWorkingDirectoryChange}
 							/>
 						</ThreadPrimitive.Root>
 					</div>

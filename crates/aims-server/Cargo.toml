@@ -1,0 +1,40 @@
+[package]
+name = "aims-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rust AHP (Agent Host Protocol) backend server and WebSocket hub for AI Messaging Service"
+
+[[bin]]
+name = "aims-server"
+path = "src/main.rs"
+
+[lib]
+name = "aims_server"
+path = "src/lib.rs"
+
+[dependencies]
+ahp.workspace = true
+ahp-types.workspace = true
+ahp-ws.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+base64.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+hex.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+futures-util.workspace = true
+
+axum = { version = "0.8", features = ["ws", "multipart", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "cors", "trace"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "json", "uuid"] }
+bcrypt = "0.17"
+mime_guess = "2.0"

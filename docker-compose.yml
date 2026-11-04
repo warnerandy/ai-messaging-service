@@ -20,12 +20,11 @@ services:
     ports:
       - "4002:4000"
     environment:
-      DATABASE_URL: ecto://messaging:messaging@db/messaging_prod
+      DATABASE_URL: postgres://messaging:messaging@db/messaging_prod
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:-g3m1n1AdvaNcEdAgEnTiCcOdInGtEaMmEsSaGiNgSeRvIcEsEcReTkEyBaSe1234}
-      PHX_HOST: ${PHX_HOST:-localhost}
-      CHECK_ORIGIN: ${CHECK_ORIGIN:-}
       PORT: "4000"
-      FORCE_SSL: "false"
+      STATIC_DIR: "/app/priv/static"
+      UPLOAD_DIR: "/app/priv/uploads"
     depends_on:
       db:
         condition: service_healthy

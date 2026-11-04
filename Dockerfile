@@ -1,80 +1,45 @@
-# Find eligible builder and runner images on Docker Hub:
-# https://hub.docker.com/r/hexpm/elixir/tags
-ARG ELIXIR_VERSION=1.17.3
-ARG OTP_VERSION=27.1.2
-ARG DEBIAN_VERSION=bookworm-20241016-slim
-
-ARG BUILDER_IMAGE="hexpm/elixir:${ELIXIR_VERSION}-erlang-${OTP_VERSION}-debian-${DEBIAN_VERSION}"
-ARG RUNNER_IMAGE="debian:${DEBIAN_VERSION}"
-
-# ---- Build stage ----
-FROM ${BUILDER_IMAGE} AS builder
-
-RUN apt-get update -y && apt-get install -y build-essential git curl \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && apt-get clean && rm -f /var/lib/apt/lists/*_*
+# ---- Stage 1: Frontend Asset Builder ----
+FROM node:20-bookworm-slim AS frontend-builder
 
 WORKDIR /app
-
-RUN mix local.hex --force && mix local.rebar --force
-
-ENV MIX_ENV="prod"
-
-# Install mix dependencies
-COPY mix.exs mix.lock ./
-RUN mix deps.get --only $MIX_ENV
-RUN mkdir config
-
-# Copy compile-time config before compiling deps
-COPY config/config.exs config/prod.exs config/
-RUN mix deps.compile
-
-# Install npm dependencies
-COPY package.json ./
+COPY package.json package-lock.json* ./
 RUN npm install --registry=https://registry.npmjs.org/
 
-ARG CACHEBUST=1
+COPY assets ./assets
+COPY priv ./priv
+RUN npx vite build --config assets/vite.config.js
 
-# Copy assets
-COPY assets assets
+# ---- Stage 2: Rust Workspace Builder (aims-server + aims-proxy) ----
+FROM rust:slim-bookworm AS rust-builder
 
-# Copy application code
-COPY priv priv
-COPY lib lib
-
-RUN mix compile
-
-# Compile assets
-RUN mix assets.deploy
-
-# Copy runtime config
-COPY config/runtime.exs config/
-
-COPY rel rel
-RUN mix release
-
-# ---- Runner stage ----
-FROM ${RUNNER_IMAGE}
-
-RUN apt-get update -y && \
-    apt-get install -y libstdc++6 openssl libncurses5 locales ca-certificates \
+RUN apt-get update -y && apt-get install -y pkg-config libssl-dev ca-certificates \
     && apt-get clean && rm -f /var/lib/apt/lists/*_*
 
-RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen
+WORKDIR /app
+COPY Cargo.toml Cargo.lock* ./
+COPY crates ./crates
 
-ENV LANG=en_US.UTF-8
-ENV LANGUAGE=en_US:en
-ENV LC_ALL=en_US.UTF-8
+RUN cargo build --release --workspace
+
+# ---- Stage 3: Minimal Production Runtime ----
+FROM debian:bookworm-slim
+
+RUN apt-get update -y && \
+    apt-get install -y openssl ca-certificates && \
+    apt-get clean && rm -f /var/lib/apt/lists/*_*
 
 WORKDIR /app
-RUN chown nobody /app
+RUN mkdir -p /app/priv/static /app/priv/uploads && chown -R nobody:nogroup /app
 
-ENV MIX_ENV="prod"
-ENV PHX_SERVER="true"
+COPY --from=rust-builder /app/target/release/aims-server /usr/local/bin/aims-server
+COPY --from=rust-builder /app/target/release/aims-proxy /usr/local/bin/aims-proxy
+COPY --from=frontend-builder --chown=nobody:nogroup /app/priv/static /app/priv/static
 
-COPY --from=builder --chown=nobody:root /app/_build/${MIX_ENV}/rel/messaging ./
+ENV PORT="4000"
+ENV STATIC_DIR="/app/priv/static"
+ENV UPLOAD_DIR="/app/priv/uploads"
 
 USER nobody
+EXPOSE 4000
 
-CMD /app/bin/migrate && /app/bin/server
+CMD ["aims-server"]

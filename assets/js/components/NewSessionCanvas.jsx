@@ -6,23 +6,39 @@ import {
 	normalizeAgentTypes,
 	extractAgentName,
 } from "../lib/projectInfo.js"
-import { VSCodeWorkingStateIcon } from "./VSCodeWorkingIcons.jsx"
+import {
+	SparklesIcon,
+	BotIcon,
+	CodeIcon,
+	SearchIcon,
+	LayersIcon,
+	FileCheckIcon,
+	GitBranchIcon,
+	GitForkIcon,
+	FolderIcon,
+	CheckIcon,
+	ChevronRightIcon,
+	SlidersIcon,
+} from "./Icons.jsx"
 
 /**
- * NewSessionCanvas
+ * NewSessionCanvas — Base assistant-ui Empty State for AHP Sessions.
  *
- * Compact VS Code Agents Window / Claude Code empty state for AHP & Chat sessions.
- * Provides a streamlined setup surface:
- * - Direct Branch vs Isolated Git Worktree toggle
- * - Target Base Branch selector with repository branch pills and inline editor
- * - Execution Mode tabs (Interactive, Plan, Autopilot)
- * - Agent Role / Participant specialization pills (@workspace, coder, architect, reviewer)
- * - Quick starter prompt suggestions to immediately begin the session
+ * Clean, modern, minimalist Claude / assistant-ui empty state:
+ * - Centered welcome headline with subtle AI monogram
+ * - Modern segmented Git Target (Direct Branch vs Git Worktree)
+ * - Clean inline branch & workspace directory pills with quick-edit
+ * - Monochromatic execution mode selector (Interactive, Plan, Autopilot)
+ * - Specialized agent participant role tags
+ * - Quick starter prompts with clean typography (zero emojis)
  */
 export default function NewSessionCanvas({
 	bot,
 	isAhp = true,
 	projectInfo,
+	workingDirectory = "",
+	availableDirectories = [],
+	onWorkingDirectoryChange,
 	modes = DEFAULT_AGENT_MODES,
 	mode = "interactive",
 	onModeChange,
@@ -40,9 +56,15 @@ export default function NewSessionCanvas({
 }) {
 	const [customBranchInput, setCustomBranchInput] = useState("")
 	const [isEditingBranch, setIsEditingBranch] = useState(false)
+	const [customDirInput, setCustomDirInput] = useState("")
+	const [isEditingDir, setIsEditingDir] = useState(false)
+	const [showConfigDetails, setShowConfigDetails] = useState(true)
 
 	const normalizedModes = normalizeAgentModes(modes)
 	const normalizedAgentTypes = normalizeAgentTypes(agentTypes)
+	const effectiveWorkingDirectory =
+		workingDirectory ||
+		(projectInfo?.name ? `${projectInfo.name} (Project Root)` : "Host Default Workspace")
 
 	function handleApplyCustomBranch(e) {
 		if (e) e.preventDefault()
@@ -54,100 +76,98 @@ export default function NewSessionCanvas({
 		}
 	}
 
+	function handleApplyCustomDir(e) {
+		if (e) e.preventDefault()
+		const trimmed = customDirInput.trim()
+		if (onWorkingDirectoryChange) {
+			onWorkingDirectoryChange(trimmed)
+			setIsEditingDir(false)
+			setCustomDirInput("")
+		}
+	}
+
 	const defaultStarters = [
 		{
-			icon: "📋",
 			title: "Plan Next Feature",
 			desc: `Structured implementation checklist on ${baseBranch}`,
 			prompt: `Help me plan and design a new feature on branch "${baseBranch}". Let's start with a clear requirements breakdown and checklist.`,
 		},
 		{
-			icon: "🔍",
 			title: "Explain Codebase Architecture",
 			desc: "Project structure, key modules, and workflows",
 			prompt:
 				"Can you provide a high-level overview of this codebase architecture and its main modules?",
 		},
 		{
-			icon: "🧪",
 			title: "Write & Verify Tests",
 			desc: "Generate comprehensive tests and verify coverage",
 			prompt: "Review recent changes or core modules and help me write unit and integration tests.",
 		},
 		{
-			icon: "⚡",
 			title: "Audit & Optimize",
-			desc: "Inspect for bugs, bottlenecks, and edge cases",
+			desc: "Inspect for potential bugs, bottlenecks, and edge cases",
 			prompt: "Audit this project for potential bugs, edge cases, and performance improvements.",
 		},
 	]
 
+	function renderRoleIcon(id) {
+		switch (id) {
+			case "coder":
+				return <CodeIcon size={13} className="text-muted-foreground" />
+			case "researcher":
+				return <SearchIcon size={13} className="text-muted-foreground" />
+			case "architect":
+				return <LayersIcon size={13} className="text-muted-foreground" />
+			case "reviewer":
+				return <FileCheckIcon size={13} className="text-muted-foreground" />
+			default:
+				return <SparklesIcon size={13} className="text-muted-foreground" />
+		}
+	}
+
 	return (
 		<div className="new-session-canvas aui-agent-empty-state" data-testid="new-session-canvas">
-			{/* Compact Hero Header */}
-			<div className="canvas-header aui-hero-header">
-				<div className="canvas-header-bot">
-					<div className="canvas-bot-avatar aui-bot-badge-icon">
-						{bot?.bot_type === "ahp" ? "🤖" : "💬"}
-					</div>
-					<div className="aui-hero-text">
-						<div className="aui-hero-title-row">
-							<h1 className="canvas-bot-title">
-								Start a conversation with {bot?.name || "your bot"}
-							</h1>
-							<div className="canvas-badges">
-								<span
-									className={`bot-protocol-badge bot-protocol-badge--${bot?.bot_type === "ahp" ? "ahp" : "chat"}`}
-								>
-									{bot?.bot_type === "ahp" ? "AHP Protocol" : "Chat Protocol"}
-								</span>
-								{projectInfo?.hasProject && (
-									<span
-										className="canvas-project-badge"
-										title={projectInfo.path || projectInfo.name}
-									>
-										📁 {projectInfo.name}
-									</span>
-								)}
-							</div>
-						</div>
-						<p className="canvas-bot-subtitle">
-							Configure your working copy, git branch, and execution mode before sending your
-							prompt.
-						</p>
-					</div>
+			{/* Minimalist Copilot-style Hero Welcome */}
+			<div className="aui-welcome-hero aui-ship-hero">
+				<h1 className="aui-ship-title">
+					What are we building?
+				</h1>
+				<div className="aui-welcome-meta">
+					<span className="aui-meta-pill">
+						Start a conversation with {bot?.name || "your bot"}
+					</span>
+					<span className="aui-meta-pill">
+						{bot?.bot_type === "ahp" ? "AHP Protocol" : "Chat Protocol"}
+					</span>
+					{projectInfo?.hasProject && (
+						<span className="aui-meta-pill aui-meta-pill--project">
+							<FolderIcon size={12} className="inline mr-1 opacity-70" />
+							<span>{projectInfo.name}</span>
+						</span>
+					)}
 				</div>
 			</div>
 
-			{/* Unified Workspace & Target Command Center */}
-			<div className="aui-command-card">
-				{/* Section 1: Git Target & Working Copy (Worktree vs Direct Branch) */}
-				<div className="canvas-section aui-command-section" data-testid="canvas-git-section">
-					<div className="canvas-section-header aui-command-section-header">
-						<div className="canvas-section-title-wrap">
-							<svg
-								className="canvas-section-icon text-emerald-400"
-								width="14"
-								height="14"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="2.2"
-								strokeLinecap="round"
-								strokeLinejoin="round"
-							>
-								<line x1="6" y1="3" x2="6" y2="15" />
-								<circle cx="18" cy="6" r="3" />
-								<circle cx="6" cy="18" r="3" />
-								<path d="M18 9a9 9 0 0 1-9 9" />
-							</svg>
-							<span className="canvas-section-title">Working Copy & Target</span>
-						</div>
-						<div className="canvas-section-desc aui-command-hint">
-							Execute on direct local branch or in an isolated git worktree
-						</div>
+			{/* Clean Minimalist Session Setup Box */}
+			<div className="aui-session-setup-panel" data-testid="canvas-git-section">
+				<div className="aui-setup-header">
+					<div className="flex items-center gap-2">
+						<SlidersIcon size={14} className="text-muted-foreground" />
+						<span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+							Session Setup
+						</span>
 					</div>
+					<button
+						type="button"
+						onClick={() => setShowConfigDetails((prev) => !prev)}
+						className="text-xs text-muted-foreground hover:text-foreground transition flex items-center gap-1"
+					>
+						{showConfigDetails ? "Compact" : "Configure"}
+					</button>
+				</div>
 
+				{/* Target Copy: Direct Branch vs Worktree */}
+				<div className="aui-setup-row">
 					<div className="canvas-card-grid aui-target-switcher">
 						{/* Direct Branch Option */}
 						<button
@@ -157,21 +177,10 @@ export default function NewSessionCanvas({
 							disabled={disabled}
 							data-testid="canvas-opt-direct-branch"
 						>
-							<div className="canvas-target-card-top">
-								<div className="canvas-card-icon-wrap text-emerald-400">
-									<svg
-										width="15"
-										height="15"
-										viewBox="0 0 24 24"
-										fill="none"
-										stroke="currentColor"
-										strokeWidth="2.2"
-									>
-										<line x1="6" y1="3" x2="6" y2="15" />
-										<circle cx="18" cy="6" r="3" />
-										<circle cx="6" cy="18" r="3" />
-										<path d="M18 9a9 9 0 0 1-9 9" />
-									</svg>
+							<div className="flex items-center justify-between mb-1">
+								<div className="flex items-center gap-1.5 text-xs font-medium">
+									<GitBranchIcon size={14} className="text-emerald-400" />
+									<span>Direct Branch</span>
 								</div>
 								<span
 									className={`canvas-check-badge ${!useWorktree ? "canvas-check-badge--active" : ""}`}
@@ -179,16 +188,9 @@ export default function NewSessionCanvas({
 									{!useWorktree ? "✓ Selected" : "Select"}
 								</span>
 							</div>
-							<div className="canvas-target-card-body">
-								<div className="canvas-target-card-title">Direct Branch</div>
-								<div className="canvas-target-card-subtitle">
-									Work directly on <strong className="text-emerald-300">{baseBranch}</strong>
-								</div>
-								<p className="canvas-target-card-desc">
-									Changes are written directly into your active working tree. Ideal for fast local
-									iterations.
-								</p>
-							</div>
+							<p className="canvas-target-card-desc text-xs text-muted-foreground m-0">
+								Work on <strong className="text-foreground">{baseBranch}</strong> directly.
+							</p>
 						</button>
 
 						{/* Isolated Git Worktree Option */}
@@ -203,18 +205,10 @@ export default function NewSessionCanvas({
 							disabled={disabled || !worktreeSupported}
 							data-testid="canvas-opt-worktree"
 						>
-							<div className="canvas-target-card-top">
-								<div className="canvas-card-icon-wrap text-amber-400">
-									<svg
-										width="15"
-										height="15"
-										viewBox="0 0 24 24"
-										fill="none"
-										stroke="currentColor"
-										strokeWidth="2.2"
-									>
-										<path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
-									</svg>
+							<div className="flex items-center justify-between mb-1">
+								<div className="flex items-center gap-1.5 text-xs font-medium">
+									<GitForkIcon size={14} className="text-amber-400" />
+									<span>New Git Worktree</span>
 								</div>
 								<span
 									className={`canvas-check-badge ${useWorktree ? "canvas-check-badge--worktree" : ""}`}
@@ -226,56 +220,38 @@ export default function NewSessionCanvas({
 											: "Make Worktree"}
 								</span>
 							</div>
-							<div className="canvas-target-card-body">
-								<div className="canvas-target-card-title">New Git Worktree</div>
-								<div className="canvas-target-card-subtitle">
-									Isolated worktree against <strong className="text-amber-300">{baseBranch}</strong>
-								</div>
-								<p className="canvas-target-card-desc">
-									Creates an isolated git worktree branch for this session. Protects your local
-									uncommitted code.
-								</p>
-							</div>
+							<p className="canvas-target-card-desc text-xs text-muted-foreground m-0">
+								Isolated worktree against <strong className="text-foreground">{baseBranch}</strong>.
+							</p>
 						</button>
 					</div>
+				</div>
 
-					{/* Base Branch Selection & Quick-Pick */}
-					<div className="canvas-branch-box aui-branch-strip">
-						<div className="canvas-branch-header">
-							<span className="canvas-branch-label">Target Base Branch:</span>
-							<span className="canvas-branch-current">
-								<svg
-									width="12"
-									height="12"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									strokeWidth="2.5"
-								>
-									<polyline points="6 9 12 15 18 9" />
-								</svg>
-								<strong>{baseBranch}</strong>
-							</span>
-							{!isEditingBranch && (
-								<button
-									type="button"
-									className="canvas-branch-edit-btn"
-									onClick={() => {
-										setCustomBranchInput(baseBranch)
-										setIsEditingBranch(true)
-									}}
-								>
-									Change Branch
-								</button>
-							)}
-						</div>
-
-						{isEditingBranch && (
+				{/* Base Branch & Workspace Directory Pills */}
+				<div className="aui-setup-pills-row">
+					{/* Target Base Branch */}
+					<div className="aui-pill-box">
+						<span className="aui-pill-box-label">Base Branch:</span>
+						{!isEditingBranch ? (
+							<button
+								type="button"
+								aria-label="Change Branch"
+								onClick={() => {
+									setCustomBranchInput(baseBranch)
+									setIsEditingBranch(true)
+								}}
+								className="aui-value-pill"
+								title="Click to change branch"
+							>
+								<GitBranchIcon size={12} className="text-muted-foreground" />
+								<span>{baseBranch}</span>
+							</button>
+						) : (
 							<form onSubmit={handleApplyCustomBranch} className="canvas-branch-form">
 								<input
 									type="text"
 									className="canvas-branch-input"
-									placeholder="e.g. main, feat/login, release-1.0"
+									placeholder="e.g. main, feat/login"
 									value={customBranchInput}
 									onChange={(e) => setCustomBranchInput(e.target.value)}
 									autoFocus
@@ -293,73 +269,115 @@ export default function NewSessionCanvas({
 							</form>
 						)}
 
-						{/* Repository Branches Synced from Integration */}
-						{availableBranches.length > 0 && (
-							<div className="canvas-branch-pills">
-								<span className="canvas-branch-pills-label">Repository Branches:</span>
-								<div className="canvas-branch-pills-list">
-									{availableBranches.map((b) => (
-										<button
-											key={b}
-											type="button"
-											className={`canvas-branch-pill ${baseBranch === b ? "canvas-branch-pill--active" : ""}`}
-											onClick={() => onBaseBranchChange && onBaseBranchChange(b)}
-											title={`Switch base branch to ${b}`}
-										>
-											{b}
-										</button>
-									))}
-								</div>
+						{availableBranches.length > 0 && !isEditingBranch && (
+							<div className="flex items-center gap-1 overflow-x-auto py-0.5">
+								{availableBranches.slice(0, 4).map((b) => (
+									<button
+										key={b}
+										type="button"
+										className={`canvas-branch-pill ${baseBranch === b ? "canvas-branch-pill--active" : ""}`}
+										onClick={() => onBaseBranchChange && onBaseBranchChange(b)}
+									>
+										{b}
+									</button>
+								))}
 							</div>
 						)}
 					</div>
+
+					{/* Workspace Directory */}
+					<div className="aui-pill-box" data-testid="canvas-workdir-box">
+						<span className="aui-pill-box-label">Workspace:</span>
+						<span className="hidden" data-testid="canvas-workdir-current">
+							{effectiveWorkingDirectory}
+						</span>
+						{!isEditingDir ? (
+							<button
+								type="button"
+								onClick={() => {
+									setCustomDirInput(effectiveWorkingDirectory)
+									setIsEditingDir(true)
+								}}
+								className="aui-value-pill"
+								data-testid="canvas-workdir-edit-btn"
+								title="Click to set workspace directory"
+							>
+								<FolderIcon size={12} className="text-muted-foreground" />
+								<span className="truncate max-w-[200px]">{effectiveWorkingDirectory}</span>
+							</button>
+						) : (
+							<form
+								onSubmit={handleApplyCustomDir}
+								className="canvas-branch-form"
+								data-testid="canvas-workdir-form"
+							>
+								<input
+									type="text"
+									className="canvas-branch-input"
+									placeholder="e.g. /workspace/my-app"
+									value={customDirInput}
+									onChange={(e) => setCustomDirInput(e.target.value)}
+									data-testid="canvas-workdir-input"
+									autoFocus
+								/>
+								<button
+									type="submit"
+									className="canvas-branch-submit-btn"
+									data-testid="canvas-workdir-submit-btn"
+								>
+									Apply Path
+								</button>
+								<button
+									type="button"
+									className="canvas-branch-cancel-btn"
+									onClick={() => setIsEditingDir(false)}
+								>
+									Cancel
+								</button>
+							</form>
+						)}
+
+						{Array.isArray(availableDirectories) &&
+							availableDirectories.length > 0 &&
+							!isEditingDir && (
+								<div className="flex items-center gap-1 overflow-x-auto py-0.5">
+									{availableDirectories.slice(0, 3).map((dir) => (
+										<button
+											key={dir}
+											type="button"
+											aria-label={dir}
+											className={`canvas-branch-pill ${effectiveWorkingDirectory === dir ? "canvas-branch-pill--active" : ""}`}
+											onClick={() => onWorkingDirectoryChange && onWorkingDirectoryChange(dir)}
+											title={dir}
+										>
+											{dir}
+										</button>
+									))}
+								</div>
+							)}
+					</div>
 				</div>
 
-				{/* Section 2: Agent Execution Mode */}
+				{/* Execution Modes Segmented Control */}
 				{normalizedModes.length > 0 && (
-					<div className="canvas-section aui-command-section" data-testid="canvas-mode-section">
-						<div className="canvas-section-header aui-command-section-header">
-							<div className="canvas-section-title-wrap">
-								<svg
-									className="canvas-section-icon text-sky-400"
-									width="14"
-									height="14"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									strokeWidth="2.2"
-								>
-									<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-								</svg>
-								<span className="canvas-section-title">Execution Mode</span>
-							</div>
-							<div className="canvas-section-desc aui-command-hint">
-								Choose agent autonomy level
-							</div>
+					<div className="aui-setup-section" data-testid="canvas-mode-section">
+						<div className="text-xs text-muted-foreground mb-1.5 font-medium">
+							Execution Mode:
 						</div>
-
-						<div className="canvas-mode-grid aui-mode-row">
+						<div className="aui-segmented-control">
 							{normalizedModes.map((m) => {
 								const isSelected = mode === m.id
 								return (
 									<button
 										key={m.id}
 										type="button"
-										className={`canvas-mode-card aui-mode-pill-card canvas-mode-card--${m.id} ${isSelected ? "canvas-mode-card--active aui-mode-pill-card--active" : ""}`}
+										className={`aui-segmented-btn ${isSelected ? "aui-segmented-btn--active" : ""}`}
 										onClick={() => !disabled && onModeChange && onModeChange(m.id)}
 										disabled={disabled}
 										data-testid={`canvas-mode-${m.id}`}
+										title={m.description || m.label}
 									>
-										<div className="canvas-mode-card-header">
-											<span className="canvas-mode-card-icon">
-												{m.id === "autopilot" ? "🚀" : m.id === "plan" ? "📋" : "💬"}
-											</span>
-											<span className="canvas-mode-card-name">{m.label}</span>
-											{isSelected && <span className="canvas-mode-card-badge">Active</span>}
-										</div>
-										<p className="canvas-mode-card-desc">
-											{m.description || `${m.label} execution mode`}
-										</p>
+										<span>{m.label}</span>
 									</button>
 								)
 							})}
@@ -367,56 +385,25 @@ export default function NewSessionCanvas({
 					</div>
 				)}
 
-				{/* Section 3: Agent Role / Participant */}
+				{/* Agent Participant Roles */}
 				{normalizedAgentTypes.length > 0 && (
-					<div className="canvas-section aui-command-section" data-testid="canvas-role-section">
-						<div className="canvas-section-header aui-command-section-header">
-							<div className="canvas-section-title-wrap">
-								<svg
-									className="canvas-section-icon text-indigo-400"
-									width="14"
-									height="14"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									strokeWidth="2.2"
-								>
-									<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-									<circle cx="9" cy="7" r="4" />
-									<polyline points="16 11 18 13 22 9" />
-								</svg>
-								<span className="canvas-section-title">Agent Role & Capabilities</span>
-							</div>
-							<div className="canvas-section-desc aui-command-hint">Specialized role focus</div>
-						</div>
-
-						<div className="canvas-roles-list aui-roles-row">
+					<div className="aui-setup-section" data-testid="canvas-role-section">
+						<div className="text-xs text-muted-foreground mb-1.5 font-medium">Agent Role:</div>
+						<div className="flex items-center gap-1.5 flex-wrap">
 							{normalizedAgentTypes.map((item) => {
 								const isSelected = (agentType || "").toLowerCase() === item.id.toLowerCase()
 								return (
 									<button
 										key={item.id}
 										type="button"
-										className={`canvas-role-pill aui-role-tag ${isSelected ? "canvas-role-pill--active aui-role-tag--active" : ""}`}
+										className={`aui-role-chip ${isSelected ? "aui-role-chip--active" : ""}`}
 										onClick={() => !disabled && onAgentTypeChange && onAgentTypeChange(item.id)}
 										disabled={disabled}
 										title={item.description || item.label}
 									>
-										<span className="canvas-role-pill-icon">
-											{item.id === "workspace"
-												? "🌐"
-												: item.id === "coder"
-													? "💻"
-													: item.id === "architect"
-														? "📐"
-														: item.id === "reviewer"
-															? "🔍"
-															: "🤖"}
-										</span>
-										<span className="canvas-role-pill-label">
-											{extractAgentName(item.label || item.id)}
-										</span>
-										{isSelected && <span className="canvas-role-pill-check">✓</span>}
+										{renderRoleIcon(item.id)}
+										<span>{extractAgentName(item.label || item.id)}</span>
+										{isSelected && <CheckIcon size={12} className="text-primary" />}
 									</button>
 								)
 							})}
@@ -425,36 +412,30 @@ export default function NewSessionCanvas({
 				)}
 			</div>
 
-			{/* Section 4: Quick Starter Prompts */}
+			{/* Quick Starter Prompts (Clean typography, zero emojis) */}
 			{onSelectStarter && (
-				<div className="canvas-section aui-starters-section" data-testid="canvas-starters-section">
-					<div className="canvas-section-header">
-						<div className="canvas-section-title-wrap">
-							<span className="canvas-section-icon text-amber-400">✨</span>
-							<div>
-								<h2 className="canvas-section-title">Get Started</h2>
-								<p className="canvas-section-desc">
-									Click a quick starter to populate your prompt and begin.
-								</p>
-							</div>
-						</div>
+				<div className="aui-starters-section" data-testid="canvas-starters-section">
+					<div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+						Suggested Prompts
 					</div>
 
-					<div className="canvas-starters-grid aui-starters-grid">
+					<div className="aui-starters-grid">
 						{defaultStarters.map((starter, idx) => (
 							<button
 								key={idx}
 								type="button"
-								className="canvas-starter-card aui-starter-card"
+								className="aui-clean-starter-card"
 								onClick={() => onSelectStarter(starter.prompt)}
 								title={starter.prompt}
 							>
-								<div className="canvas-starter-icon">{starter.icon}</div>
-								<div className="canvas-starter-info">
-									<div className="canvas-starter-title">{starter.title}</div>
-									<div className="canvas-starter-desc">{starter.desc}</div>
+								<div className="flex items-center justify-between mb-1">
+									<div className="font-medium text-sm text-foreground">{starter.title}</div>
+									<ChevronRightIcon
+										size={14}
+										className="text-muted-foreground opacity-60 group-hover:opacity-100"
+									/>
 								</div>
-								<span className="canvas-starter-arrow">→</span>
+								<div className="text-xs text-muted-foreground line-clamp-2">{starter.desc}</div>
 							</button>
 						))}
 					</div>

@@ -803,11 +803,11 @@ describe("Sidebar", () => {
 
 		const branchPill = container.querySelector('[data-testid="conv-branch-pill"]')
 		expect(branchPill).toBeInTheDocument()
-		expect(branchPill).toHaveTextContent("🌿 feat/user-auth")
+		expect(branchPill).toHaveTextContent("feat/user-auth")
 
 		const worktreePill = container.querySelector('[data-testid="conv-worktree-pill"]')
 		expect(worktreePill).toBeInTheDocument()
-		expect(worktreePill).toHaveTextContent("⚡ worktree: main")
+		expect(worktreePill).toHaveTextContent("worktree: main")
 	})
 
 	describe("groupSessionsByProject and project groups", () => {
