@@ -256,8 +256,7 @@ export function useWorkspaceData() {
 					? Number(storedConv)
 					: null
 			const targetConvId =
-				preferredConvId ||
-				(!Number.isNaN(parsedStoredConv) ? parsedStoredConv : null)
+				preferredConvId || (!Number.isNaN(parsedStoredConv) ? parsedStoredConv : null)
 
 			const [, convs] = await Promise.all([loadModels(botId), loadConversations(botId)])
 
@@ -505,9 +504,7 @@ export function useWorkspaceData() {
 
 		channel.on("bot_updated", (payload) => {
 			if (!payload?.bot || cancelled) return
-			setBots((prev) =>
-				prev.map((b) => (b.id === payload.bot.id ? { ...b, ...payload.bot } : b)),
-			)
+			setBots((prev) => prev.map((b) => (b.id === payload.bot.id ? { ...b, ...payload.bot } : b)))
 		})
 
 		channel.on("bot_sessions_updated", (payload) => {
@@ -553,9 +550,7 @@ export function useWorkspaceData() {
 			.receive("ok", (resp) => {
 				if (cancelled) return
 				if (resp?.bot) {
-					setBots((prev) =>
-						prev.map((b) => (b.id === resp.bot.id ? { ...b, ...resp.bot } : b)),
-					)
+					setBots((prev) => prev.map((b) => (b.id === resp.bot.id ? { ...b, ...resp.bot } : b)))
 				}
 				if (Array.isArray(resp?.sessions)) {
 					setConversations((prev) => mergeSessionsIntoList(prev, resp.sessions))

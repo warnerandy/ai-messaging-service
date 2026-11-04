@@ -721,12 +721,16 @@ describe("normalizeMessage", () => {
 		// 4. Click 'Plan' tab and verify it becomes selected and placeholder adapts
 		await user.click(planTab)
 		expect(planTab).toHaveAttribute("aria-selected", "true")
-		expect(screen.getByPlaceholderText(/Plan mode: Describe the feature or changes you want planned/i)).toBeInTheDocument()
+		expect(
+			screen.getByPlaceholderText(/Plan mode: Describe the feature or changes you want planned/i),
+		).toBeInTheDocument()
 
 		// 5. Click 'Autopilot' tab and verify it becomes selected and placeholder adapts
 		await user.click(autopilotTab)
 		expect(autopilotTab).toHaveAttribute("aria-selected", "true")
-		expect(screen.getByPlaceholderText(/Autopilot mode: Describe what to build or fix autonomously/i)).toBeInTheDocument()
+		expect(
+			screen.getByPlaceholderText(/Autopilot mode: Describe what to build or fix autonomously/i),
+		).toBeInTheDocument()
 	})
 
 	it("syncs dynamic agent modes, repository branches, and custom agent roles from the integration", async () => {

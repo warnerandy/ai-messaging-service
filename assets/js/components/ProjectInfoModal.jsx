@@ -7,6 +7,9 @@ export default function ProjectInfoModal({
 	activeConv,
 	bot,
 	sessionStatus = "idle",
+	useWorktree = false,
+	baseBranch = "",
+	worktreeSupported = true,
 }) {
 	const [copiedField, setCopiedField] = useState(null)
 
@@ -37,13 +40,23 @@ export default function ProjectInfoModal({
 	const workingDirs = projectInfo?.workingDirectories || []
 	const botType = bot?.bot_type === "ahp" ? "AHP Protocol" : "Chat Protocol"
 
+	const effectiveBaseBranch =
+		baseBranch ||
+		activeConv?.metadata?.base_branch ||
+		activeConv?.metadata?.branch ||
+		projectBranch ||
+		"main"
+	const isWorktree = Boolean(useWorktree) || Boolean(activeConv?.metadata?.use_worktree)
+
 	const stepText = activeConv?.metadata?.step || activeConv?.metadata?.current_step || ""
 	const toolText = activeConv?.metadata?.tool || ""
 
 	const handleCopyAll = () => {
 		const lines = [
 			`Project: ${projectName}`,
-			projectBranch ? `Branch: ${projectBranch}` : null,
+			`Base Branch: ${effectiveBaseBranch}`,
+			`Working Copy: ${isWorktree ? "Isolated Git Worktree" : "Direct Branch"}`,
+			projectBranch && projectBranch !== effectiveBaseBranch ? `Branch: ${projectBranch}` : null,
 			projectRepo ? `Repository: ${projectRepo}` : null,
 			projectPath ? `Working Directory: ${projectPath}` : null,
 			projectUri && projectUri !== projectPath ? `URI: ${projectUri}` : null,
@@ -172,6 +185,69 @@ export default function ProjectInfoModal({
 								</button>
 							</div>
 						)}
+					</div>
+
+					{/* Git Working Copy & Base Branch Section */}
+					<div className="project-section" data-testid="project-git-section">
+						<span className="project-section-label">Git Working Copy & Base Branch</span>
+						<div className="project-info-grid">
+							<div className="project-info-cell">
+								<span className="project-cell-label">Base Branch</span>
+								<div className="project-cell-value-group">
+									<span
+										className="project-branch-tag"
+										title={`Base branch: ${effectiveBaseBranch}`}
+									>
+										<svg
+											width="12"
+											height="12"
+											viewBox="0 0 24 24"
+											fill="none"
+											stroke="currentColor"
+											strokeWidth="2"
+											strokeLinecap="round"
+											strokeLinejoin="round"
+										>
+											<line x1="6" y1="3" x2="6" y2="15" />
+											<circle cx="18" cy="6" r="3" />
+											<circle cx="6" cy="18" r="3" />
+											<path d="M18 9a9 9 0 0 1-9 9" />
+										</svg>
+										<strong className="text-emerald-300 font-mono text-xs">
+											{effectiveBaseBranch}
+										</strong>
+									</span>
+									<button
+										type="button"
+										className="project-copy-inline-btn"
+										onClick={() => copyText(effectiveBaseBranch, "base-branch")}
+										title="Copy Base Branch"
+									>
+										{copiedField === "base-branch" ? "✓" : "Copy"}
+									</button>
+								</div>
+							</div>
+
+							<div className="project-info-cell">
+								<span className="project-cell-label">Working Copy Type</span>
+								<div className="project-cell-value-group">
+									<span
+										className={`chat-target-badge ${isWorktree ? "chat-target-badge--worktree" : "chat-target-badge--branch"}`}
+									>
+										{isWorktree ? (
+											<span className="text-amber-400">⚡ Isolated Worktree</span>
+										) : (
+											<span className="text-emerald-400">🌿 Direct Branch</span>
+										)}
+									</span>
+								</div>
+								<p className="text-xs text-zinc-400 mt-1">
+									{isWorktree
+										? `Working in isolated git worktree against base branch "${effectiveBaseBranch}". Protects active branch and uncommitted files.`
+										: `Working directly on branch "${effectiveBaseBranch}". Changes are written directly into your local working tree.`}
+								</p>
+							</div>
+						</div>
 					</div>
 
 					{/* Working Directory / Path Section */}

@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react"
 import { Socket } from "phoenix"
+import {
+	AssistantRuntimeProvider,
+	useExternalStoreRuntime,
+	ThreadPrimitive,
+} from "@assistant-ui/react"
 import MessageBubbleView from "./MessageBubble.jsx"
 import TypingIndicatorView from "./TypingIndicator.jsx"
 import LiveThinking from "./LiveThinking.jsx"
@@ -11,6 +16,7 @@ import BotConfigModal from "./BotConfigModal.jsx"
 import SettingsModal from "./SettingsModal.jsx"
 import ProjectInfoModal from "./ProjectInfoModal.jsx"
 import NewSessionCanvas from "./NewSessionCanvas.jsx"
+import { convertToAssistantMessage } from "./AssistantAgentProcess.jsx"
 import {
 	getProjectInfo,
 	formatSessionTitle,
@@ -345,12 +351,7 @@ export default function ChatView({
 					: activeConv?.status || "idle"
 
 	const projectInfo = getProjectInfo(activeConv, effectiveMetadata)
-	const initialPromptConfig = getAgentPromptConfig(
-		effectiveMetadata,
-		activeConv,
-		projectInfo,
-		bot,
-	)
+	const initialPromptConfig = getAgentPromptConfig(effectiveMetadata, activeConv, projectInfo, bot)
 	const [agentModes, setAgentModes] = useState(initialPromptConfig.modes)
 	const [agentMode, setAgentMode] = useState(initialPromptConfig.agentMode)
 	const [worktreeSupported, setWorktreeSupported] = useState(initialPromptConfig.worktreeSupported)
@@ -403,10 +404,7 @@ export default function ChatView({
 				setBaseBranch(cfg.base_branch || cfg.baseBranch || cfg.branch || cfg.git_branch)
 			}
 			const incomingBranches =
-				cfg.branches ||
-				cfg.available_branches ||
-				cfg.base_branches ||
-				cfg.capabilities?.branches
+				cfg.branches || cfg.available_branches || cfg.base_branches || cfg.capabilities?.branches
 			if (incomingBranches) {
 				setAvailableBranches(normalizeBranches(incomingBranches))
 			}
@@ -1511,12 +1509,7 @@ export default function ChatView({
 		}
 
 		setSessionMetadata(activeConv?.metadata || {})
-		const initialCfg = getAgentPromptConfig(
-			activeConv?.metadata,
-			activeConv,
-			projectInfo,
-			bot,
-		)
+		const initialCfg = getAgentPromptConfig(activeConv?.metadata, activeConv, projectInfo, bot)
 		setAgentModes(initialCfg.modes)
 		setAgentMode(initialCfg.agentMode)
 		setWorktreeSupported(initialCfg.worktreeSupported)
@@ -1596,12 +1589,7 @@ export default function ChatView({
 						...(currentConv?.metadata || {}),
 					}))
 
-					const loadedCfg = getAgentPromptConfig(
-						convMeta,
-						res.conversation,
-						projectInfo,
-						bot,
-					)
+					const loadedCfg = getAgentPromptConfig(convMeta, res.conversation, projectInfo, bot)
 					setAgentModes(loadedCfg.modes)
 					setAgentMode(loadedCfg.agentMode)
 					setWorktreeSupported(loadedCfg.worktreeSupported)
@@ -1623,7 +1611,7 @@ export default function ChatView({
 						setToolCalls((prev) => (prev.length > 0 ? prev : convMeta.tool_calls))
 					}
 
-					const effectiveStatus = isLiveActive ? (currentConv?.status || convStatus) : convStatus
+					const effectiveStatus = isLiveActive ? currentConv?.status || convStatus : convStatus
 					const effectiveMeta = {
 						...convMeta,
 						...(currentConv?.metadata || {}),
@@ -1759,6 +1747,9 @@ export default function ChatView({
 				return prev.map((m) =>
 					m.id === optimisticId
 						? normalizeMessage(res || {}, {
+								id: res?.id || m.id,
+								body: m.body,
+								role: m.role,
 								pending: false,
 								failed: false,
 								acknowledged: m.acknowledged,
@@ -1874,6 +1865,9 @@ export default function ChatView({
 				return prev.map((m) =>
 					m.id === optimisticId
 						? normalizeMessage(res || {}, {
+								id: res?.id || m.id,
+								body: m.body,
+								role: m.role,
 								pending: false,
 								failed: false,
 								acknowledged: m.acknowledged,
@@ -2148,485 +2142,584 @@ export default function ChatView({
 		}
 	}
 
+	const threadRuntime = useExternalStoreRuntime({
+		isRunning: effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy,
+		messages,
+		convertMessage: useCallback((m) => convertToAssistantMessage(m), []),
+		onNew: useCallback(async () => {
+			if (handleSend) {
+				handleSend()
+			}
+		}, [handleSend]),
+	})
+
 	return (
-		<main className="chat-main">
-			{alarmBanner && (
-				<div
-					className="session-alarm-toast"
-					onClick={() => {
-						if (
-							alarmBanner.conversationId &&
-							alarmBanner.conversationId !== selectedConversationId &&
-							onSelectConversation
-						) {
-							onSelectConversation(alarmBanner.conversationId)
-						}
-						setAlarmBanner(null)
-					}}
-				>
-					<span className="session-alarm-toast__icon inline-flex items-center">
-						<svg
-							width="16"
-							height="16"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="#f59e0b"
-							strokeWidth="2"
-							strokeLinecap="round"
-							strokeLinejoin="round"
-							aria-hidden="true"
-						>
-							<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-							<path d="M13.73 21a2 2 0 0 1-3.46 0" />
-						</svg>
-					</span>
-					<div className="session-alarm-toast__content">
-						<strong>{alarmBanner.title}</strong>
-						<span>{alarmBanner.message}</span>
-					</div>
-					<button
-						type="button"
-						className="session-alarm-toast__close"
-						onClick={(e) => {
-							e.stopPropagation()
+		<AssistantRuntimeProvider runtime={threadRuntime}>
+			<main className="chat-main aui-chat-main">
+				{alarmBanner && (
+					<div
+						className="session-alarm-toast"
+						onClick={() => {
+							if (
+								alarmBanner.conversationId &&
+								alarmBanner.conversationId !== selectedConversationId &&
+								onSelectConversation
+							) {
+								onSelectConversation(alarmBanner.conversationId)
+							}
 							setAlarmBanner(null)
 						}}
-						aria-label="Dismiss alarm toast"
 					>
-						✕
-					</button>
-				</div>
-			)}
-			{/* Top bar */}
-			<div className="chat-topbar">
-				<div className="chat-topbar-primary">
-					<div className="chat-topbar-left">
-						<button
-							type="button"
-							className="mobile-menu-btn"
-							onClick={onToggleSidebar}
-							aria-label="Toggle sidebar"
-						>
-							<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-								<path
-									d="M3 5h14M3 10h14M3 15h14"
-									stroke="currentColor"
-									strokeWidth="1.8"
-									strokeLinecap="round"
-								/>
-							</svg>
-						</button>
-						<div className="chat-title-group">
-							<h2 className="chat-title" title={bot?.name || "Botamus Prime"}>
-								{bot?.name || "Botamus Prime"}
-							</h2>
-							{bot?.bot_type === "ahp" && effectiveStatus && effectiveStatus !== "idle" && (
-								<span
-									className={`session-status-badge session-status-badge--${effectiveStatus}`}
-									title={effectiveStatus === "waiting_for_input" ? "Needs Input" : effectiveStatus}
-									aria-label={
-										effectiveStatus === "waiting_for_input" ? "Needs Input" : effectiveStatus
-									}
-								>
-									<VSCodeWorkingStateIcon
-										status={effectiveStatus}
-										size={13}
-										className="inline-flex"
-									/>
-								</span>
-							)}
-						</div>
-					</div>
-
-					<div className="chat-topbar-right">
-						{activeConv &&
-							(isArchived ? (
-								<div className="chat-archived-actions">
-									<span className="chat-archived-pill" title="This session is archived">
-										✓ Archived
-									</span>
-									<button
-										type="button"
-										className="chat-close-session-btn"
-										onClick={() => onSelectConversation && onSelectConversation(null)}
-										title="Close session"
-										aria-label="Close session"
-									>
-										✕ Close
-									</button>
-								</div>
-							) : (
-								onArchiveConversation && (
-									<button
-										type="button"
-										className="chat-archive-btn"
-										onClick={() => onArchiveConversation(activeConv.id)}
-										title="Archive / mark chat as done"
-										aria-label="Archive / mark chat as done"
-									>
-										<svg
-											width="13"
-											height="13"
-											viewBox="0 0 24 24"
-											fill="none"
-											stroke="currentColor"
-											strokeWidth="2"
-											strokeLinecap="round"
-											strokeLinejoin="round"
-										>
-											<rect x="2" y="3" width="20" height="5" rx="1" />
-											<path d="M4 8v11a2 2 0 002 2h12a2 2 0 002-2V8" />
-											<path d="M10 12h4" />
-										</svg>
-										<span className="chat-archive-btn-text">Archive</span>
-									</button>
-								)
-							))}
-						<span className={`connection-dot ${bot?.is_connected ? "connection-dot--on" : ""}`} />
-						<span className="connection-label">{bot?.is_connected ? "Online" : "Offline"}</span>
-						<button
-							type="button"
-							className={`bot-config-btn sync-btn ${isSyncing ? "sync-btn--spinning" : ""}`}
-							onClick={handleManualSync}
-							disabled={isSyncing}
-							title={
-								isSyncing ? "Syncing session messages..." : "Sync session & fetch missing messages"
-							}
-							aria-label="Sync session & fetch missing messages"
-						>
+						<span className="session-alarm-toast__icon inline-flex items-center">
 							<svg
-								width="17"
-								height="17"
+								width="16"
+								height="16"
 								viewBox="0 0 24 24"
 								fill="none"
-								stroke="currentColor"
+								stroke="#f59e0b"
 								strokeWidth="2"
 								strokeLinecap="round"
 								strokeLinejoin="round"
+								aria-hidden="true"
 							>
-								<path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
+								<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+								<path d="M13.73 21a2 2 0 0 1-3.46 0" />
 							</svg>
+						</span>
+						<div className="session-alarm-toast__content">
+							<strong>{alarmBanner.title}</strong>
+							<span>{alarmBanner.message}</span>
+						</div>
+						<button
+							type="button"
+							className="session-alarm-toast__close"
+							onClick={(e) => {
+								e.stopPropagation()
+								setAlarmBanner(null)
+							}}
+							aria-label="Dismiss alarm toast"
+						>
+							✕
 						</button>
-						{isNotificationSupported() && (
+					</div>
+				)}
+				{/* Top bar */}
+				<div className="chat-topbar">
+					<div className="chat-topbar-primary">
+						<div className="chat-topbar-left">
 							<button
 								type="button"
-								className={`bot-config-btn notification-toggle-btn ${alarmArmed ? "notification-toggle-btn--armed" : "notification-toggle-btn--disarmed"} ${notificationPermission === "granted" ? "notification-toggle-btn--granted" : ""}`}
-								onClick={handleToggleAlarm}
+								className="mobile-menu-btn"
+								onClick={onToggleSidebar}
+								aria-label="Toggle sidebar"
+							>
+								<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+									<path
+										d="M3 5h14M3 10h14M3 15h14"
+										stroke="currentColor"
+										strokeWidth="1.8"
+										strokeLinecap="round"
+									/>
+								</svg>
+							</button>
+							<div className="chat-title-group">
+								<h2 className="chat-title" title={bot?.name || "Botamus Prime"}>
+									{bot?.name || "Botamus Prime"}
+								</h2>
+								{bot?.bot_type === "ahp" && effectiveStatus && effectiveStatus !== "idle" && (
+									<span
+										className={`session-status-badge session-status-badge--${effectiveStatus}`}
+										title={
+											effectiveStatus === "waiting_for_input" ? "Needs Input" : effectiveStatus
+										}
+										aria-label={
+											effectiveStatus === "waiting_for_input" ? "Needs Input" : effectiveStatus
+										}
+									>
+										<VSCodeWorkingStateIcon
+											status={effectiveStatus}
+											size={13}
+											className="inline-flex"
+										/>
+									</span>
+								)}
+							</div>
+						</div>
+
+						<div className="chat-topbar-right">
+							{activeConv &&
+								(isArchived ? (
+									<div className="chat-archived-actions">
+										<span className="chat-archived-pill" title="This session is archived">
+											✓ Archived
+										</span>
+										<button
+											type="button"
+											className="chat-close-session-btn"
+											onClick={() => onSelectConversation && onSelectConversation(null)}
+											title="Close session"
+											aria-label="Close session"
+										>
+											✕ Close
+										</button>
+									</div>
+								) : (
+									onArchiveConversation && (
+										<button
+											type="button"
+											className="chat-archive-btn"
+											onClick={() => onArchiveConversation(activeConv.id)}
+											title="Archive / mark chat as done"
+											aria-label="Archive / mark chat as done"
+										>
+											<svg
+												width="13"
+												height="13"
+												viewBox="0 0 24 24"
+												fill="none"
+												stroke="currentColor"
+												strokeWidth="2"
+												strokeLinecap="round"
+												strokeLinejoin="round"
+											>
+												<rect x="2" y="3" width="20" height="5" rx="1" />
+												<path d="M4 8v11a2 2 0 002 2h12a2 2 0 002-2V8" />
+												<path d="M10 12h4" />
+											</svg>
+											<span className="chat-archive-btn-text">Archive</span>
+										</button>
+									)
+								))}
+							<span className={`connection-dot ${bot?.is_connected ? "connection-dot--on" : ""}`} />
+							<span className="connection-label">{bot?.is_connected ? "Online" : "Offline"}</span>
+							<button
+								type="button"
+								className={`bot-config-btn sync-btn ${isSyncing ? "sync-btn--spinning" : ""}`}
+								onClick={handleManualSync}
+								disabled={isSyncing}
 								title={
-									alarmArmed
-										? "Alarm active for this session (will ring and notify when bot responds, completes, or needs input). Click to disarm."
-										: "Set alarm for this session (notify and ring when bot responds, completes, or needs input)"
+									isSyncing
+										? "Syncing session messages..."
+										: "Sync session & fetch missing messages"
 								}
-								aria-label={
-									alarmArmed
-										? "Disable session alarm and notifications"
-										: "Enable session alarm and notifications"
-								}
+								aria-label="Sync session & fetch missing messages"
 							>
 								<svg
 									width="17"
 									height="17"
 									viewBox="0 0 24 24"
-									fill={alarmArmed ? "currentColor" : "none"}
+									fill="none"
 									stroke="currentColor"
-									strokeWidth="1.8"
+									strokeWidth="2"
 									strokeLinecap="round"
 									strokeLinejoin="round"
 								>
-									<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-									<path d="M13.73 21a2 2 0 0 1-3.46 0" />
-									{alarmArmed && <circle cx="18" cy="6" r="3" fill="#f59e0b" stroke="none" />}
-									{!alarmArmed &&
-										notificationPermission !== "granted" &&
-										notificationPermission !== "denied" && (
-											<circle cx="18" cy="6" r="2.5" fill="#f59e0b" stroke="none" />
-										)}
+									<path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
 								</svg>
 							</button>
-						)}
-						<button
-							type="button"
-							className="bot-config-btn"
-							onClick={() => {
-								if (bot) {
-									setShowConfigModal(true)
-								} else {
-									setSettingsInitialTab("states")
-									setShowSettingsModal(true)
+							{isNotificationSupported() && (
+								<button
+									type="button"
+									className={`bot-config-btn notification-toggle-btn ${alarmArmed ? "notification-toggle-btn--armed" : "notification-toggle-btn--disarmed"} ${notificationPermission === "granted" ? "notification-toggle-btn--granted" : ""}`}
+									onClick={handleToggleAlarm}
+									title={
+										alarmArmed
+											? "Alarm active for this session (will ring and notify when bot responds, completes, or needs input). Click to disarm."
+											: "Set alarm for this session (notify and ring when bot responds, completes, or needs input)"
+									}
+									aria-label={
+										alarmArmed
+											? "Disable session alarm and notifications"
+											: "Enable session alarm and notifications"
+									}
+								>
+									<svg
+										width="17"
+										height="17"
+										viewBox="0 0 24 24"
+										fill={alarmArmed ? "currentColor" : "none"}
+										stroke="currentColor"
+										strokeWidth="1.8"
+										strokeLinecap="round"
+										strokeLinejoin="round"
+									>
+										<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+										<path d="M13.73 21a2 2 0 0 1-3.46 0" />
+										{alarmArmed && <circle cx="18" cy="6" r="3" fill="#f59e0b" stroke="none" />}
+										{!alarmArmed &&
+											notificationPermission !== "granted" &&
+											notificationPermission !== "denied" && (
+												<circle cx="18" cy="6" r="2.5" fill="#f59e0b" stroke="none" />
+											)}
+									</svg>
+								</button>
+							)}
+							<button
+								type="button"
+								className="bot-config-btn"
+								onClick={() => {
+									if (bot) {
+										setShowConfigModal(true)
+									} else {
+										setSettingsInitialTab("states")
+										setShowSettingsModal(true)
+									}
+								}}
+								title={bot ? "Bot Configuration & Connection Details" : "Settings & Working States"}
+								aria-label={
+									bot ? "Bot Configuration & Connection Details" : "Settings & Working States"
 								}
-							}}
-							title={bot ? "Bot Configuration & Connection Details" : "Settings & Working States"}
-							aria-label={
-								bot ? "Bot Configuration & Connection Details" : "Settings & Working States"
-							}
-						>
-							<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-								<path
-									d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-									stroke="currentColor"
-									strokeWidth="1.8"
-									strokeLinecap="round"
-									strokeLinejoin="round"
-								/>
-								<circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.8" />
-							</svg>
-						</button>
+							>
+								<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+									<path
+										d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+										stroke="currentColor"
+										strokeWidth="1.8"
+										strokeLinecap="round"
+										strokeLinejoin="round"
+									/>
+									<circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.8" />
+								</svg>
+							</button>
+						</div>
 					</div>
+
+					{(bot?.bot_type || activeConv) && (
+						<div className="chat-topbar-secondary">
+							{isSessionNested(activeConv, conversations) && (
+								<span
+									className="chat-nested-badge"
+									title={(() => {
+										const parent = findParentSession(activeConv, conversations)
+										const parentId = getParentSessionId(activeConv)
+										const parentTitle = parent
+											? formatSessionTitle(parent.title || parent.external_session_id)
+											: parentId
+										return parentTitle
+											? `Nested sub-session under: ${parentTitle}`
+											: "Nested sub-session"
+									})()}
+								>
+									<svg
+										width="11"
+										height="11"
+										viewBox="0 0 16 16"
+										fill="none"
+										stroke="currentColor"
+										strokeWidth="2.2"
+										strokeLinecap="round"
+										strokeLinejoin="round"
+										aria-hidden="true"
+									>
+										<polyline points="4 2 4 10 12 10" />
+										<polyline points="9 7 12 10 9 13" />
+									</svg>
+									Nested Session
+								</span>
+							)}
+							{/* Subagents & Running Processes Trigger Pill */}
+							{(sessionSubagents.length > 0 || sessionProcesses.length > 0) && (
+								<button
+									type="button"
+									className={`chat-subagents-trigger-btn ${runningSubagentsCount > 0 ? "chat-subagents-trigger-btn--running" : ""}`}
+									onClick={() => setShowSubagentsDrawer((prev) => !prev)}
+									title={
+										runningSubagentsCount > 0
+											? `${runningSubagentsCount} running subagent(s). Click to inspect.`
+											: `${sessionSubagents.length} subagent(s). Click to inspect.`
+									}
+									aria-label="Inspect running subagents and processes"
+									data-testid="open-subagents-drawer-btn"
+								>
+									<span className="chat-subagents-trigger-btn__icon">⚡</span>
+									<span>
+										{runningSubagentsCount > 0
+											? `${runningSubagentsCount} Running`
+											: sessionSubagents.length > 0
+												? `Subagents (${sessionSubagents.length})`
+												: "Processes"}
+									</span>
+									{runningProcessesCount > 0 && (
+										<span className="chat-subagents-trigger-btn__proc-chip">
+											⚙️ {runningProcessesCount}
+										</span>
+									)}
+								</button>
+							)}
+							{/* Project & Workspace Badge */}
+							{projectInfo.hasProject ? (
+								<button
+									type="button"
+									className="chat-project-badge"
+									onClick={() => setShowProjectModal(true)}
+									title={
+										projectInfo.path ||
+										projectInfo.uri ||
+										projectInfo.name ||
+										"Click to view project details"
+									}
+									aria-label={`Project: ${projectInfo.name}. Click to view details.`}
+								>
+									<svg
+										className="chat-project-icon"
+										width="13"
+										height="13"
+										viewBox="0 0 24 24"
+										fill="none"
+										stroke="currentColor"
+										strokeWidth="2"
+										strokeLinecap="round"
+										strokeLinejoin="round"
+									>
+										<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+									</svg>
+									<span className="chat-project-name">{projectInfo.name}</span>
+									{projectInfo.branch && (
+										<span
+											className="chat-project-branch-chip"
+											title={`Git branch: ${projectInfo.branch}`}
+										>
+											<svg
+												width="10"
+												height="10"
+												viewBox="0 0 24 24"
+												fill="none"
+												stroke="currentColor"
+												strokeWidth="2.2"
+												strokeLinecap="round"
+												strokeLinejoin="round"
+											>
+												<line x1="6" y1="3" x2="6" y2="15" />
+												<circle cx="18" cy="6" r="3" />
+												<circle cx="6" cy="18" r="3" />
+												<path d="M18 9a9 9 0 0 1-9 9" />
+											</svg>
+											<span>{projectInfo.branch}</span>
+										</span>
+									)}
+									<svg
+										className="chat-project-chevron"
+										width="11"
+										height="11"
+										viewBox="0 0 24 24"
+										fill="none"
+										stroke="currentColor"
+										strokeWidth="2.5"
+										strokeLinecap="round"
+										strokeLinejoin="round"
+									>
+										<polyline points="6 9 12 15 18 9" />
+									</svg>
+								</button>
+							) : activeConv ? (
+								<button
+									type="button"
+									className="chat-project-badge chat-project-badge--empty"
+									onClick={() => setShowProjectModal(true)}
+									title="No project linked. Click to view session details."
+									aria-label="No project linked. Click to view session details."
+								>
+									<svg
+										className="chat-project-icon"
+										width="13"
+										height="13"
+										viewBox="0 0 24 24"
+										fill="none"
+										stroke="currentColor"
+										strokeWidth="2"
+										strokeLinecap="round"
+										strokeLinejoin="round"
+									>
+										<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+									</svg>
+									<span className="chat-project-name">No Project</span>
+									<svg
+										className="chat-project-chevron"
+										width="11"
+										height="11"
+										viewBox="0 0 24 24"
+										fill="none"
+										stroke="currentColor"
+										strokeWidth="2.5"
+										strokeLinecap="round"
+										strokeLinejoin="round"
+									>
+										<polyline points="6 9 12 15 18 9" />
+									</svg>
+								</button>
+							) : null}
+							{activeConv && (
+								<span className="chat-subtitle" title={activeConv.title || "Session"}>
+									{formatSessionTitle(activeConv.title)}
+									{isArchived && <span className="chat-subtitle-archived-tag">(Archived)</span>}
+								</span>
+							)}
+						</div>
+					)}
 				</div>
 
-				{(bot?.bot_type || activeConv) && (
-					<div className="chat-topbar-secondary">
-						<span
-							className={`bot-protocol-badge bot-protocol-badge--${bot?.bot_type === "ahp" ? "ahp" : "chat"}`}
-							title={
-								bot?.bot_type === "ahp"
-									? "Integrated via Agent Host Protocol (AHP)"
-									: "Integrated via Chat Protocol"
-							}
-						>
-							{bot?.bot_type === "ahp" ? "AHP Protocol" : "Chat Protocol"}
-						</span>
-						{/* Target Branch and Worktree Badge */}
-						{(activeConv?.metadata?.base_branch || activeConv?.metadata?.branch || baseBranch) && (
-							<span
-								className={`chat-target-badge ${useWorktree ? "chat-target-badge--worktree" : "chat-target-badge--branch"}`}
-								title={
-									useWorktree
-										? `Working in isolated git worktree against base branch "${baseBranch}".`
-										: `Working directly on branch "${baseBranch}".`
-								}
-								data-testid="chat-target-badge"
-							>
-								{useWorktree ? (
-									<>
-										<span className="text-amber-400">⚡ Worktree:</span> {baseBranch}
-									</>
-								) : (
-									<>
-										<span className="text-emerald-400">🌿 Branch:</span> {baseBranch}
-									</>
-								)}
-							</span>
-						)}
-						{isSessionNested(activeConv, conversations) && (
-							<span
-								className="chat-nested-badge"
-								title={(() => {
-									const parent = findParentSession(activeConv, conversations)
-									const parentId = getParentSessionId(activeConv)
-									const parentTitle = parent
-										? formatSessionTitle(parent.title || parent.external_session_id)
-										: parentId
-									return parentTitle
-										? `Nested sub-session under: ${parentTitle}`
-										: "Nested sub-session"
-								})()}
-							>
-								<svg
-									width="11"
-									height="11"
-									viewBox="0 0 16 16"
-									fill="none"
-									stroke="currentColor"
-									strokeWidth="2.2"
-									strokeLinecap="round"
-									strokeLinejoin="round"
-									aria-hidden="true"
-								>
-									<polyline points="4 2 4 10 12 10" />
-									<polyline points="9 7 12 10 9 13" />
-								</svg>
-								Nested Session
-							</span>
-						)}
-						{/* Subagents & Running Processes Trigger Pill */}
-						{(sessionSubagents.length > 0 || sessionProcesses.length > 0) && (
-							<button
-								type="button"
-								className={`chat-subagents-trigger-btn ${runningSubagentsCount > 0 ? "chat-subagents-trigger-btn--running" : ""}`}
-								onClick={() => setShowSubagentsDrawer((prev) => !prev)}
-								title={
-									runningSubagentsCount > 0
-										? `${runningSubagentsCount} running subagent(s). Click to inspect.`
-										: `${sessionSubagents.length} subagent(s). Click to inspect.`
-								}
-								aria-label="Inspect running subagents and processes"
-								data-testid="open-subagents-drawer-btn"
-							>
-								<span className="chat-subagents-trigger-btn__icon">⚡</span>
-								<span>
-									{runningSubagentsCount > 0
-										? `${runningSubagentsCount} Running`
-										: sessionSubagents.length > 0
-											? `Subagents (${sessionSubagents.length})`
-											: "Processes"}
-								</span>
-								{runningProcessesCount > 0 && (
-									<span className="chat-subagents-trigger-btn__proc-chip">
-										⚙️ {runningProcessesCount}
-									</span>
-								)}
-							</button>
-						)}
-						{/* Project & Workspace Badge */}
-						{projectInfo.hasProject ? (
-							<button
-								type="button"
-								className="chat-project-badge"
-								onClick={() => setShowProjectModal(true)}
-								title={
-									projectInfo.path ||
-									projectInfo.uri ||
-									projectInfo.name ||
-									"Click to view project details"
-								}
-								aria-label={`Project: ${projectInfo.name}. Click to view details.`}
-							>
-								<svg
-									className="chat-project-icon"
-									width="13"
-									height="13"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									strokeWidth="2"
-									strokeLinecap="round"
-									strokeLinejoin="round"
-								>
-									<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-								</svg>
-								<span className="chat-project-name">{projectInfo.name}</span>
-								{projectInfo.branch && (
-									<span
-										className="chat-project-branch-chip"
-										title={`Git branch: ${projectInfo.branch}`}
+				{/* VS Code Indeterminate Running Bar */}
+				<VSCodeProgressBar
+					active={effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy}
+					variant={effectiveStatus === "thinking" ? "thinking" : "running"}
+				/>
+
+				{/* AHP Subagents & Running Processes Monitor Panel */}
+				<SubagentsPanel
+					token={token}
+					bot={bot}
+					activeConv={activeConv}
+					conversations={conversations}
+					sessionStatus={effectiveStatus}
+					sessionMetadata={effectiveMetadata}
+					thinkingText={thinkingText}
+					toolCalls={toolCalls}
+					onSelectConversation={onSelectConversation}
+					isOpen={showSubagentsDrawer}
+					onClose={() => setShowSubagentsDrawer(false)}
+					onOpen={() => setShowSubagentsDrawer(true)}
+				/>
+
+				{/* Messages & Assistant UI Unified Thread */}
+				<ThreadPrimitive.Root className="aui-thread-root">
+					<ThreadPrimitive.Viewport
+						className="chat-messages aui-thread-viewport"
+						ref={messagesContainerRef}
+						onScroll={handleMessagesScroll}
+					>
+						{isArchived && (
+							<div key="chat-archived-banner" className="chat-archived-banner">
+								<span className="chat-archived-banner-icon">📁</span>
+								<span className="chat-archived-banner-text">
+									This session is archived. You can review history or{" "}
+									<button
+										type="button"
+										className="chat-archived-close-link"
+										onClick={() => onSelectConversation && onSelectConversation(null)}
 									>
-										<svg
-											width="10"
-											height="10"
-											viewBox="0 0 24 24"
-											fill="none"
-											stroke="currentColor"
-											strokeWidth="2.2"
-											strokeLinecap="round"
-											strokeLinejoin="round"
-										>
-											<line x1="6" y1="3" x2="6" y2="15" />
-											<circle cx="18" cy="6" r="3" />
-											<circle cx="6" cy="18" r="3" />
-											<path d="M18 9a9 9 0 0 1-9 9" />
-										</svg>
-										<span>{projectInfo.branch}</span>
-									</span>
-								)}
-								<svg
-									className="chat-project-chevron"
-									width="11"
-									height="11"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									strokeWidth="2.5"
-									strokeLinecap="round"
-									strokeLinejoin="round"
-								>
-									<polyline points="6 9 12 15 18 9" />
-								</svg>
-							</button>
-						) : activeConv ? (
-							<button
-								type="button"
-								className="chat-project-badge chat-project-badge--empty"
-								onClick={() => setShowProjectModal(true)}
-								title="No project linked. Click to view session details."
-								aria-label="No project linked. Click to view session details."
-							>
-								<svg
-									className="chat-project-icon"
-									width="13"
-									height="13"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									strokeWidth="2"
-									strokeLinecap="round"
-									strokeLinejoin="round"
-								>
-									<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-								</svg>
-								<span className="chat-project-name">No Project</span>
-								<svg
-									className="chat-project-chevron"
-									width="11"
-									height="11"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									strokeWidth="2.5"
-									strokeLinecap="round"
-									strokeLinejoin="round"
-								>
-									<polyline points="6 9 12 15 18 9" />
-								</svg>
-							</button>
-						) : null}
-						{activeConv && (
-							<span className="chat-subtitle" title={activeConv.title || "Session"}>
-								{formatSessionTitle(activeConv.title)}
-								{isArchived && <span className="chat-subtitle-archived-tag">(Archived)</span>}
-							</span>
+										close this session
+									</button>
+									.
+								</span>
+							</div>
 						)}
-					</div>
-				)}
-			</div>
+						{!isLoadingMessages && messages.length === 0 && (
+							<NewSessionCanvas
+								key="new-session-canvas"
+								bot={bot}
+								isAhp={isAhp}
+								projectInfo={projectInfo}
+								modes={agentModes}
+								mode={agentMode}
+								onModeChange={handleModeChange}
+								worktreeSupported={worktreeSupported}
+								useWorktree={useWorktree}
+								onWorktreeChange={handleWorktreeChange}
+								baseBranch={baseBranch}
+								availableBranches={availableBranches}
+								onBaseBranchChange={handleBaseBranchChange}
+								agentTypes={agentTypes}
+								agentType={selectedAgentType}
+								onAgentTypeChange={handleAgentTypeChange}
+								onSelectStarter={(prompt) => {
+									setInputValue(prompt)
+									inputRef.current?.focus?.()
+								}}
+								disabled={sending || uploading}
+							/>
+						)}
+						{messages.map((msg) => (
+							<MessageBubbleView
+								key={msg.id}
+								message={msg}
+								onSuggestion={(value) => handleSuggestion(msg.id, value)}
+								usedSuggestion={usedSuggestions[msg.id]}
+							/>
+						))}
 
-			{/* VS Code Indeterminate Running Bar */}
-			<VSCodeProgressBar
-				active={effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy}
-				variant={effectiveStatus === "thinking" ? "thinking" : "running"}
-			/>
+						{/* AHP Interactive Question / Approval Card */}
+						{(pendingQuestion ||
+							effectiveStatus === "waiting_for_input" ||
+							effectiveStatus === "needs_input") && (
+							<QuestionApprovalCard
+								key="question-approval-card"
+								question={
+									pendingQuestion || resolvePendingQuestion(effectiveStatus, effectiveMetadata)
+								}
+								onAnswer={handleAnswerQuestion}
+							/>
+						)}
 
-			{/* AHP Subagents & Running Processes Monitor Panel */}
-			<SubagentsPanel
-				token={token}
-				bot={bot}
-				activeConv={activeConv}
-				conversations={conversations}
-				sessionStatus={effectiveStatus}
-				sessionMetadata={effectiveMetadata}
-				thinkingText={thinkingText}
-				toolCalls={toolCalls}
-				onSelectConversation={onSelectConversation}
-				isOpen={showSubagentsDrawer}
-				onClose={() => setShowSubagentsDrawer(false)}
-				onOpen={() => setShowSubagentsDrawer(true)}
-			/>
+						{/* AHP Live Thinking, Tool Steps, & Steering */}
+						<LiveThinking
+							key="live-thinking-view"
+							status={effectiveStatus}
+							metadata={effectiveMetadata}
+							thinkingText={thinkingText || effectiveMetadata?.thinking || ""}
+							toolCalls={
+								toolCalls.length > 0
+									? toolCalls
+									: Array.isArray(effectiveMetadata?.tool_calls)
+										? effectiveMetadata.tool_calls
+										: []
+							}
+							onStop={handleStop}
+							onSteer={handleSteer}
+						/>
 
-			{/* Messages */}
-			<div className="chat-messages" ref={messagesContainerRef} onScroll={handleMessagesScroll}>
-				{isArchived && (
-					<div className="chat-archived-banner">
-						<span className="chat-archived-banner-icon">📁</span>
-						<span className="chat-archived-banner-text">
-							This session is archived. You can review history or{" "}
-							<button
-								type="button"
-								className="chat-archived-close-link"
-								onClick={() => onSelectConversation && onSelectConversation(null)}
-							>
-								close this session
-							</button>
-							.
-						</span>
-					</div>
-				)}
-				{!isLoadingMessages && messages.length === 0 && (
-					<NewSessionCanvas
-						bot={bot}
-						isAhp={isAhp}
-						projectInfo={projectInfo}
+						{botIsTyping &&
+							effectiveStatus !== "thinking" &&
+							effectiveStatus !== "running" &&
+							!isAgentBusy && <TypingIndicatorView key="typing-indicator-view" />}
+						<div ref={messagesEndRef} key="messages-end-anchor" />
+					</ThreadPrimitive.Viewport>
+
+					<ThreadPrimitive.ScrollToBottom
+						className="chat-scroll-bottom aui-thread-scroll-bottom"
+						title="Scroll to bottom"
+						aria-label="Scroll to bottom"
+					>
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+							<path
+								d="M12 4v16m0 0l-6-6m6 6l6-6"
+								stroke="currentColor"
+								strokeWidth="2.2"
+								strokeLinecap="round"
+								strokeLinejoin="round"
+							/>
+						</svg>
+					</ThreadPrimitive.ScrollToBottom>
+
+					{/* Assistant UI Chat Composer (Input, Model Picker, Agent Type, Skill, Attachments, Steering) */}
+					<AssistantChatComposer
+						value={inputValue}
+						onChange={setInputValue}
+						onSubmit={handleSend}
+						onSteerSubmit={handleSteerSend}
+						disabled={sending || uploading}
+						uploading={uploading}
+						effectiveStatus={effectiveStatus}
+						isAgentBusy={isAgentBusy}
+						effectiveMetadata={effectiveMetadata}
+						models={models}
+						selectedModel={selectedModel}
+						onSelectModel={setSelectedModel}
+						selectedContextSize={selectedContextSize}
+						onSelectContextSize={setSelectedContextSize}
+						selectedAgentType={selectedAgentType}
+						onSelectAgentType={handleAgentTypeChange}
+						selectedSkill={selectedSkill}
+						onSelectSkill={setSelectedSkill}
+						attachments={attachments}
+						onAddAttachments={handleAddAttachments}
+						onRemoveAttachment={handleRemoveAttachment}
+						promptQueue={promptQueue}
+						onRemovePrompt={handleRemovePrompt}
+						onViewProgress={handleViewProgress}
+						onStop={handleStop}
+						inputRef={inputRef}
 						modes={agentModes}
-						mode={agentMode}
+						agentMode={agentMode}
 						onModeChange={handleModeChange}
 						worktreeSupported={worktreeSupported}
 						useWorktree={useWorktree}
@@ -2635,134 +2728,51 @@ export default function ChatView({
 						availableBranches={availableBranches}
 						onBaseBranchChange={handleBaseBranchChange}
 						agentTypes={agentTypes}
-						agentType={selectedAgentType}
-						onAgentTypeChange={handleAgentTypeChange}
-						onSelectStarter={(prompt) => {
-							setInputValue(prompt)
-							inputRef.current?.focus?.()
-						}}
-						disabled={sending || uploading}
+						isAHP={isAhp}
+						isNewSession={!selectedConversationId || messages.length === 0}
 					/>
-				)}
-				{messages.map((msg) => (
-					<MessageBubbleView
-						key={msg.id}
-						message={msg}
-						onSuggestion={(value) => handleSuggestion(msg.id, value)}
-						usedSuggestion={usedSuggestions[msg.id]}
-					/>
-				))}
+				</ThreadPrimitive.Root>
 
-				{/* AHP Interactive Question / Approval Card */}
-				{(pendingQuestion ||
-					effectiveStatus === "waiting_for_input" ||
-					effectiveStatus === "needs_input") && (
-					<QuestionApprovalCard
-						question={pendingQuestion || resolvePendingQuestion(effectiveStatus, effectiveMetadata)}
-						onAnswer={handleAnswerQuestion}
-					/>
-				)}
-
-				{/* AHP Live Thinking, Tool Steps, & Steering */}
-				<LiveThinking
-					status={effectiveStatus}
-					metadata={effectiveMetadata}
-					thinkingText={thinkingText || effectiveMetadata?.thinking || ""}
-					toolCalls={
-						toolCalls.length > 0
-							? toolCalls
-							: Array.isArray(effectiveMetadata?.tool_calls)
-								? effectiveMetadata.tool_calls
-								: []
-					}
-					onStop={handleStop}
-					onSteer={handleSteer}
-				/>
-
-				{botIsTyping &&
-					effectiveStatus !== "thinking" &&
-					effectiveStatus !== "running" &&
-					!isAgentBusy && <TypingIndicatorView />}
-				<div ref={messagesEndRef} />
-			</div>
-
-			{/* Assistant UI Chat Composer (Input, Model Picker, Agent Type, Skill, Attachments, Steering) */}
-			<AssistantChatComposer
-				value={inputValue}
-				onChange={setInputValue}
-				onSubmit={handleSend}
-				onSteerSubmit={handleSteerSend}
-				disabled={sending || uploading}
-				uploading={uploading}
-				effectiveStatus={effectiveStatus}
-				isAgentBusy={isAgentBusy}
-				effectiveMetadata={effectiveMetadata}
-				models={models}
-				selectedModel={selectedModel}
-				onSelectModel={setSelectedModel}
-				selectedContextSize={selectedContextSize}
-				onSelectContextSize={setSelectedContextSize}
-				selectedAgentType={selectedAgentType}
-				onSelectAgentType={handleAgentTypeChange}
-				selectedSkill={selectedSkill}
-				onSelectSkill={setSelectedSkill}
-				attachments={attachments}
-				onAddAttachments={handleAddAttachments}
-				onRemoveAttachment={handleRemoveAttachment}
-				promptQueue={promptQueue}
-				onRemovePrompt={handleRemovePrompt}
-				onViewProgress={handleViewProgress}
-				onStop={handleStop}
-				inputRef={inputRef}
-				modes={agentModes}
-				agentMode={agentMode}
-				onModeChange={handleModeChange}
-				worktreeSupported={worktreeSupported}
-				useWorktree={useWorktree}
-				onWorktreeChange={handleWorktreeChange}
-				baseBranch={baseBranch}
-				availableBranches={availableBranches}
-				onBaseBranchChange={handleBaseBranchChange}
-				agentTypes={agentTypes}
-				isAHP={isAhp}
-			/>
-
-			{/* Settings Modal (Alerts, Working States Showcase) */}
-			<SettingsModal
-				isOpen={showSettingsModal}
-				onClose={() => setShowSettingsModal(false)}
-				initialTab={settingsInitialTab}
-				token={token}
-				bot={bot}
-				showBotConfig={false}
-				selectedConversationId={selectedConversationId}
-				onBotUpdated={(updated) => {
-					onBotStatusChange && onBotStatusChange(updated.id, updated)
-				}}
-			/>
-
-			{/* Bot Configuration Modal */}
-			{bot && showConfigModal && (
-				<BotConfigModal
-					isOpen={showConfigModal}
-					onClose={() => setShowConfigModal(false)}
+				{/* Settings Modal (Alerts, Working States Showcase) */}
+				<SettingsModal
+					isOpen={showSettingsModal}
+					onClose={() => setShowSettingsModal(false)}
+					initialTab={settingsInitialTab}
 					token={token}
 					bot={bot}
+					showBotConfig={false}
+					selectedConversationId={selectedConversationId}
 					onBotUpdated={(updated) => {
 						onBotStatusChange && onBotStatusChange(updated.id, updated)
 					}}
 				/>
-			)}
 
-			{/* Project & Workspace Info Modal */}
-			<ProjectInfoModal
-				isOpen={showProjectModal}
-				onClose={() => setShowProjectModal(false)}
-				projectInfo={projectInfo}
-				activeConv={activeConv}
-				bot={bot}
-				sessionStatus={effectiveStatus}
-			/>
-		</main>
+				{/* Bot Configuration Modal */}
+				{bot && showConfigModal && (
+					<BotConfigModal
+						isOpen={showConfigModal}
+						onClose={() => setShowConfigModal(false)}
+						token={token}
+						bot={bot}
+						onBotUpdated={(updated) => {
+							onBotStatusChange && onBotStatusChange(updated.id, updated)
+						}}
+					/>
+				)}
+
+				{/* Project & Workspace Info Modal */}
+				<ProjectInfoModal
+					isOpen={showProjectModal}
+					onClose={() => setShowProjectModal(false)}
+					projectInfo={projectInfo}
+					activeConv={activeConv}
+					bot={bot}
+					sessionStatus={effectiveStatus}
+					useWorktree={useWorktree}
+					baseBranch={baseBranch}
+					worktreeSupported={worktreeSupported}
+				/>
+			</main>
+		</AssistantRuntimeProvider>
 	)
 }

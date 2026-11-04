@@ -164,4 +164,56 @@ describe("AssistantChatComposer", () => {
 		fireEvent.click(steerBtn)
 		expect(handleSteerSubmit).toHaveBeenCalled()
 	})
+
+	it("hides capabilities when not a new session and shows send button", () => {
+		render(
+			<AssistantChatComposer
+				value="Follow-up instructions"
+				isNewSession={false}
+				models={defaultModels}
+				selectedModel="gpt-4o"
+			/>,
+		)
+
+		// Model select and extra pickers are hidden in existing sessions
+		expect(screen.queryByLabelText("Model")).not.toBeInTheDocument()
+		expect(screen.queryByTestId("agent-type-picker")).not.toBeInTheDocument()
+		expect(screen.queryByTestId("skill-picker")).not.toBeInTheDocument()
+
+		// Send button and capabilities toggle are always present
+		expect(screen.getByLabelText("Send message")).toBeInTheDocument()
+		const toggleBtn = screen.getByTestId("toggle-capabilities-btn")
+		expect(toggleBtn).toBeInTheDocument()
+
+		// Clicking toggle reveals capabilities
+		fireEvent.click(toggleBtn)
+		expect(screen.getByLabelText("Model")).toBeInTheDocument()
+		expect(screen.getByTestId("agent-type-picker")).toBeInTheDocument()
+		expect(screen.getByTestId("skill-picker")).toBeInTheDocument()
+	})
+
+	it("displays clean agent name instead of raw file path", () => {
+		render(
+			<AssistantChatComposer
+				value=""
+				isNewSession={true}
+				models={defaultModels}
+				selectedModel="gpt-4o"
+				selectedAgentType="file:///users/andywarner/.copilot/agents/project%20orchestrator.agent.md"
+				agentTypes={["file:///users/andywarner/.copilot/agents/project%20orchestrator.agent.md"]}
+			/>,
+		)
+
+		const agentPill = screen.getByTestId("agent-type-picker")
+		expect(agentPill).toHaveTextContent("Project Orchestrator")
+		expect(agentPill).not.toHaveTextContent("file://")
+	})
+
+	it("always displays send button regardless of prompt content", () => {
+		render(<AssistantChatComposer value="" isNewSession={false} models={defaultModels} />)
+
+		const sendBtn = screen.getByLabelText("Send message")
+		expect(sendBtn).toBeInTheDocument()
+		expect(sendBtn).toBeDisabled()
+	})
 })

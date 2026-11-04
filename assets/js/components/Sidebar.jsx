@@ -820,7 +820,9 @@ export default function Sidebar({
 								>
 									⚡ worktree{conv.metadata?.base_branch ? `: ${conv.metadata.base_branch}` : ""}
 								</span>
-							) : (conv.metadata?.base_branch || conv.metadata?.branch || conv.metadata?.git_branch) ? (
+							) : conv.metadata?.base_branch ||
+							  conv.metadata?.branch ||
+							  conv.metadata?.git_branch ? (
 								<span
 									className="conv-branch-pill"
 									title={`Branch: ${conv.metadata.base_branch || conv.metadata.branch || conv.metadata.git_branch}`}
@@ -1068,7 +1070,13 @@ export default function Sidebar({
 									if (isCreatingConversation) return
 									onCreateConversation(e)
 								}}
-								title={isCreatingConversation ? "Creating..." : selectedBot?.bot_type === "ahp" ? "New session" : "New conversation"}
+								title={
+									isCreatingConversation
+										? "Creating..."
+										: selectedBot?.bot_type === "ahp"
+											? "New session"
+											: "New conversation"
+								}
 								aria-label={selectedBot?.bot_type === "ahp" ? "New session" : "New conversation"}
 							>
 								<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -1235,7 +1243,11 @@ export default function Sidebar({
 															metadata,
 														})
 													}}
-													title={isCreatingConversation ? "Creating session..." : `New session in ${group.name}`}
+													title={
+														isCreatingConversation
+															? "Creating session..."
+															: `New session in ${group.name}`
+													}
 													aria-label={`New session in ${group.name}`}
 												>
 													<svg width="12" height="12" viewBox="0 0 16 16" fill="none">

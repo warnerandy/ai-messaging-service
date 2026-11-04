@@ -21,6 +21,7 @@ import {
 	normalizeBranches,
 	normalizeAgentTypes,
 	formatAgentType,
+	extractAgentName,
 	getAgentPromptConfig,
 } from "./projectInfo.js"
 
@@ -561,10 +562,10 @@ test("normalizeBranches extracts unique repository branch names", () => {
 		"master",
 		"develop",
 	])
-	assert.deepEqual(
-		normalizeBranches([{ name: "main" }, { branch: "feature/login" }]),
-		["main", "feature/login"],
-	)
+	assert.deepEqual(normalizeBranches([{ name: "main" }, { branch: "feature/login" }]), [
+		"main",
+		"feature/login",
+	])
 	assert.deepEqual(normalizeBranches("main, dev, staging"), ["main", "dev", "staging"])
 })
 
@@ -644,4 +645,34 @@ test("getAgentPromptConfig dynamically populates options synced from integration
 	assert.equal(botCfg.agentTypeItems[0].id, "devops")
 	assert.equal(botCfg.agentTypeItems[0].label, "Cloud & CI/CD")
 	assert.equal(botCfg.worktreeSupported, true)
+})
+
+test("extractAgentName parses file URIs and paths into clean human-readable agent names", () => {
+	assert.equal(
+		extractAgentName("file:///users/andywarner/.copilot/agents/project%20orchestrator.agent.md"),
+		"Project Orchestrator",
+	)
+	assert.equal(
+		extractAgentName("file:///users/andywarner/.copilot/agents/project%20orchestr"),
+		"Project Orchestr",
+	)
+	assert.equal(
+		extractAgentName("/users/andywarner/.copilot/agents/project-orchestrator.md"),
+		"Project Orchestrator",
+	)
+	assert.equal(
+		extractAgentName("C:\\Users\\warner\\.copilot\\agents\\code_reviewer.agent.json"),
+		"Code Reviewer",
+	)
+	assert.equal(extractAgentName("coder"), "Coder")
+	assert.equal(extractAgentName("@workspace"), "@workspace")
+	assert.equal(
+		formatAgentType("file:///users/andywarner/.copilot/agents/project%20orchestrator.agent.md"),
+		"Project Orchestrator",
+	)
+
+	const normalized = normalizeAgentTypes([
+		"file:///users/andywarner/.copilot/agents/project%20orchestrator.agent.md",
+	])
+	assert.equal(normalized[0].label, "Project Orchestrator")
 })

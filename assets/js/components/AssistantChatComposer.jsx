@@ -6,7 +6,7 @@ import {
 } from "@assistant-ui/react"
 import PromptQueue from "./PromptQueue.jsx"
 import AgentPromptControls from "./AgentPromptControls.jsx"
-import { normalizeAgentTypes } from "../lib/projectInfo.js"
+import { normalizeAgentTypes, extractAgentName } from "../lib/projectInfo.js"
 
 export const AGENT_TYPES = [
 	{ id: "general", label: "Auto", icon: "🤖", title: "General Assistant (Adaptive)" },
@@ -67,6 +67,7 @@ export default function AssistantChatComposer({
 	agentTypes = null,
 	isAHP = true,
 	showPromptControls = true,
+	isNewSession = true,
 }) {
 	const internalInputRef = useRef(null)
 	const inputRef = externalInputRef || internalInputRef
@@ -75,6 +76,9 @@ export default function AssistantChatComposer({
 	const [isDragging, setIsDragging] = useState(false)
 	const [showAgentMenu, setShowAgentMenu] = useState(false)
 	const [showSkillMenu, setShowSkillMenu] = useState(false)
+	const [showCapabilities, setShowCapabilities] = useState(false)
+
+	const capabilitiesVisible = isNewSession || showCapabilities
 
 	// Close dropdown menus when clicking outside
 	useEffect(() => {
@@ -164,13 +168,23 @@ export default function AssistantChatComposer({
 		return AGENT_TYPES
 	}, [agentTypes])
 
-	const activeAgent = useMemo(
-		() =>
-			normalizedAgentList.find((a) => a.id === selectedAgentType) ||
+	const activeAgent = useMemo(() => {
+		const found =
+			normalizedAgentList.find(
+				(a) =>
+					a.id === selectedAgentType ||
+					(a.id && String(a.id).toLowerCase() === String(selectedAgentType || "").toLowerCase()),
+			) ||
 			normalizedAgentList[0] ||
-			AGENT_TYPES[0],
-		[normalizedAgentList, selectedAgentType],
-	)
+			AGENT_TYPES[0]
+
+		const cleanLabel = extractAgentName(found.label || found.id || selectedAgentType)
+		return {
+			...found,
+			label: cleanLabel,
+			title: found.title || cleanLabel,
+		}
+	}, [normalizedAgentList, selectedAgentType])
 
 	const activeSkill = useMemo(
 		() => SKILLS.find((s) => s.id === selectedSkill) || SKILLS[0],
@@ -195,8 +209,11 @@ export default function AssistantChatComposer({
 		if (agentMode === "autopilot") {
 			return "Autopilot mode: Describe what to build or fix autonomously..."
 		}
+		if (!isNewSession) {
+			return "Send an instruction or question..."
+		}
 		return "What do you want to know?"
-	}, [effectiveStatus, isAgentBusy, agentMode])
+	}, [effectiveStatus, isAgentBusy, agentMode, isNewSession])
 
 	const isSubmitDisabled = disabled || uploading || (!value.trim() && attachments.length === 0)
 
@@ -256,7 +273,7 @@ export default function AssistantChatComposer({
 			)}
 
 			{/* Agent Mode, Worktree, Base Branch, and Agent Type Controls */}
-			{showPromptControls && (
+			{capabilitiesVisible && showPromptControls && (
 				<AgentPromptControls
 					modes={modes}
 					mode={agentMode}
@@ -372,134 +389,173 @@ export default function AssistantChatComposer({
 								</svg>
 							</label>
 
-							{/* Model Selector Dropdown */}
-							<div className="aui-model-group">
-								<select
-									id="model-select"
-									className="model-picker aui-select"
-									value={selectedModel}
-									onChange={(e) => onSelectModel && onSelectModel(e.target.value)}
-									aria-label="Model"
+							{/* Session capabilities toggle for existing sessions */}
+							{!isNewSession && (
+								<button
+									type="button"
+									className={`aui-toolbar-btn aui-capabilities-toggle-btn ${showCapabilities ? "aui-toolbar-btn--active" : ""}`}
+									onClick={() => setShowCapabilities((prev) => !prev)}
+									title={
+										showCapabilities
+											? "Hide session capabilities"
+											: "Configure session capabilities (modes, agent role, model)"
+									}
+									aria-label="Toggle session capabilities"
+									data-testid="toggle-capabilities-btn"
 								>
-									{models.map((m) => (
-										<option key={m.name} value={m.name}>
-											{m.name}
-										</option>
-									))}
-								</select>
-
-								{/* Context Window Size Selector */}
-								{currentModelObj?.context_sizes?.length > 0 && (
-									<select
-										id="context-size-select"
-										className="model-picker aui-select"
-										value={selectedContextSize}
-										onChange={(e) => onSelectContextSize && onSelectContextSize(e.target.value)}
-										aria-label="Context Size"
+									<svg
+										width="16"
+										height="16"
+										viewBox="0 0 24 24"
+										fill="none"
+										stroke="currentColor"
+										strokeWidth="2"
+										strokeLinecap="round"
+										strokeLinejoin="round"
 									>
-										<option value="">Default context</option>
-										{currentModelObj.context_sizes.map((size) => (
-											<option key={size} value={size}>
-												{size >= 1000
-													? `${Math.round(size / 1000)}k (${size.toLocaleString()} tokens)`
-													: `${size} tokens`}
-											</option>
-										))}
-									</select>
-								)}
-							</div>
-
-							{/* Agent Type Selector Dropdown / Pill */}
-							<div className="composer-dropdown-wrapper">
-								<button
-									type="button"
-									className="aui-pill-btn"
-									onClick={() => {
-										setShowAgentMenu(!showAgentMenu)
-										setShowSkillMenu(false)
-									}}
-									title={`Selected Agent Type: ${activeAgent.title}`}
-									aria-label="Select agent type"
-									data-testid="agent-type-picker"
-								>
-									<span className="aui-pill-icon">{activeAgent.icon}</span>
-									<span className="aui-pill-label">{activeAgent.label}</span>
-									<span className="aui-pill-caret">▾</span>
+										<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+										<circle cx="12" cy="12" r="3" />
+									</svg>
 								</button>
+							)}
 
-								{showAgentMenu && (
-									<div className="aui-dropdown-menu" data-testid="agent-type-menu">
-										<div className="aui-dropdown-header">Agent Role</div>
-										{normalizedAgentList.map((agent) => (
-											<button
-												key={agent.id}
-												type="button"
-												className={`aui-dropdown-item ${selectedAgentType === agent.id ? "aui-dropdown-item--active" : ""}`}
-												onClick={() => {
-													onSelectAgentType && onSelectAgentType(agent.id)
-													setShowAgentMenu(false)
-												}}
+							{capabilitiesVisible && (
+								<>
+									{/* Model Selector Dropdown */}
+									<div className="aui-model-group">
+										<select
+											id="model-select"
+											className="model-picker aui-select"
+											value={selectedModel}
+											onChange={(e) => onSelectModel && onSelectModel(e.target.value)}
+											aria-label="Model"
+										>
+											{models.map((m) => (
+												<option key={m.name} value={m.name}>
+													{m.name}
+												</option>
+											))}
+										</select>
+
+										{/* Context Window Size Selector */}
+										{currentModelObj?.context_sizes?.length > 0 && (
+											<select
+												id="context-size-select"
+												className="model-picker aui-select"
+												value={selectedContextSize}
+												onChange={(e) => onSelectContextSize && onSelectContextSize(e.target.value)}
+												aria-label="Context Size"
 											>
-												<span className="aui-item-icon">{agent.icon || "🤖"}</span>
-												<div className="aui-item-text">
-													<div className="aui-item-title">{agent.label}</div>
-													{agent.description ? (
-														<div className="aui-item-desc">{agent.description}</div>
-													) : agent.title ? (
-														<div className="aui-item-desc">{agent.title}</div>
-													) : null}
-												</div>
-												{selectedAgentType === agent.id && (
-													<span className="aui-item-check">✓</span>
-												)}
-											</button>
-										))}
+												<option value="">Default context</option>
+												{currentModelObj.context_sizes.map((size) => (
+													<option key={size} value={size}>
+														{size >= 1000
+															? `${Math.round(size / 1000)}k (${size.toLocaleString()} tokens)`
+															: `${size} tokens`}
+													</option>
+												))}
+											</select>
+										)}
 									</div>
-								)}
-							</div>
 
-							{/* Skill Selector Dropdown / Pill */}
-							<div className="composer-dropdown-wrapper">
-								<button
-									type="button"
-									className="aui-pill-btn"
-									onClick={() => {
-										setShowSkillMenu(!showSkillMenu)
-										setShowAgentMenu(false)
-									}}
-									title={`Selected Skill: ${activeSkill.title}`}
-									aria-label="Select skill"
-									data-testid="skill-picker"
-								>
-									<span className="aui-pill-icon">{activeSkill.icon}</span>
-									<span className="aui-pill-label">{activeSkill.label}</span>
-									<span className="aui-pill-caret">▾</span>
-								</button>
+									{/* Agent Type Selector Dropdown / Pill */}
+									<div className="composer-dropdown-wrapper">
+										<button
+											type="button"
+											className="aui-pill-btn"
+											onClick={() => {
+												setShowAgentMenu(!showAgentMenu)
+												setShowSkillMenu(false)
+											}}
+											title={`Selected Agent Type: ${activeAgent.title}`}
+											aria-label="Select agent type"
+											data-testid="agent-type-picker"
+										>
+											<span className="aui-pill-icon">{activeAgent.icon}</span>
+											<span className="aui-pill-label">{activeAgent.label}</span>
+											<span className="aui-pill-caret">▾</span>
+										</button>
 
-								{showSkillMenu && (
-									<div className="aui-dropdown-menu" data-testid="skill-menu">
-										<div className="aui-dropdown-header">Specialized Skill</div>
-										{SKILLS.map((skill) => (
-											<button
-												key={skill.id}
-												type="button"
-												className={`aui-dropdown-item ${selectedSkill === skill.id ? "aui-dropdown-item--active" : ""}`}
-												onClick={() => {
-													onSelectSkill && onSelectSkill(skill.id)
-													setShowSkillMenu(false)
-												}}
-											>
-												<span className="aui-item-icon">{skill.icon}</span>
-												<div className="aui-item-text">
-													<div className="aui-item-title">{skill.label}</div>
-													<div className="aui-item-desc">{skill.title}</div>
-												</div>
-												{selectedSkill === skill.id && <span className="aui-item-check">✓</span>}
-											</button>
-										))}
+										{showAgentMenu && (
+											<div className="aui-dropdown-menu" data-testid="agent-type-menu">
+												<div className="aui-dropdown-header">Agent Role</div>
+												{normalizedAgentList.map((agent) => {
+													const cleanTitle = extractAgentName(agent.label || agent.id)
+													return (
+														<button
+															key={agent.id}
+															type="button"
+															className={`aui-dropdown-item ${selectedAgentType === agent.id ? "aui-dropdown-item--active" : ""}`}
+															onClick={() => {
+																onSelectAgentType && onSelectAgentType(agent.id)
+																setShowAgentMenu(false)
+															}}
+														>
+															<span className="aui-item-icon">{agent.icon || "🤖"}</span>
+															<div className="aui-item-text">
+																<div className="aui-item-title">{cleanTitle}</div>
+																{agent.description &&
+																!agent.description.startsWith("file:") &&
+																!agent.description.includes("/") ? (
+																	<div className="aui-item-desc">{agent.description}</div>
+																) : null}
+															</div>
+															{selectedAgentType === agent.id && (
+																<span className="aui-item-check">✓</span>
+															)}
+														</button>
+													)
+												})}
+											</div>
+										)}
 									</div>
-								)}
-							</div>
+
+									{/* Skill Selector Dropdown / Pill */}
+									<div className="composer-dropdown-wrapper">
+										<button
+											type="button"
+											className="aui-pill-btn"
+											onClick={() => {
+												setShowSkillMenu(!showSkillMenu)
+												setShowAgentMenu(false)
+											}}
+											title={`Selected Skill: ${activeSkill.title}`}
+											aria-label="Select skill"
+											data-testid="skill-picker"
+										>
+											<span className="aui-pill-icon">{activeSkill.icon}</span>
+											<span className="aui-pill-label">{activeSkill.label}</span>
+											<span className="aui-pill-caret">▾</span>
+										</button>
+
+										{showSkillMenu && (
+											<div className="aui-dropdown-menu" data-testid="skill-menu">
+												<div className="aui-dropdown-header">Specialized Skill</div>
+												{SKILLS.map((skill) => (
+													<button
+														key={skill.id}
+														type="button"
+														className={`aui-dropdown-item ${selectedSkill === skill.id ? "aui-dropdown-item--active" : ""}`}
+														onClick={() => {
+															onSelectSkill && onSelectSkill(skill.id)
+															setShowSkillMenu(false)
+														}}
+													>
+														<span className="aui-item-icon">{skill.icon}</span>
+														<div className="aui-item-text">
+															<div className="aui-item-title">{skill.label}</div>
+															<div className="aui-item-desc">{skill.title}</div>
+														</div>
+														{selectedSkill === skill.id && (
+															<span className="aui-item-check">✓</span>
+														)}
+													</button>
+												))}
+											</div>
+										)}
+									</div>
+								</>
+							)}
 						</div>
 
 						{/* Right Action Buttons */}

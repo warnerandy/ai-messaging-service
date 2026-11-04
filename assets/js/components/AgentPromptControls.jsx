@@ -4,6 +4,7 @@ import {
 	DEFAULT_AGENT_TYPES,
 	formatAgentType,
 	formatModeLabel,
+	extractAgentName,
 } from "../lib/projectInfo.js"
 
 /**
@@ -46,16 +47,10 @@ export default function AgentPromptControls({
 	// Close dropdowns on outside click
 	useEffect(() => {
 		function handleClickOutside(e) {
-			if (
-				branchDropdownRef.current &&
-				!branchDropdownRef.current.contains(e.target)
-			) {
+			if (branchDropdownRef.current && !branchDropdownRef.current.contains(e.target)) {
 				setShowBranchModal(false)
 			}
-			if (
-				agentTypeDropdownRef.current &&
-				!agentTypeDropdownRef.current.contains(e.target)
-			) {
+			if (agentTypeDropdownRef.current && !agentTypeDropdownRef.current.contains(e.target)) {
 				setShowAgentTypeDropdown(false)
 			}
 		}
@@ -97,9 +92,7 @@ export default function AgentPromptControls({
 	}
 
 	// Normalize modes from integration (strings or objects)
-	const normalizedModes = (
-		Array.isArray(modes) && modes.length > 0 ? modes : DEFAULT_AGENT_MODES
-	)
+	const normalizedModes = (Array.isArray(modes) && modes.length > 0 ? modes : DEFAULT_AGENT_MODES)
 		.map((m) => {
 			if (typeof m === "object" && m !== null) {
 				const id = m.id || m.mode || m.name
@@ -122,19 +115,22 @@ export default function AgentPromptControls({
 
 	// Normalize agent types from integration (strings or objects)
 	const normalizedAgentTypes = (
-		Array.isArray(agentTypes) && agentTypes.length > 0
-			? agentTypes
-			: DEFAULT_AGENT_TYPES
+		Array.isArray(agentTypes) && agentTypes.length > 0 ? agentTypes : DEFAULT_AGENT_TYPES
 	)
 		.map((t) => {
 			if (typeof t === "object" && t !== null) {
 				const id = t.id || t.type || t.name
+				const rawLabel = t.label || t.title || ""
+				const label =
+					rawLabel &&
+					!rawLabel.startsWith("file:") &&
+					!rawLabel.includes("/") &&
+					!rawLabel.includes("\\")
+						? rawLabel
+						: extractAgentName(rawLabel || id)
 				return {
 					id,
-					label:
-						t.label ||
-						t.title ||
-						(id.startsWith("@") ? id : id.charAt(0).toUpperCase() + id.slice(1)),
+					label,
 					icon: t.icon || id,
 					description: t.description || "",
 				}
@@ -171,12 +167,7 @@ export default function AgentPromptControls({
 				</svg>
 			)
 		}
-		if (
-			key === "autopilot" ||
-			key === "auto" ||
-			key === "autonomous" ||
-			key === "star"
-		) {
+		if (key === "autopilot" || key === "auto" || key === "autonomous" || key === "star") {
 			return (
 				<svg
 					className="agent-mode-icon"
@@ -322,18 +313,19 @@ export default function AgentPromptControls({
 		(t) => t.id.toLowerCase() === (agentType || "").toLowerCase(),
 	)
 	const displayAgentTypeLabel = activeAgentTypeObj
-		? activeAgentTypeObj.label
+		? activeAgentTypeObj.label &&
+			!activeAgentTypeObj.label.startsWith("file:") &&
+			!activeAgentTypeObj.label.includes("/") &&
+			!activeAgentTypeObj.label.includes("\\")
+			? activeAgentTypeObj.label
+			: extractAgentName(activeAgentTypeObj.label || activeAgentTypeObj.id)
 		: formatAgentType(agentType, agentTypes)
 
 	return (
 		<div className="agent-prompt-controls" data-testid="agent-prompt-controls">
 			{/* Mode Selector Tabs Synced from Integration */}
 			{normalizedModes.length > 0 && (
-				<div
-					className="agent-mode-tabs"
-					role="tablist"
-					aria-label="Agent Execution Mode"
-				>
+				<div className="agent-mode-tabs" role="tablist" aria-label="Agent Execution Mode">
 					{normalizedModes.map((m) => {
 						const isSelected = mode === m.id
 						return (
@@ -473,9 +465,7 @@ export default function AgentPromptControls({
 									</div>
 									<div className="agent-toggle-meta">
 										<span className="agent-toggle-title">Direct Branch</span>
-										<span className="agent-toggle-desc">
-											Work directly on {baseBranch}
-										</span>
+										<span className="agent-toggle-desc">Work directly on {baseBranch}</span>
 									</div>
 									{!useWorktree && <span className="agent-toggle-check">✓</span>}
 								</button>
@@ -516,10 +506,7 @@ export default function AgentPromptControls({
 
 						{/* Editable Base Branch Form */}
 						<form onSubmit={handleBranchSubmit} className="agent-branch-form">
-							<label
-								htmlFor="agent-base-branch-input"
-								className="agent-branch-label"
-							>
+							<label htmlFor="agent-base-branch-input" className="agent-branch-label">
 								Base Branch:
 							</label>
 							<div className="agent-branch-input-wrap">
@@ -533,11 +520,7 @@ export default function AgentPromptControls({
 									placeholder="main"
 									aria-label="Base git branch"
 								/>
-								<button
-									type="submit"
-									className="agent-branch-apply-btn"
-									title="Save Base Branch"
-								>
+								<button type="submit" className="agent-branch-apply-btn" title="Save Base Branch">
 									Save
 								</button>
 							</div>
@@ -578,12 +561,8 @@ export default function AgentPromptControls({
 													<circle cx="6" cy="18" r="3" />
 													<path d="M18 9a9 9 0 0 1-9 9" />
 												</svg>
-												<span className="agent-branch-item-name">
-													{branchName}
-												</span>
-												{isCurrent && (
-													<span className="agent-branch-item-check">✓</span>
-												)}
+												<span className="agent-branch-item-name">{branchName}</span>
+												{isCurrent && <span className="agent-branch-item-check">✓</span>}
 											</button>
 										)
 									})}
@@ -645,8 +624,7 @@ export default function AgentPromptControls({
 							</div>
 							<div className="agent-type-list">
 								{normalizedAgentTypes.map((item) => {
-									const isSelected =
-										agentType.toLowerCase() === item.id.toLowerCase()
+									const isSelected = agentType.toLowerCase() === item.id.toLowerCase()
 									return (
 										<button
 											key={item.id}
@@ -659,18 +637,12 @@ export default function AgentPromptControls({
 												{renderAgentTypeIcon(item.icon || item.id)}
 											</span>
 											<div className="agent-type-item-meta">
-												<span className="agent-type-item-name">
-													{item.label}
-												</span>
+												<span className="agent-type-item-name">{item.label}</span>
 												{item.description && (
-													<span className="agent-type-item-desc">
-														{item.description}
-													</span>
+													<span className="agent-type-item-desc">{item.description}</span>
 												)}
 											</div>
-											{isSelected && (
-												<span className="agent-type-item-check">✓</span>
-											)}
+											{isSelected && <span className="agent-type-item-check">✓</span>}
 										</button>
 									)
 								})}
@@ -682,10 +654,7 @@ export default function AgentPromptControls({
 
 			{/* Live Sync Status indicator */}
 			{isAHP && (
-				<div
-					className="agent-sync-indicator"
-					title="Synced with VS Code coding agent runtime"
-				>
+				<div className="agent-sync-indicator" title="Synced with VS Code coding agent runtime">
 					<span className="agent-sync-dot" />
 					<span className="agent-sync-text">Synced</span>
 				</div>

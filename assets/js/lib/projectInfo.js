@@ -1188,9 +1188,7 @@ export function normalizeAgentMode(rawMode, customModes = []) {
 	if (m === "autopilot" || m === "auto" || m === "autonomous") return "autopilot"
 	if (
 		Array.isArray(customModes) &&
-		customModes.some(
-			(mode) => (typeof mode === "object" ? mode.id : mode) === rawMode.trim(),
-		)
+		customModes.some((mode) => (typeof mode === "object" ? mode.id : mode) === rawMode.trim())
 	) {
 		return rawMode.trim()
 	}
@@ -1206,12 +1204,15 @@ export function isWorktreeSupported(meta = {}, bot = null, _projectInfo = null) 
 	if (meta && meta.worktree_supported !== undefined) return Boolean(meta.worktree_supported)
 	if (meta && meta.supports_worktree !== undefined) return Boolean(meta.supports_worktree)
 	if (meta && meta.allow_worktree !== undefined) return Boolean(meta.allow_worktree)
-	if (meta && meta.capabilities?.worktree_supported !== undefined) return Boolean(meta.capabilities.worktree_supported)
+	if (meta && meta.capabilities?.worktree_supported !== undefined)
+		return Boolean(meta.capabilities.worktree_supported)
 
-	if (bot?.metadata?.worktree_supported !== undefined) return Boolean(bot.metadata.worktree_supported)
+	if (bot?.metadata?.worktree_supported !== undefined)
+		return Boolean(bot.metadata.worktree_supported)
 	if (bot?.metadata?.supports_worktree !== undefined) return Boolean(bot.metadata.supports_worktree)
 	if (bot?.metadata?.allow_worktree !== undefined) return Boolean(bot.metadata.allow_worktree)
-	if (bot?.metadata?.capabilities?.worktree_supported !== undefined) return Boolean(bot.metadata.capabilities.worktree_supported)
+	if (bot?.metadata?.capabilities?.worktree_supported !== undefined)
+		return Boolean(bot.metadata.capabilities.worktree_supported)
 
 	if (bot?.bot_type === "chat") return false
 	return true
@@ -1223,9 +1224,7 @@ export function normalizeBranches(rawBranches) {
 	if (Array.isArray(rawBranches)) {
 		list = rawBranches
 	} else if (typeof rawBranches === "string") {
-		list = rawBranches.includes(",")
-			? rawBranches.split(",")
-			: [rawBranches]
+		list = rawBranches.includes(",") ? rawBranches.split(",") : [rawBranches]
 	}
 
 	const seen = new Set()
@@ -1233,9 +1232,7 @@ export function normalizeBranches(rawBranches) {
 
 	for (const item of list) {
 		const name = (
-			typeof item === "string"
-				? item
-				: item?.name || item?.branch || item?.git_branch || ""
+			typeof item === "string" ? item : item?.name || item?.branch || item?.git_branch || ""
 		).trim()
 
 		if (name && !seen.has(name)) {
@@ -1245,6 +1242,93 @@ export function normalizeBranches(rawBranches) {
 	}
 
 	return result
+}
+
+/**
+ * Checks whether a string represents a file URI, local filesystem path, or agent file.
+ *
+ * @param {string} str
+ * @returns {boolean}
+ */
+export function isFilePathOrUri(str) {
+	if (!str || typeof str !== "string") return false
+	const s = str.trim()
+	if (/^file:\/\//i.test(s)) return true
+	if (s.includes("://")) return true
+	if (/^[a-zA-Z]:[/\\]/.test(s)) return true
+	if (/^(\/|\\|\.\/|\.\.\/)/.test(s)) return true
+	if (/(\.agent)?\.(md|json|prompt\.md|txt)$/i.test(s)) return true
+	if (/\.agent$/i.test(s)) return true
+	if (s.includes("/.copilot/") || s.includes("\\.copilot\\") || s.includes("/agents/")) return true
+	return false
+}
+
+/**
+ * Extracts a clean, human-readable agent name from an agent type identifier,
+ * file path, or URI (e.g. `file:///users/andywarner/.copilot/agents/project%20orchestrator.agent.md` -> `Project Orchestrator`).
+ *
+ * @param {string} raw - The raw agent string, identifier, or path
+ * @returns {string}
+ */
+export function extractAgentName(raw) {
+	if (!raw || typeof raw !== "string") return "Workspace"
+	let str = raw.trim()
+	if (!str) return "Workspace"
+
+	// If it's a known identifier in DEFAULT_AGENT_TYPES
+	const known = DEFAULT_AGENT_TYPES.find((d) => d.id === str.toLowerCase())
+	if (known && known.label) {
+		return known.label
+	}
+
+	// If it's a standard @ mention like @workspace or @terminal
+	if (str.startsWith("@")) {
+		return str
+	}
+
+	// If it's not a file path or URI, don't mangle human labels like "Cloud & CI/CD"
+	if (!isFilePathOrUri(str)) {
+		return str.charAt(0).toUpperCase() + str.slice(1)
+	}
+
+	// Decode URI if it starts with file:// or contains %
+	if (str.startsWith("file://") || str.includes("%")) {
+		try {
+			str = decodeURIComponent(str)
+		} catch {
+			// fallback
+		}
+	}
+
+	// Strip file:/// or file://
+	str = str.replace(/^file:\/\/\/?/i, "")
+
+	// If it contains path separators (/ or \), get the last segment (filename)
+	if (str.includes("/") || str.includes("\\")) {
+		const segments = str.split(/[/\\]/).filter(Boolean)
+		if (segments.length > 0) {
+			str = segments[segments.length - 1]
+		}
+	}
+
+	// Strip file extensions like .agent.md, .agent.json, .agent, .md, .json, .prompt.md, .txt
+	str = str.replace(/(\.agent)?\.(md|json|prompt\.md|txt)$/i, "")
+	str = str.replace(/\.agent$/i, "")
+
+	// Check again if stripped name matches known DEFAULT_AGENT_TYPES
+	const knownAfterStrip = DEFAULT_AGENT_TYPES.find((d) => d.id === str.toLowerCase())
+	if (knownAfterStrip && knownAfterStrip.label) {
+		return knownAfterStrip.label
+	}
+
+	// Replace underscores and hyphens with spaces
+	str = str.replace(/[_-]+/g, " ").trim()
+
+	// Title case the words
+	return str
+		.split(/\s+/)
+		.map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+		.join(" ")
 }
 
 export function normalizeAgentTypes(rawTypes) {
@@ -1289,21 +1373,33 @@ export function normalizeAgentTypes(rawTypes) {
 				if (!id) return null
 				const known = DEFAULT_AGENT_TYPES.find((d) => d.id === id.toLowerCase())
 				if (known) return { ...known, id }
+				const label = id.startsWith("@")
+					? id
+					: isFilePathOrUri(id)
+						? extractAgentName(id)
+						: id.charAt(0).toUpperCase() + id.slice(1)
 				return {
 					id,
-					label: id.startsWith("@") ? id : id.charAt(0).toUpperCase() + id.slice(1),
-					icon: id.toLowerCase(),
+					label,
+					icon: label.toLowerCase(),
 					description: "",
 				}
 			}
 			if (typeof item === "object" && item !== null) {
 				const id = String(item.id || item.name || item.type || item.role || "").trim()
 				if (!id) return null
-				const label =
-					item.label ||
-					item.title ||
-					(id.startsWith("@") ? id : id.charAt(0).toUpperCase() + id.slice(1))
-				const icon = item.icon || id.toLowerCase()
+				const rawLabel = item.label || item.title || item.name || ""
+				let label
+				if (rawLabel && !isFilePathOrUri(rawLabel)) {
+					label = rawLabel
+				} else if (rawLabel && isFilePathOrUri(rawLabel)) {
+					label = extractAgentName(rawLabel)
+				} else if (isFilePathOrUri(id)) {
+					label = extractAgentName(id)
+				} else {
+					label = id.startsWith("@") ? id : id.charAt(0).toUpperCase() + id.slice(1)
+				}
+				const icon = item.icon || label.toLowerCase()
 				const description = item.description || ""
 				return { ...item, id, label, icon, description }
 			}
@@ -1323,12 +1419,21 @@ export function formatAgentType(type, agentTypes = []) {
 			return itemId && String(itemId).toLowerCase() === t.toLowerCase()
 		})
 		if (found && typeof found === "object" && found.label) {
+			if (isFilePathOrUri(found.label)) {
+				return extractAgentName(found.label)
+			}
 			return found.label
 		}
 	}
 
 	const found = DEFAULT_AGENT_TYPES.find((d) => d.id === t.toLowerCase())
 	if (found) return found.label
+
+	// If t is a file path or URI, extract the clean agent name
+	if (isFilePathOrUri(t)) {
+		return extractAgentName(t)
+	}
+
 	return t.charAt(0).toUpperCase() + t.slice(1)
 }
 
@@ -1451,9 +1556,7 @@ export function getAgentPromptConfig(
 		conv?.metadata?.agentType ||
 		defaultTypeId
 	const agentType =
-		typeof rawAgentType === "string" && rawAgentType.trim()
-			? rawAgentType.trim()
-			: defaultTypeId
+		typeof rawAgentType === "string" && rawAgentType.trim() ? rawAgentType.trim() : defaultTypeId
 
 	return {
 		modes,

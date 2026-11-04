@@ -126,12 +126,7 @@ describe("AgentPromptControls", () => {
 	})
 
 	it("shows live sync indicator for AHP protocol", () => {
-		render(
-			<AgentPromptControls
-				isAHP={true}
-				mode="interactive"
-			/>,
-		)
+		render(<AgentPromptControls isAHP={true} mode="interactive" />)
 
 		expect(screen.getByText("Synced")).toBeInTheDocument()
 	})
@@ -144,13 +139,7 @@ describe("AgentPromptControls", () => {
 			{ id: "audit", label: "Security Audit", description: "Inspects vulnerabilities" },
 		]
 
-		render(
-			<AgentPromptControls
-				modes={customModes}
-				mode="code"
-				onModeChange={onModeChange}
-			/>,
-		)
+		render(<AgentPromptControls modes={customModes} mode="code" onModeChange={onModeChange} />)
 
 		expect(screen.getByText("Chat Assistant")).toBeInTheDocument()
 		expect(screen.getByText("Code Generator")).toBeInTheDocument()
@@ -210,13 +199,7 @@ describe("AgentPromptControls", () => {
 	})
 
 	it("adapts when worktreeSupported is false", () => {
-		render(
-			<AgentPromptControls
-				worktreeSupported={false}
-				useWorktree={false}
-				baseBranch="main"
-			/>,
-		)
+		render(<AgentPromptControls worktreeSupported={false} useWorktree={false} baseBranch="main" />)
 
 		fireEvent.click(screen.getByLabelText(/configure working branch and worktree/i))
 		expect(screen.getByText(/worktree isolation is disabled or not supported/i)).toBeInTheDocument()

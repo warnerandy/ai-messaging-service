@@ -1300,6 +1300,7 @@ body {
 /* Messages */
 .chat-messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overflow-anchor: auto;
   scroll-behavior: auto !important;
@@ -1712,7 +1713,7 @@ body {
 /* ───────── Input area ───────── */
 
 .chat-input-area {
-  padding: 0 1.5rem 1.5rem;
+  padding: 0 1.5rem max(1.5rem, env(safe-area-inset-bottom, 1.5rem));
   flex-shrink: 0;
   position: relative;
   z-index: 25;
@@ -2455,12 +2456,56 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 0.35rem 0.5rem 0.5rem;
+  gap: 0.5rem;
+  position: relative;
 }
 
 .chat-input-left {
   display: flex;
   align-items: center;
   gap: 0.4rem;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.aui-capabilities-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-sizing: border-box;
+}
+
+.aui-capabilities-toggle-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.aui-capabilities-toggle-btn.aui-toolbar-btn--active {
+  background: rgba(59, 130, 246, 0.18);
+  color: #60a5fa;
+  border-color: rgba(59, 130, 246, 0.5);
+}
+
+.chat-send-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-shrink: 0;
+  margin-left: auto;
+  position: relative;
+  z-index: 2;
 }
 
 .model-picker {
@@ -2483,10 +2528,10 @@ body {
 .model-picker:focus { border-color: var(--accent); }
 
 .send-btn {
-  width: 34px;
-  height: 34px;
-  min-width: 34px;
-  min-height: 34px;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
   border-radius: 50%;
   border: none;
   background: rgba(255, 255, 255, 0.08);
@@ -3234,7 +3279,7 @@ body {
   }
 
   .chat-messages { padding: 1rem; }
-  .chat-input-area { padding: 0 1rem 1rem; }
+  .chat-input-area { padding: 0 0.75rem max(0.75rem, env(safe-area-inset-bottom, 0.75rem)); }
 
   /* ───── Mobile touch target button sizes ───── */
 
@@ -6990,6 +7035,27 @@ body {
   margin-left: auto;
 }
 
+.aui-turn-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.12rem 0.45rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.aui-turn-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
 .aui-turn-plan {
   background: rgba(15, 23, 42, 0.6);
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -7816,6 +7882,226 @@ body {
   .canvas-role-pill {
     padding: 0.3rem 0.6rem;
     font-size: 0.72rem;
+  }
+}
+
+/* ───────── VS Code Agents & @assistant-ui/react Unified Interface ───────── */
+
+.aui-thread-root {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+}
+
+.aui-thread-viewport {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.5rem 1.5rem 1rem;
+}
+
+.aui-thread-scroll-bottom {
+  position: absolute;
+  bottom: 5.5rem;
+  right: 2rem;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: rgba(30, 41, 59, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: var(--text-primary);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  backdrop-filter: blur(8px);
+}
+
+.aui-thread-scroll-bottom:hover {
+  background: rgba(59, 130, 246, 0.25);
+  border-color: rgba(59, 130, 246, 0.6);
+  color: #fff;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 24px rgba(59, 130, 246, 0.35);
+}
+
+.aui-thread-scroll-bottom[disabled] {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px);
+}
+
+/* Compact VS Code Agents Empty State */
+.aui-agent-empty-state {
+  max-width: 760px;
+  width: 100%;
+  margin: 0.5rem auto 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.aui-hero-header {
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.aui-hero-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.aui-bot-badge-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.18), rgba(59, 130, 246, 0.18));
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.3rem;
+  flex-shrink: 0;
+}
+
+.aui-command-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 1rem 1.15rem;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 14px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(12px);
+}
+
+.aui-command-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.aui-command-section + .aui-command-section {
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.aui-command-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.aui-command-hint {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.aui-target-switcher {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+}
+
+.aui-target-card {
+  padding: 0.75rem 0.9rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: all 0.18s ease;
+}
+
+.aui-target-card:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.16);
+  transform: translateY(-1px);
+}
+
+.aui-target-card--active {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.aui-branch-strip {
+  padding: 0.5rem 0.75rem;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+}
+
+.aui-mode-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.5rem;
+}
+
+.aui-mode-pill-card {
+  padding: 0.65rem 0.8rem;
+  border-radius: 8px;
+}
+
+.aui-roles-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.aui-role-tag {
+  padding: 0.28rem 0.65rem;
+  border-radius: 6px;
+  font-size: 0.74rem;
+}
+
+.aui-starters-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.aui-starters-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.6rem;
+}
+
+.aui-starter-card {
+  padding: 0.7rem 0.85rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  transition: all 0.18s ease;
+}
+
+.aui-starter-card:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(59, 130, 246, 0.35);
+  transform: translateX(2px);
+}
+
+@media (max-width: 640px) {
+  .aui-target-switcher {
+    grid-template-columns: 1fr;
+  }
+  .aui-starters-grid {
+    grid-template-columns: 1fr;
   }
 }
 

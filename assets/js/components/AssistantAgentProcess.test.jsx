@@ -1,4 +1,4 @@
-import React from "react"
+import React, { act } from "react"
 import { render, screen, fireEvent } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 import { AssistantProcessTurn, convertToAssistantMessage } from "./AssistantAgentProcess.jsx"
@@ -100,5 +100,34 @@ describe("AssistantAgentProcess (@assistant-ui/react integration)", () => {
 			screen.getByText("All tests pass after updating the channel handler."),
 		).toBeInTheDocument()
 		expect(screen.getByText("claude-sonnet-4 (64k)")).toBeInTheDocument()
+	})
+
+	it("copies response text to clipboard when copy button is clicked", async () => {
+		const writeTextMock = vi.fn().mockResolvedValue(undefined)
+		Object.assign(navigator, {
+			clipboard: {
+				writeText: writeTextMock,
+			},
+		})
+
+		const message = {
+			id: 101,
+			role: "bot",
+			body: "Here is the refactored code explanation.",
+			metadata: {},
+		}
+
+		render(<AssistantProcessTurn message={message} />)
+
+		const copyBtn = screen.getByRole("button", { name: /Copy response/i })
+		expect(copyBtn).toBeInTheDocument()
+		expect(copyBtn).toHaveTextContent("📋 Copy")
+
+		await act(async () => {
+			fireEvent.click(copyBtn)
+		})
+
+		expect(writeTextMock).toHaveBeenCalledWith("Here is the refactored code explanation.")
+		expect(copyBtn).toHaveTextContent("✓ Copied")
 	})
 })

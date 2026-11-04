@@ -9,13 +9,7 @@ describe("NewSessionCanvas", () => {
 	const defaultProject = { hasProject: true, name: "my-web-app", path: "/workspace/my-web-app" }
 
 	it("renders the canvas header, bot title, protocol badge, and project info", () => {
-		render(
-			<NewSessionCanvas
-				bot={defaultBot}
-				projectInfo={defaultProject}
-				baseBranch="main"
-			/>,
-		)
+		render(<NewSessionCanvas bot={defaultBot} projectInfo={defaultProject} baseBranch="main" />)
 
 		expect(screen.getByText("Start a conversation with Botamus Prime")).toBeInTheDocument()
 		expect(screen.getByText("AHP Protocol")).toBeInTheDocument()
@@ -111,13 +105,7 @@ describe("NewSessionCanvas", () => {
 		const user = userEvent.setup()
 		const onModeChange = vi.fn()
 
-		render(
-			<NewSessionCanvas
-				bot={defaultBot}
-				mode="interactive"
-				onModeChange={onModeChange}
-			/>,
-		)
+		render(<NewSessionCanvas bot={defaultBot} mode="interactive" onModeChange={onModeChange} />)
 
 		const planCard = screen.getByTestId("canvas-mode-plan")
 		expect(planCard).toBeInTheDocument()
@@ -148,11 +136,7 @@ describe("NewSessionCanvas", () => {
 		const onSelectStarter = vi.fn()
 
 		render(
-			<NewSessionCanvas
-				bot={defaultBot}
-				baseBranch="main"
-				onSelectStarter={onSelectStarter}
-			/>,
+			<NewSessionCanvas bot={defaultBot} baseBranch="main" onSelectStarter={onSelectStarter} />,
 		)
 
 		const planStarter = screen.getByRole("button", { name: /plan next feature/i })
@@ -160,7 +144,7 @@ describe("NewSessionCanvas", () => {
 
 		expect(onSelectStarter).toHaveBeenCalledTimes(1)
 		expect(onSelectStarter).toHaveBeenCalledWith(
-			expect.stringContaining("Help me plan and design a new feature on branch \"main\""),
+			expect.stringContaining('Help me plan and design a new feature on branch "main"'),
 		)
 	})
 })

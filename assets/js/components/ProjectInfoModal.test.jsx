@@ -55,7 +55,7 @@ describe("ProjectInfoModal", () => {
 
 		expect(screen.getByText("Project & Workspace Info")).toBeInTheDocument()
 		expect(screen.getByText("ai-messaging-service")).toBeInTheDocument()
-		expect(screen.getByText("feature/project-header")).toBeInTheDocument()
+		expect(screen.getAllByText("feature/project-header").length).toBeGreaterThan(0)
 		expect(screen.getByText("warne/ai-messaging-service")).toBeInTheDocument()
 		expect(screen.getAllByText("C:/repos/ai-messaging-service").length).toBeGreaterThan(0)
 		expect(screen.getByText("Refactor Topbar")).toBeInTheDocument()
@@ -107,5 +107,26 @@ describe("ProjectInfoModal", () => {
 		await user.click(copyBtn)
 
 		expect(writeTextMock).toHaveBeenCalledWith("C:/repos/ai-messaging-service")
+	})
+
+	it("renders worktree and base branch details in the modal", () => {
+		render(
+			<ProjectInfoModal
+				isOpen={true}
+				onClose={vi.fn()}
+				projectInfo={defaultProjectInfo}
+				activeConv={defaultActiveConv}
+				bot={defaultBot}
+				useWorktree={true}
+				baseBranch="feature/worktree-branch"
+			/>,
+		)
+
+		expect(screen.getByTestId("project-git-section")).toBeInTheDocument()
+		expect(screen.getByText("feature/worktree-branch")).toBeInTheDocument()
+		expect(screen.getByText("⚡ Isolated Worktree")).toBeInTheDocument()
+		expect(
+			screen.getByText(/Working in isolated git worktree against base branch/i),
+		).toBeInTheDocument()
 	})
 })

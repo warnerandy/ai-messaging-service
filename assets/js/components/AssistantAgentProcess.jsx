@@ -280,11 +280,24 @@ export function AssistantChainOfThought() {
  * agent process turn rather than a basic chat bubble.
  */
 export function AssistantProcessTurn({ message, onSuggestion, usedSuggestion }) {
+	const [copied, setCopied] = useState(false)
 	const meta = message.metadata || {}
 	const botBodyHtml = useMemo(
 		() => (message.body ? renderMarkdown(message.body) : ""),
 		[message.body],
 	)
+
+	const handleCopy = useCallback(async () => {
+		if (message?.body) {
+			try {
+				await navigator.clipboard.writeText(message.body)
+				setCopied(true)
+				setTimeout(() => setCopied(false), 1500)
+			} catch {
+				// Ignore clipboard failure
+			}
+		}
+	}, [message?.body])
 
 	const singleMessageList = useMemo(() => [message], [message])
 	const convertMessage = useCallback((m) => convertToAssistantMessage(m), [])
@@ -413,6 +426,17 @@ export function AssistantProcessTurn({ message, onSuggestion, usedSuggestion }) 
 						</span>
 					)}
 					{hasProcessMetadata && <span className="aui-turn-status-done">✓ Completed</span>}
+					{message.body && (
+						<button
+							type="button"
+							className="aui-turn-copy-btn"
+							onClick={handleCopy}
+							title={copied ? "Copied response to clipboard" : "Copy response"}
+							aria-label="Copy response"
+						>
+							{copied ? "✓ Copied" : "📋 Copy"}
+						</button>
+					)}
 				</div>
 
 				{/* Plan steps if included in turn metadata */}
