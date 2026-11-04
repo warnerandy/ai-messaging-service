@@ -143,7 +143,7 @@ describe("NewSessionCanvas", () => {
 		expect(onModeChange).toHaveBeenCalledWith("plan")
 	})
 
-	it("renders agent role pills and triggers onAgentTypeChange", async () => {
+	it("renders agent role select dropdown and triggers onAgentTypeChange", async () => {
 		const user = userEvent.setup()
 		const onAgentTypeChange = vi.fn()
 
@@ -155,8 +155,9 @@ describe("NewSessionCanvas", () => {
 			/>,
 		)
 
-		const coderBtn = screen.getByRole("button", { name: /coder/i })
-		await user.click(coderBtn)
+		const select = screen.getByRole("combobox", { name: /agent role/i })
+		expect(select).toBeInTheDocument()
+		await user.selectOptions(select, "coder")
 		expect(onAgentTypeChange).toHaveBeenCalledWith("coder")
 	})
 

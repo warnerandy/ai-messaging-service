@@ -17,6 +17,7 @@ import {
 	GitForkIcon,
 	FolderIcon,
 	CheckIcon,
+	ChevronDownIcon,
 	ChevronRightIcon,
 	SlidersIcon,
 } from "./Icons.jsx"
@@ -62,6 +63,10 @@ export default function NewSessionCanvas({
 
 	const normalizedModes = normalizeAgentModes(modes)
 	const normalizedAgentTypes = normalizeAgentTypes(agentTypes)
+	const activeAgentItem =
+		normalizedAgentTypes.find(
+			(item) => (agentType || "").toLowerCase() === item.id.toLowerCase(),
+		) || normalizedAgentTypes[0]
 	const effectiveWorkingDirectory =
 		workingDirectory ||
 		(projectInfo?.name ? `${projectInfo.name} (Project Root)` : "Host Default Workspace")
@@ -385,29 +390,43 @@ export default function NewSessionCanvas({
 					</div>
 				)}
 
-				{/* Agent Participant Roles */}
+				{/* Agent Participant Roles Select */}
 				{normalizedAgentTypes.length > 0 && (
 					<div className="aui-setup-section" data-testid="canvas-role-section">
-						<div className="text-xs text-muted-foreground mb-1.5 font-medium">Agent Role:</div>
-						<div className="flex items-center gap-1.5 flex-wrap">
-							{normalizedAgentTypes.map((item) => {
-								const isSelected = (agentType || "").toLowerCase() === item.id.toLowerCase()
-								return (
-									<button
-										key={item.id}
-										type="button"
-										className={`aui-role-chip ${isSelected ? "aui-role-chip--active" : ""}`}
-										onClick={() => !disabled && onAgentTypeChange && onAgentTypeChange(item.id)}
-										disabled={disabled}
-										title={item.description || item.label}
-									>
-										{renderRoleIcon(item.id)}
-										<span>{extractAgentName(item.label || item.id)}</span>
-										{isSelected && <CheckIcon size={12} className="text-primary" />}
-									</button>
-								)
-							})}
+						<label
+							htmlFor="canvas-role-select"
+							className="text-xs text-muted-foreground mb-1.5 font-medium block"
+						>
+							Agent Role:
+						</label>
+						<div className="aui-role-select-wrapper">
+							<span className="aui-role-select-icon">
+								{renderRoleIcon(activeAgentItem?.id || agentType)}
+							</span>
+							<select
+								id="canvas-role-select"
+								data-testid="canvas-role-select"
+								aria-label="Agent Role"
+								className="aui-role-select"
+								value={activeAgentItem?.id || agentType || ""}
+								onChange={(e) => !disabled && onAgentTypeChange && onAgentTypeChange(e.target.value)}
+								disabled={disabled}
+							>
+								{normalizedAgentTypes.map((item) => (
+									<option key={item.id} value={item.id}>
+										{extractAgentName(item.label || item.id)}
+									</option>
+								))}
+							</select>
+							<span className="aui-role-select-chevron">
+								<ChevronDownIcon size={14} className="text-muted-foreground" />
+							</span>
 						</div>
+						{activeAgentItem?.description && (
+							<p className="text-[11px] text-muted-foreground mt-1 mb-0 max-w-md">
+								{activeAgentItem.description}
+							</p>
+						)}
 					</div>
 				)}
 			</div>

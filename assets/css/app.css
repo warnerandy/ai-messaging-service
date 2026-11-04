@@ -8508,6 +8508,71 @@ body {
   font-weight: 600;
 }
 
+.aui-role-select-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+}
+
+.aui-role-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--bg-surface, #1e1f26);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border-radius: 8px;
+  color: var(--text-primary, #ecebe7);
+  font-size: 0.78rem;
+  font-weight: 500;
+  padding: 0.42rem 2.2rem 0.42rem 2.1rem;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.15s ease;
+  min-width: 220px;
+  max-width: 100%;
+}
+
+.aui-role-select:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.aui-role-select:focus {
+  border-color: var(--accent-primary, #6366f1);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+}
+
+.aui-role-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.aui-role-select option {
+  background: #181920;
+  color: #ecebe7;
+  padding: 0.4rem 0.6rem;
+}
+
+.aui-role-select-icon {
+  position: absolute;
+  left: 0.65rem;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+}
+
+.aui-role-select-chevron {
+  position: absolute;
+  right: 0.65rem;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+}
+
 .aui-role-chip {
   display: inline-flex;
   align-items: center;
