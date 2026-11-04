@@ -1,4 +1,4 @@
-const token = process.env.PORTAINER_TOKEN || process.argv[2] || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwidXNlcm5hbWUiOiJhZG1pbiIsInJvbGUiOjEsInNjb3BlIjoiZGVmYXVsdCIsImZvcmNlQ2hhbmdlUGFzc3dvcmQiOmZhbHNlLCJleHAiOjE3OTMzMTQzODYsImlhdCI6MTc5MzI4NTU4Nn0.ZfTR1Zf7ZR4jAmVRVRq_3_SVJhn_AkK8dbBusfp75Ng';
+const token = process.env.PORTAINER_TOKEN || process.argv[2] || 'ptr_nnJH5XPQupq5N0j7o/fFnDCxrLeaze/pndxP8SMOlu8=';
 
 const authHeaders = token.startsWith('ptr_')
   ? { 'X-API-Key': token }
