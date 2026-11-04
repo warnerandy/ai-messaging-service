@@ -1726,7 +1726,13 @@ export default function ChatView({
 					setAgentModes(loadedCfg.modes)
 					setAgentMode(loadedCfg.agentMode)
 					setWorktreeSupported(loadedCfg.worktreeSupported)
-					setUseWorktree(loadedCfg.useWorktree)
+					if (
+						convMeta.use_worktree !== undefined ||
+						convMeta.useWorktree !== undefined ||
+						convMeta.worktree !== undefined
+					) {
+						setUseWorktree(loadedCfg.useWorktree)
+					}
 					setBaseBranch(loadedCfg.baseBranch)
 					setAvailableBranches(loadedCfg.availableBranches)
 					setAgentTypes(loadedCfg.agentTypes)
