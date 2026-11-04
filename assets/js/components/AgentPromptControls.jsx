@@ -32,6 +32,7 @@ export default function AgentPromptControls({
 	disabled = false,
 	isAHP = true,
 	syncStatus = "synced",
+	isWorktreeLocked = false,
 }) {
 	const [showBranchModal, setShowBranchModal] = useState(false)
 	const [branchInputValue, setBranchInputValue] = useState(baseBranch)
@@ -443,9 +444,15 @@ export default function AgentPromptControls({
 							<div className="agent-worktree-toggle-group">
 								<button
 									type="button"
-									className={`agent-worktree-toggle-btn ${!useWorktree ? "agent-worktree-toggle-btn--active" : ""}`}
+									disabled={disabled || isWorktreeLocked}
+									title={
+										isWorktreeLocked
+											? "Worktree mode cannot be changed on an existing session"
+											: undefined
+									}
+									className={`agent-worktree-toggle-btn ${!useWorktree ? "agent-worktree-toggle-btn--active" : ""} ${isWorktreeLocked ? "opacity-60 cursor-not-allowed" : ""}`}
 									onClick={() => {
-										if (onWorktreeChange) onWorktreeChange(false)
+										if (!isWorktreeLocked && onWorktreeChange) onWorktreeChange(false)
 									}}
 								>
 									<div className="agent-toggle-icon-wrap text-emerald-400">
@@ -472,9 +479,15 @@ export default function AgentPromptControls({
 
 								<button
 									type="button"
-									className={`agent-worktree-toggle-btn ${useWorktree ? "agent-worktree-toggle-btn--active" : ""}`}
+									disabled={disabled || isWorktreeLocked}
+									title={
+										isWorktreeLocked
+											? "Worktree mode cannot be changed on an existing session"
+											: undefined
+									}
+									className={`agent-worktree-toggle-btn ${useWorktree ? "agent-worktree-toggle-btn--active" : ""} ${isWorktreeLocked ? "opacity-60 cursor-not-allowed" : ""}`}
 									onClick={() => {
-										if (onWorktreeChange) onWorktreeChange(true)
+										if (!isWorktreeLocked && onWorktreeChange) onWorktreeChange(true)
 									}}
 								>
 									<div className="agent-toggle-icon-wrap text-amber-400">

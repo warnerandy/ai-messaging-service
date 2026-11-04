@@ -322,16 +322,18 @@ export default function ChatView({
 	)
 
 	const isLiveRunning =
-		sessionStatus === "running" ||
-		sessionStatus === "thinking" ||
-		activeConv?.status === "running" ||
-		activeConv?.status === "thinking"
+		sessionStatus === "running" || sessionStatus === "thinking"
+			? true
+			: sessionStatus === "idle" || sessionStatus === "completed" || sessionStatus === "done"
+				? false
+				: activeConv?.status === "running" || activeConv?.status === "thinking"
 
 	const isLiveWaiting =
-		sessionStatus === "waiting_for_input" ||
-		sessionStatus === "needs_input" ||
-		activeConv?.status === "waiting_for_input" ||
-		activeConv?.status === "needs_input"
+		sessionStatus === "waiting_for_input" || sessionStatus === "needs_input"
+			? true
+			: sessionStatus === "idle" || sessionStatus === "completed" || sessionStatus === "done"
+				? false
+				: activeConv?.status === "waiting_for_input" || activeConv?.status === "needs_input"
 
 	const effectiveMetadata = {
 		...(activeConv?.metadata || {}),
@@ -339,11 +341,12 @@ export default function ChatView({
 	}
 
 	const hasActiveWork = Boolean(
-		effectiveMetadata?.step ||
-		effectiveMetadata?.action ||
-		effectiveMetadata?.tool ||
-		effectiveMetadata?.command ||
-		(Array.isArray(toolCalls) && toolCalls.some((t) => t?.status === "running")),
+		isLiveRunning &&
+		(effectiveMetadata?.step ||
+			effectiveMetadata?.action ||
+			effectiveMetadata?.tool ||
+			effectiveMetadata?.command ||
+			(Array.isArray(toolCalls) && toolCalls.some((t) => t?.status === "running"))),
 	)
 
 	const isAgentBusy = isLiveRunning || hasActiveWork
@@ -356,11 +359,9 @@ export default function ChatView({
 			? sessionStatus === "waiting_for_input" || activeConv?.status === "waiting_for_input"
 				? "waiting_for_input"
 				: "needs_input"
-			: hasActiveWork
-				? "running"
-				: sessionStatus && sessionStatus !== "idle"
-					? sessionStatus
-					: activeConv?.status || "idle"
+			: sessionStatus && sessionStatus !== "idle"
+				? sessionStatus
+				: activeConv?.status || "idle"
 
 	const projectInfo = getProjectInfo(activeConv, effectiveMetadata)
 	const initialPromptConfig = getAgentPromptConfig(effectiveMetadata, activeConv, projectInfo, bot)
@@ -460,7 +461,8 @@ export default function ChatView({
 	const hasUserPromptsRef = useRef(false)
 	hasUserPromptsRef.current =
 		(Array.isArray(messages) && messages.some((m) => m && !m.pending && m.role === "user")) ||
-		Boolean(activeConv?.last_message_at)
+		Boolean(activeConv?.last_message_at) ||
+		Boolean(activeConv?.external_session_id)
 
 	const handleModeChange = useCallback(
 		(newMode) => {
@@ -482,6 +484,9 @@ export default function ChatView({
 
 	const handleWorktreeChange = useCallback(
 		(newWorktree) => {
+			if (activeConv?.external_session_id) {
+				return
+			}
 			setUseWorktree(newWorktree)
 			setSessionMetadata((prev) => ({ ...prev, use_worktree: newWorktree }))
 			onConversationStatusChange?.(selectedConversationId, null, { use_worktree: newWorktree })
@@ -495,7 +500,7 @@ export default function ChatView({
 				}
 			}
 		},
-		[selectedConversationId, token, onConversationStatusChange],
+		[activeConv?.external_session_id, selectedConversationId, token, onConversationStatusChange],
 	)
 
 	const handleBaseBranchChange = useCallback(
@@ -770,28 +775,29 @@ export default function ChatView({
 
 					if (res?.conversation && res.conversation.id === selectedConversationId) {
 						const convStatus = res.conversation.status || "idle"
-						setSessionStatus((prev) => {
-							if (
-								(prev === "running" || prev === "thinking") &&
-								(convStatus === "idle" || !convStatus)
-							) {
-								return prev
-							}
-							return convStatus
-						})
+						setSessionStatus(convStatus)
 						const convMeta = res.conversation.metadata || {}
-						setSessionMetadata((prev) => ({
-							...convMeta,
-							...prev,
-						}))
+						if (convStatus === "idle" || convStatus === "completed" || convStatus === "done") {
+							stopBotThinking()
+							setThinkingText("")
+							setToolCalls([])
+							setSessionMetadata({
+								...convMeta,
+							})
+						} else {
+							setSessionMetadata((prev) => ({
+								...convMeta,
+								...prev,
+							}))
+							if (convMeta.thinking) {
+								setThinkingText((prev) => prev || convMeta.thinking)
+							}
+							if (Array.isArray(convMeta.tool_calls) && convMeta.tool_calls.length > 0) {
+								setToolCalls((prev) => (prev.length > 0 ? prev : convMeta.tool_calls))
+							}
+						}
 						if (convMeta.prompt_queue) {
 							setPromptQueue(convMeta.prompt_queue)
-						}
-						if (convMeta.thinking) {
-							setThinkingText((prev) => prev || convMeta.thinking)
-						}
-						if (Array.isArray(convMeta.tool_calls) && convMeta.tool_calls.length > 0) {
-							setToolCalls((prev) => (prev.length > 0 ? prev : convMeta.tool_calls))
 						}
 						const resolvedQ = resolvePendingQuestion(convStatus, convMeta, convMeta.question)
 						if (resolvedQ) {
@@ -1025,8 +1031,19 @@ export default function ChatView({
 					) {
 						setPendingQuestion(null)
 					}
-					if (newStatus === "idle") {
+					if (newStatus === "idle" || newStatus === "completed" || newStatus === "done") {
 						stopBotThinking()
+						setThinkingText("")
+						setToolCalls([])
+						setSessionMetadata((prev) => {
+							const next = { ...prev }
+							delete next.step
+							delete next.tool
+							delete next.action
+							delete next.command
+							delete next.thinking
+							return next
+						})
 					}
 
 					if (
@@ -1243,6 +1260,21 @@ export default function ChatView({
 							setPendingQuestion(null)
 						}
 
+						if (st === "idle" || st === "completed" || st === "done") {
+							stopBotThinking()
+							setThinkingText("")
+							setToolCalls([])
+							setSessionMetadata((prev) => {
+								const next = { ...prev }
+								delete next.step
+								delete next.tool
+								delete next.action
+								delete next.command
+								delete next.thinking
+								return next
+							})
+						}
+
 						if (
 							st === "idle" ||
 							st === "completed" ||
@@ -1339,6 +1371,21 @@ export default function ChatView({
 								setPendingQuestion(null)
 							}
 
+							if (newStatus === "idle" || newStatus === "completed" || newStatus === "done") {
+								stopBotThinking()
+								setThinkingText("")
+								setToolCalls([])
+								setSessionMetadata((prev) => {
+									const next = { ...prev }
+									delete next.step
+									delete next.tool
+									delete next.action
+									delete next.command
+									delete next.thinking
+									return next
+								})
+							}
+
 							if (
 								newStatus === "idle" ||
 								newStatus === "completed" ||
@@ -1425,41 +1472,38 @@ export default function ChatView({
 
 						const currentConv =
 							conversationsRef.current?.find((c) => c.id === selectedConversationId) || activeConv
-						const isLiveActive =
-							sessionStatus === "running" ||
-							sessionStatus === "thinking" ||
-							currentConv?.status === "running" ||
-							currentConv?.status === "thinking" ||
-							currentConv?.status === "waiting_for_input" ||
-							currentConv?.status === "needs_input" ||
-							Boolean(
-								currentConv?.metadata?.step ||
-								currentConv?.metadata?.tool ||
-								currentConv?.metadata?.action,
-							)
-
 						if (resp?.status) {
-							if (!isLiveActive || (resp.status !== "idle" && resp.status !== "completed")) {
-								setSessionStatus(resp.status)
-								if (onConversationStatusChange) {
-									onConversationStatusChange(selectedConversationId, resp.status, resp.metadata)
-								}
+							setSessionStatus(resp.status)
+							if (resp.status === "idle" || resp.status === "completed" || resp.status === "done") {
+								stopBotThinking()
+								setThinkingText("")
+								setToolCalls([])
+							}
+							if (onConversationStatusChange) {
+								onConversationStatusChange(selectedConversationId, resp.status, resp.metadata)
 							}
 						}
 						const respMeta = resp?.metadata || {}
 						if (resp?.metadata) {
-							setSessionMetadata((prev) => ({
-								...resp.metadata,
-								...prev,
-								...(activeConv?.metadata || {}),
-							}))
+							if (resp.status === "idle" || resp.status === "completed" || resp.status === "done") {
+								setSessionMetadata(resp.metadata)
+							} else {
+								setSessionMetadata((prev) => ({
+									...resp.metadata,
+									...prev,
+									...(activeConv?.metadata || {}),
+								}))
+								if (resp.metadata.thinking) {
+									setThinkingText(resp.metadata.thinking)
+								}
+								if (
+									Array.isArray(resp.metadata.tool_calls) &&
+									resp.metadata.tool_calls.length > 0
+								) {
+									setToolCalls(resp.metadata.tool_calls)
+								}
+							}
 							if (resp.metadata.prompt_queue) setPromptQueue(resp.metadata.prompt_queue)
-							if (resp.metadata.thinking) {
-								setThinkingText(resp.metadata.thinking)
-							}
-							if (Array.isArray(resp.metadata.tool_calls) && resp.metadata.tool_calls.length > 0) {
-								setToolCalls(resp.metadata.tool_calls)
-							}
 						}
 						const targetStatus = resp?.status || sessionStatus
 						const resolvedQ = resolvePendingQuestion(targetStatus, respMeta, respMeta.question)
@@ -1575,31 +1619,25 @@ export default function ChatView({
 						activeConv ||
 						res.conversation
 					const convStatus = res.conversation.status || "idle"
-					const isLiveActive =
-						sessionStatus === "running" ||
-						sessionStatus === "thinking" ||
-						currentConv?.status === "running" ||
-						currentConv?.status === "thinking" ||
-						currentConv?.status === "waiting_for_input" ||
-						currentConv?.status === "needs_input" ||
-						Boolean(
-							currentConv?.metadata?.step ||
-							currentConv?.metadata?.tool ||
-							currentConv?.metadata?.action,
-						)
-
-					// Only update sessionStatus from DB if the session is NOT actively running live
-					if (!isLiveActive && res.conversation.status) {
+					if (res.conversation.status) {
 						setSessionStatus(res.conversation.status)
+						if (convStatus === "idle" || convStatus === "completed" || convStatus === "done") {
+							stopBotThinking()
+							setThinkingText("")
+							setToolCalls([])
+						}
 					}
 
 					const convMeta = res.conversation.metadata || {}
-					// Merge DB metadata with live metadata so active steps/tools are not wiped
-					setSessionMetadata((prev) => ({
-						...convMeta,
-						...prev,
-						...(currentConv?.metadata || {}),
-					}))
+					if (convStatus === "idle" || convStatus === "completed" || convStatus === "done") {
+						setSessionMetadata(convMeta)
+					} else {
+						setSessionMetadata((prev) => ({
+							...convMeta,
+							...prev,
+							...(currentConv?.metadata || {}),
+						}))
+					}
 
 					const loadedCfg = getAgentPromptConfig(convMeta, res.conversation, projectInfo, bot)
 					setAgentModes(loadedCfg.modes)
@@ -1713,14 +1751,27 @@ export default function ChatView({
 		const model = selectedModel || models[0]?.name || null
 		const contextSize = selectedContextSize ? Number(selectedContextSize) : null
 		const optimisticId = `optimistic-${Date.now()}`
+		const isSteer = Boolean(opts.is_steer)
+		const hasUserPrompts =
+			hasUserPromptsRef.current ||
+			(Array.isArray(messages) && messages.some((m) => m && !m.pending && m.role === "user")) ||
+			Boolean(activeConv?.last_message_at)
+		const isExistingSession = Boolean(activeConv?.external_session_id) || hasUserPrompts || isSteer
+		const isNewSession = !isExistingSession
+
 		const metadata = {
 			agent_type: selectedAgentType,
 			agent_mode: agentMode,
-			use_worktree: useWorktree,
+			...(isNewSession && useWorktree !== undefined ? { use_worktree: useWorktree } : {}),
 			base_branch: baseBranch,
 			skill: selectedSkill,
 			...(opts.metadata || {}),
-			...(opts.is_steer ? { is_steer: true } : {}),
+			...(isSteer ? { is_steer: true } : {}),
+		}
+		if (isSteer || !isNewSession) {
+			delete metadata.use_worktree
+			delete metadata.useWorktree
+			delete metadata.worktree
 		}
 		const optimistic = {
 			id: optimisticId,
@@ -1731,7 +1782,7 @@ export default function ChatView({
 			content_type: "text",
 			pending: true,
 			metadata,
-			is_steer: !!opts.is_steer,
+			is_steer: isSteer,
 			fromSuggestion: opts.fromSuggestion || false,
 			inserted_at: new Date().toISOString(),
 		}
@@ -1787,10 +1838,39 @@ export default function ChatView({
 		const model = selectedModel || models[0]?.name || null
 		const contextSize = selectedContextSize ? Number(selectedContextSize) : null
 		const optimisticId = `optimistic-${Date.now()}`
-		const is_steer = !!opts.is_steer
+		const is_steer = Boolean(opts.is_steer)
+		const hasUserPrompts =
+			hasUserPromptsRef.current ||
+			(Array.isArray(messages) && messages.some((m) => m && !m.pending && m.role === "user")) ||
+			Boolean(activeConv?.last_message_at)
+		const isExistingSession = Boolean(activeConv?.external_session_id) || hasUserPrompts || is_steer
+		const isNewSession = !isExistingSession
 
 		const primary = currentAttachments[0]
 		const assetType = primary.type?.startsWith("image/") ? "image" : "file"
+
+		const optimisticMetadata = {
+			url: primary.previewUrl,
+			filename: primary.name,
+			agent_type: selectedAgentType,
+			agent_mode: agentMode,
+			...(isNewSession && useWorktree !== undefined ? { use_worktree: useWorktree } : {}),
+			base_branch: baseBranch,
+			skill: selectedSkill,
+			attachments: currentAttachments.map((a) => ({
+				name: a.name,
+				type: a.type,
+				size: a.size,
+				previewUrl: a.previewUrl,
+			})),
+			...(opts.metadata || {}),
+			...(is_steer ? { is_steer: true } : {}),
+		}
+		if (is_steer || !isNewSession) {
+			delete optimisticMetadata.use_worktree
+			delete optimisticMetadata.useWorktree
+			delete optimisticMetadata.worktree
+		}
 
 		const optimistic = {
 			id: optimisticId,
@@ -1800,23 +1880,7 @@ export default function ChatView({
 			role: "user",
 			content_type: assetType,
 			pending: true,
-			metadata: {
-				url: primary.previewUrl,
-				filename: primary.name,
-				agent_type: selectedAgentType,
-				agent_mode: agentMode,
-				use_worktree: useWorktree,
-				base_branch: baseBranch,
-				skill: selectedSkill,
-				attachments: currentAttachments.map((a) => ({
-					name: a.name,
-					type: a.type,
-					size: a.size,
-					previewUrl: a.previewUrl,
-				})),
-				...(opts.metadata || {}),
-				...(is_steer ? { is_steer: true } : {}),
-			},
+			metadata: optimisticMetadata,
 			is_steer,
 			fromSuggestion: opts.fromSuggestion || false,
 			inserted_at: new Date().toISOString(),
@@ -1843,23 +1907,30 @@ export default function ChatView({
 				throw new Error("Attachment upload failed")
 			}
 
+			const payloadMetadata = {
+				url: uploadedList[0].url,
+				filename: uploadedList[0].filename,
+				attachments: uploadedList,
+				agent_type: selectedAgentType,
+				agent_mode: agentMode,
+				...(isNewSession && useWorktree !== undefined ? { use_worktree: useWorktree } : {}),
+				base_branch: baseBranch,
+				skill: selectedSkill,
+				...(opts.metadata || {}),
+				...(is_steer ? { is_steer: true } : {}),
+			}
+			if (is_steer || !isNewSession) {
+				delete payloadMetadata.use_worktree
+				delete payloadMetadata.useWorktree
+				delete payloadMetadata.worktree
+			}
+
 			const payload = {
 				body: body || null,
 				asset_url: uploadedList[0].url,
 				asset_type: assetType,
 				asset_filename: uploadedList[0].filename,
-				metadata: {
-					url: uploadedList[0].url,
-					filename: uploadedList[0].filename,
-					attachments: uploadedList,
-					agent_type: selectedAgentType,
-					agent_mode: agentMode,
-					use_worktree: useWorktree,
-					base_branch: baseBranch,
-					skill: selectedSkill,
-					...(opts.metadata || {}),
-					...(is_steer ? { is_steer: true } : {}),
-				},
+				metadata: payloadMetadata,
 			}
 			if (model) payload.model = model
 			if (contextSize) payload.context_size = contextSize
@@ -1992,8 +2063,8 @@ export default function ChatView({
 			const st = activeConv.status || "idle"
 			const meta = activeConv.metadata || {}
 			setSessionStatus((prev) => {
-				if ((prev === "running" || prev === "thinking") && (st === "idle" || !st)) {
-					return prev
+				if (st === "idle" || st === "completed" || st === "done") {
+					return st
 				}
 				if (
 					st === "running" ||
@@ -2003,12 +2074,25 @@ export default function ChatView({
 				) {
 					return st
 				}
-				return prev && prev !== "idle" ? prev : st
+				return prev || st
 			})
-			setSessionMetadata((prev) => ({
-				...meta,
-				...prev,
-			}))
+			if (st === "idle" || st === "completed" || st === "done") {
+				stopBotThinking()
+			}
+			setSessionMetadata((prev) => {
+				const merged = {
+					...meta,
+					...prev,
+				}
+				if (st === "idle" || st === "completed" || st === "done") {
+					delete merged.step
+					delete merged.tool
+					delete merged.action
+					delete merged.command
+					delete merged.thinking
+				}
+				return merged
+			})
 			if (meta.prompt_queue) {
 				setPromptQueue(meta.prompt_queue)
 			}
@@ -2772,7 +2856,10 @@ export default function ChatView({
 								onBaseBranchChange={handleBaseBranchChange}
 								agentTypes={agentTypes}
 								isAHP={isAhp}
-								isNewSession={!selectedConversationId || messages.length === 0}
+								isNewSession={
+									!selectedConversationId ||
+									(!activeConv?.external_session_id && messages.length === 0)
+								}
 							/>
 						</ThreadPrimitive.Root>
 					</div>

@@ -697,9 +697,9 @@ defmodule Messaging.Chat do
       end
 
     cleared_metadata =
-      if resolved_status in ["idle", "running", "completed", "done", "archived"] and
-           not Map.has_key?(metadata || %{}, "question") do
-        Map.delete(conversation.metadata || %{}, "question")
+      if resolved_status in ["idle", "completed", "done", "archived"] do
+        (conversation.metadata || %{})
+        |> Map.drop(["question", "step", "tool", "action", "command"])
       else
         conversation.metadata || %{}
       end
@@ -993,24 +993,55 @@ defmodule Messaging.Chat do
         |> Repo.update_all(set: [updated_at: now])
 
         # If user message includes session configuration metadata, sync it into conversation.metadata
+        # Note: use_worktree cannot be changed on an existing bot-synced AHP session or once established, and should never be updated on steering turns
+        conv = get_conversation!(message.conversation_id, [])
+
+        is_steer =
+          message.role == "user" and is_map(message.metadata) and
+            (message.metadata["is_steer"] == true or message.metadata[:is_steer] == true)
+
+        is_bot_session =
+          conv.metadata &&
+            (conv.metadata["synced_by_bot"] == true or conv.metadata[:synced_by_bot] == true)
+
+        has_established_worktree = conv.metadata && not is_nil(conv.metadata["use_worktree"])
+
         config_updates =
           if message.role == "user" and is_map(message.metadata) do
+            allowed_keys =
+              if is_steer or is_bot_session or has_established_worktree do
+                [
+                  "agent_mode",
+                  "agentMode",
+                  "mode",
+                  "base_branch",
+                  "baseBranch",
+                  "branch",
+                  "git_branch",
+                  "agent_type",
+                  "agentType",
+                  "skill"
+                ]
+              else
+                [
+                  "agent_mode",
+                  "agentMode",
+                  "mode",
+                  "use_worktree",
+                  "useWorktree",
+                  "worktree",
+                  "base_branch",
+                  "baseBranch",
+                  "branch",
+                  "git_branch",
+                  "agent_type",
+                  "agentType",
+                  "skill"
+                ]
+              end
+
             message.metadata
-            |> Map.take([
-              "agent_mode",
-              "agentMode",
-              "mode",
-              "use_worktree",
-              "useWorktree",
-              "worktree",
-              "base_branch",
-              "baseBranch",
-              "branch",
-              "git_branch",
-              "agent_type",
-              "agentType",
-              "skill"
-            ])
+            |> Map.take(allowed_keys)
             |> Enum.reject(fn {_k, v} -> is_nil(v) end)
             |> Map.new()
           else
@@ -1018,7 +1049,6 @@ defmodule Messaging.Chat do
           end
 
         if config_updates != %{} do
-          conv = get_conversation!(message.conversation_id, [])
           merged = Map.merge(conv.metadata || %{}, config_updates)
           conv |> Conversation.changeset(%{metadata: merged}) |> Repo.update()
         end

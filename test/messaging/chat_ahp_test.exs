@@ -248,6 +248,41 @@ defmodule Messaging.ChatAhpTest do
       assert refetched.metadata["agent_type"] == "architect"
     end
 
+    test "steer message never updates use_worktree in conversation metadata and message metadata strips it",
+         %{
+           user: user,
+           bot_token: bot
+         } do
+      {:ok, conv} =
+        Chat.create_conversation(%{
+          bot_token_id: bot.id,
+          user_id: user.id,
+          title: "Steering Worktree Guard Test",
+          metadata: %{"use_worktree" => false, "agent_mode" => "interactive"}
+        })
+
+      {:ok, message} =
+        Chat.create_message(%{
+          conversation_id: conv.id,
+          user_id: user.id,
+          role: "user",
+          body: "Focus on unit tests first",
+          metadata: %{
+            "is_steer" => true,
+            "use_worktree" => true,
+            "agent_mode" => "plan"
+          }
+        })
+
+      refetched_msg = Chat.get_message!(message.id)
+      assert refetched_msg.metadata["is_steer"] == true
+      assert is_nil(refetched_msg.metadata["use_worktree"])
+
+      refetched_conv = Chat.get_conversation!(conv.id, [])
+      assert refetched_conv.metadata["use_worktree"] == false
+      assert refetched_conv.metadata["agent_mode"] == "plan"
+    end
+
     test "prunes older abandoned default generic sessions that have no user messages", %{
       bot_token: bot
     } do

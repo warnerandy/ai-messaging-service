@@ -607,18 +607,32 @@ describe("normalizeMessage", () => {
 		expect(screen.getByRole("button", { name: "🧭 Steer Agent" })).toBeInTheDocument()
 	})
 
-	it("steers running agent when submitting a message in running state", async () => {
+	it("steers running agent when submitting a message in running state without sending use_worktree", async () => {
 		const user = userEvent.setup()
+		const { createConversationMessage } = await import("../lib/data.js")
+		createConversationMessage.mockResolvedValueOnce({
+			id: 20,
+			body: "Focus on backend API first",
+			role: "user",
+			inserted_at: new Date().toISOString(),
+		})
+
 		render(
 			<ChatView
 				token="fake"
-				bot={{ id: 1, name: "Atlas", bot_type: "ahp", is_connected: true }}
+				bot={{
+					id: 1,
+					name: "Atlas",
+					bot_type: "ahp",
+					is_connected: true,
+					metadata: { worktree_supported: true },
+				}}
 				conversations={[
 					{
 						id: 10,
 						title: "Active Migration",
 						status: "running",
-						metadata: { step: "Delegating task", tool: "agent" },
+						metadata: { step: "Delegating task", tool: "agent", use_worktree: true },
 					},
 				]}
 				selectedConversationId={10}
@@ -638,6 +652,161 @@ describe("normalizeMessage", () => {
 		await user.click(steerBtn)
 
 		expect(textarea.value).toBe("")
+		expect(createConversationMessage).toHaveBeenCalledWith(
+			"fake",
+			10,
+			expect.objectContaining({
+				body: "Focus on backend API first",
+				metadata: expect.objectContaining({
+					is_steer: true,
+				}),
+			}),
+		)
+		const lastCallPayload = createConversationMessage.mock.calls.at(-1)?.[2]
+		expect(lastCallPayload.metadata.use_worktree).toBeUndefined()
+		expect(lastCallPayload.metadata.useWorktree).toBeUndefined()
+		expect(lastCallPayload.metadata.worktree).toBeUndefined()
+	})
+
+	it("sends use_worktree only for new sessions and omits it on existing sessions", async () => {
+		const user = userEvent.setup()
+		const { createConversationMessage } = await import("../lib/data.js")
+		createConversationMessage.mockResolvedValueOnce({
+			id: 101,
+			body: "First prompt",
+			role: "user",
+			inserted_at: new Date().toISOString(),
+		})
+
+		const { unmount } = render(
+			<ChatView
+				token="fake"
+				bot={{
+					id: 1,
+					name: "Atlas",
+					bot_type: "ahp",
+					is_connected: true,
+					metadata: { worktree_supported: true },
+				}}
+				conversations={[
+					{
+						id: 99,
+						title: "New Fresh Session",
+						status: "idle",
+						metadata: { use_worktree: true },
+						last_message_at: null,
+					},
+				]}
+				selectedConversationId={99}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		const input = screen.getByPlaceholderText("What do you want to know?")
+		await user.type(input, "First prompt{enter}")
+
+		const firstCall = createConversationMessage.mock.calls.at(-1)?.[2]
+		expect(firstCall.metadata.use_worktree).toBe(true)
+		unmount()
+
+		// Now render an existing session that already has user messages / last_message_at
+		createConversationMessage.mockResolvedValueOnce({
+			id: 102,
+			body: "Second prompt",
+			role: "user",
+			inserted_at: new Date().toISOString(),
+		})
+
+		render(
+			<ChatView
+				token="fake"
+				bot={{
+					id: 1,
+					name: "Atlas",
+					bot_type: "ahp",
+					is_connected: true,
+					metadata: { worktree_supported: true },
+				}}
+				conversations={[
+					{
+						id: 99,
+						title: "Existing Session",
+						status: "idle",
+						metadata: { use_worktree: true },
+						last_message_at: "2026-11-04T05:00:00Z",
+					},
+				]}
+				selectedConversationId={99}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		const input2 = screen.getByPlaceholderText("What do you want to know?")
+		await user.type(input2, "Second prompt{enter}")
+
+		const secondCall = createConversationMessage.mock.calls.at(-1)?.[2]
+		expect(secondCall.metadata.use_worktree).toBeUndefined()
+	})
+
+	it("treats session with historical step metadata as idle when status is idle and sends a normal prompt", async () => {
+		const user = userEvent.setup()
+		const { createConversationMessage } = await import("../lib/data.js")
+		createConversationMessage.mockResolvedValueOnce({
+			id: 202,
+			body: "Normal follow-up prompt",
+			role: "user",
+			inserted_at: new Date().toISOString(),
+		})
+
+		render(
+			<ChatView
+				token="fake"
+				bot={{
+					id: 1,
+					name: "VS Code Host",
+					bot_type: "ahp",
+					is_connected: true,
+					metadata: { worktree_supported: true },
+				}}
+				conversations={[
+					{
+						id: 15,
+						title: "Finished Migration",
+						status: "idle",
+						external_session_id: "ext-session-123",
+						metadata: { step: "Running tests", tool: "bash", use_worktree: false },
+					},
+				]}
+				selectedConversationId={15}
+				models={[]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		// Steering bar should NOT be in the document
+		expect(screen.queryByTestId("chat-steering-bar")).not.toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: "🧭 Steer Agent" })).not.toBeInTheDocument()
+
+		// Prompt input should be the normal question input (not steering)
+		const input = screen.getByPlaceholderText("Send an instruction or question...")
+		expect(input).toBeInTheDocument()
+
+		await user.type(input, "Normal follow-up prompt{enter}")
+
+		const lastCall = createConversationMessage.mock.calls.at(-1)?.[2]
+		expect(lastCall.body).toBe("Normal follow-up prompt")
+		// Must not be steer
+		expect(lastCall.metadata?.is_steer).toBeFalsy()
+		// Must not send use_worktree on existing external session
+		expect(lastCall.metadata?.use_worktree).toBeUndefined()
 	})
 
 	it("dispatches expand-live-thinking when clicking View Progress in steering bar", async () => {

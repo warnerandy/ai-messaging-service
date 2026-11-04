@@ -105,7 +105,13 @@ defmodule MessagingWeb.BotChannel do
   @impl true
   def handle_info({:steer_agent, payload}, socket) do
     Logger.info("[BotChannel] pushing steer_agent bot_token_id=#{socket.assigns.bot_token.id}")
-    push(socket, "steer_agent", payload)
+
+    cleaned =
+      if is_map(payload),
+        do: Map.drop(payload, ["use_worktree", "useWorktree", "worktree"]),
+        else: payload
+
+    push(socket, "steer_agent", cleaned)
     {:noreply, socket}
   end
 

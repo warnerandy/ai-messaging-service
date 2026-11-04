@@ -128,17 +128,18 @@ defmodule MessagingWeb.AhpChannelTest do
       "conversation_id" => ^conv_id
     }
 
-    # 7. User sends a steering command
+    # 7. User sends a steering command (worktree settings stripped)
     push(user_channel, "steer", %{
       "action" => "steer",
-      "instruction" => "Target only lib/chat.ex"
+      "instruction" => "Target only lib/chat.ex",
+      "use_worktree" => true
     })
 
-    assert_push "steer_agent", %{
-      "action" => "steer",
-      "instruction" => "Target only lib/chat.ex",
-      "conversation_id" => ^conv_id
-    }
+    assert_push "steer_agent", steer_payload
+    assert steer_payload["action"] == "steer"
+    assert steer_payload["instruction"] == "Target only lib/chat.ex"
+    assert steer_payload["conversation_id"] == conv_id
+    refute Map.has_key?(steer_payload, "use_worktree")
 
     # 8. User queues a prompt
     ref_queue =

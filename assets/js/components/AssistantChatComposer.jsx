@@ -289,6 +289,7 @@ export default function AssistantChatComposer({
 					agentTypes={agentTypes}
 					disabled={disabled || uploading}
 					isAHP={isAHP}
+					isWorktreeLocked={!isNewSession}
 				/>
 			)}
 

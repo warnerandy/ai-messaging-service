@@ -144,6 +144,7 @@ defmodule MessagingWeb.ConversationChannel do
       forward_payload =
         payload
         |> Map.put("conversation_id", conv_id)
+        |> Map.drop(["use_worktree", "useWorktree", "worktree"])
 
       Phoenix.PubSub.broadcast(
         Messaging.PubSub,
@@ -215,8 +216,16 @@ defmodule MessagingWeb.ConversationChannel do
     nested_meta = if is_map(config_meta["metadata"]), do: config_meta["metadata"], else: %{}
     merged_config = Map.merge(config_meta, nested_meta) |> Map.delete("metadata")
 
+    current_conv = Chat.get_conversation!(conv_id, [])
+
+    is_bot_session =
+      current_conv.metadata &&
+        (current_conv.metadata["synced_by_bot"] == true or
+           current_conv.metadata[:synced_by_bot] == true)
+
     raw_worktree =
       cond do
+        is_bot_session -> nil
         not is_nil(merged_config["use_worktree"]) -> merged_config["use_worktree"]
         not is_nil(merged_config["useWorktree"]) -> merged_config["useWorktree"]
         true -> merged_config["worktree"]
@@ -241,7 +250,10 @@ defmodule MessagingWeb.ConversationChannel do
         merged_config["modes"] || merged_config["agent_modes"] || merged_config["agentModes"] ||
           merged_config["supported_modes"]
       )
-      |> maybe_put_field("use_worktree", normalize_bool(raw_worktree))
+      |> maybe_put_field(
+        "use_worktree",
+        if(is_bot_session, do: nil, else: normalize_bool(raw_worktree))
+      )
       |> maybe_put_field("worktree_supported", normalize_bool(raw_worktree_supported))
       |> maybe_put_field(
         "base_branch",
@@ -265,7 +277,13 @@ defmodule MessagingWeb.ConversationChannel do
           merged_config["agent_types"] || merged_config["agentTypes"]
       )
 
-    full_update = Map.merge(merged_config, canonical)
+    full_update =
+      if is_bot_session do
+        Map.merge(merged_config, canonical)
+        |> Map.drop(["use_worktree", "useWorktree", "worktree"])
+      else
+        Map.merge(merged_config, canonical)
+      end
 
     case Chat.update_session_metadata(conv_id, full_update) do
       {:ok, updated_conv} ->

@@ -40,6 +40,31 @@ defmodule Messaging.Chat.Message do
     |> validate_inclusion(:content_type, @valid_content_types)
     |> validate_number(:context_size, greater_than: 0)
     |> validate_content()
+    |> sanitize_metadata()
+  end
+
+  defp sanitize_metadata(changeset) do
+    case get_field(changeset, :metadata) do
+      %{} = meta ->
+        if meta["is_steer"] == true or meta[:is_steer] == true do
+          sanitized =
+            Map.drop(meta, [
+              "use_worktree",
+              "useWorktree",
+              "worktree",
+              :use_worktree,
+              :useWorktree,
+              :worktree
+            ])
+
+          put_change(changeset, :metadata, sanitized)
+        else
+          changeset
+        end
+
+      _ ->
+        changeset
+    end
   end
 
   defp validate_content(changeset) do
