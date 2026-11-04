@@ -516,8 +516,8 @@ export default function SettingsModal({
 								{vibeStatus === "unsupported" && (
 									<div className="settings-feedback-banner settings-feedback-banner--warning">
 										<span>
-											Vibration is not supported on this device/browser. iOS Safari and desktop
-											PCs lack the Vibration API (supported on Android).
+											Vibration is not supported on this device/browser. iOS Safari and desktop PCs
+											lack the Vibration API (supported on Android).
 										</span>
 									</div>
 								)}
@@ -525,8 +525,8 @@ export default function SettingsModal({
 								{vibeStatus === "blocked" && (
 									<div className="settings-feedback-banner settings-feedback-banner--warning">
 										<span>
-											Vibration was blocked by device or browser settings. Check if Do Not
-											Disturb or system Haptics is turned off.
+											Vibration was blocked by device or browser settings. Check if Do Not Disturb
+											or system Haptics is turned off.
 										</span>
 									</div>
 								)}

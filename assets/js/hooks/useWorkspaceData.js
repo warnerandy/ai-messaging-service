@@ -298,10 +298,7 @@ export function useWorkspaceData() {
 				const bot = botsRef.current.find((entry) => entry.id === selectedBotId)
 				const title = opts.title || (opts.projectName ? `${opts.projectName} Session` : bot?.name)
 				const metadata = opts.metadata || {}
-				const externalSessionId =
-					opts.external_session_id ||
-					opts.externalSessionId ||
-					undefined
+				const externalSessionId = opts.external_session_id || opts.externalSessionId || undefined
 
 				const created = await createConversation(token, selectedBotId, {
 					title,

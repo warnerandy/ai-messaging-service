@@ -747,7 +747,7 @@ describe("normalizeMessage", () => {
 			/>,
 		)
 
-		const input2 = screen.getByPlaceholderText("What do you want to know?")
+		const input2 = screen.getByPlaceholderText("Send an instruction or question...")
 		await user.type(input2, "Second prompt{enter}")
 
 		const secondCall = createConversationMessage.mock.calls.at(-1)?.[2]
@@ -1031,5 +1031,94 @@ describe("normalizeMessage", () => {
 		} finally {
 			window.innerWidth = originalInnerWidth
 		}
+	})
+
+	it("does not render NewSessionCanvas for an existing running session with 0 messages", async () => {
+		const { getConversation } = await import("../lib/data.js")
+		getConversation.mockResolvedValueOnce({
+			conversation: {
+				id: 631,
+				title: "Plan Groups React migration",
+				status: "running",
+				external_session_id: "vscode:12345",
+				metadata: { agent_mode: "plan" },
+			},
+			messages: [],
+		})
+
+		render(
+			<ChatView
+				token="fake"
+				bot={{ id: 1, name: "Atlas", bot_type: "ahp", is_connected: true }}
+				conversations={[
+					{
+						id: 631,
+						title: "Plan Groups React migration",
+						status: "running",
+						external_session_id: "vscode:12345",
+						metadata: { agent_mode: "plan" },
+					},
+				]}
+				selectedConversationId={631}
+				models={[{ name: "gpt-4o" }]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		// NewSessionCanvas should NOT be rendered
+		expect(screen.queryByTestId("new-session-canvas")).not.toBeInTheDocument()
+		expect(screen.queryByText(/Direct Branch/i)).not.toBeInTheDocument()
+
+		// LiveThinking card should be present because session status is running
+		expect(await screen.findByTestId("live-thinking-card")).toBeInTheDocument()
+		expect(
+			screen.getByPlaceholderText("Steer running agent with an instruction..."),
+		).toBeInTheDocument()
+	})
+
+	it("renders empty existing session placeholder for an idle session with external_session_id and 0 messages", async () => {
+		const { getConversation } = await import("../lib/data.js")
+		getConversation.mockResolvedValueOnce({
+			conversation: {
+				id: 632,
+				title: "Synced Idle Session",
+				status: "idle",
+				external_session_id: "vscode:999",
+				metadata: {},
+			},
+			messages: [],
+		})
+
+		render(
+			<ChatView
+				token="fake"
+				bot={{ id: 1, name: "Atlas", bot_type: "ahp", is_connected: true }}
+				conversations={[
+					{
+						id: 632,
+						title: "Synced Idle Session",
+						status: "idle",
+						external_session_id: "vscode:999",
+						metadata: {},
+					},
+				]}
+				selectedConversationId={632}
+				models={[{ name: "gpt-4o" }]}
+				onRefreshModels={vi.fn()}
+				onBotStatusChange={vi.fn()}
+				onToggleSidebar={vi.fn()}
+			/>,
+		)
+
+		// NewSessionCanvas should NOT be rendered
+		expect(screen.queryByTestId("new-session-canvas")).not.toBeInTheDocument()
+
+		// Empty existing session placeholder should be rendered
+		const emptyPlaceholder = await screen.findByTestId("chat-empty-existing-session")
+		expect(emptyPlaceholder).toBeInTheDocument()
+		expect(emptyPlaceholder).toHaveTextContent("Synced Idle Session")
+		expect(screen.getByPlaceholderText("Send an instruction or question...")).toBeInTheDocument()
 	})
 })

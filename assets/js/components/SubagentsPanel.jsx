@@ -344,7 +344,9 @@ export default function SubagentsPanel({
 									}}
 									data-testid="tab-running-subagents"
 								>
-									<span className="subagents-tab__icon"><ZapIcon size={14} /></span>
+									<span className="subagents-tab__icon">
+										<ZapIcon size={14} />
+									</span>
 									<span>Running ({runningSubagents.length})</span>
 								</button>
 								<button
@@ -355,7 +357,9 @@ export default function SubagentsPanel({
 									onClick={() => setActiveTab("processes")}
 									data-testid="tab-processes"
 								>
-									<span className="subagents-tab__icon"><TerminalIcon size={14} /></span>
+									<span className="subagents-tab__icon">
+										<TerminalIcon size={14} />
+									</span>
 									<span>Processes ({processes.length})</span>
 								</button>
 								<button
@@ -366,7 +370,9 @@ export default function SubagentsPanel({
 									onClick={() => setActiveTab("changeset")}
 									data-testid="tab-changeset"
 								>
-									<span className="subagents-tab__icon"><FileCheckIcon size={14} /></span>
+									<span className="subagents-tab__icon">
+										<FileCheckIcon size={14} />
+									</span>
 									<span>Changes ({changesetFiles.length})</span>
 								</button>
 								<button
@@ -377,7 +383,9 @@ export default function SubagentsPanel({
 									onClick={() => setActiveTab("plan")}
 									data-testid="tab-plan"
 								>
-									<span className="subagents-tab__icon"><LayersIcon size={14} /></span>
+									<span className="subagents-tab__icon">
+										<LayersIcon size={14} />
+									</span>
 									<span>Plan ({planSteps.length})</span>
 								</button>
 								<button

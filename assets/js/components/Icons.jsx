@@ -268,13 +268,7 @@ export function SendIcon({ size = 16, className = "" }) {
 
 export function StopIcon({ size = 16, className = "" }) {
 	return (
-		<svg
-			width={size}
-			height={size}
-			viewBox="0 0 24 24"
-			fill="currentColor"
-			className={className}
-		>
+		<svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
 			<rect x="4" y="4" width="16" height="16" rx="2" />
 		</svg>
 	)

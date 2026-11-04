@@ -1273,7 +1273,11 @@ export function extractWorktreeFlag(obj) {
 	}
 
 	// 3. Nested capabilities object
-	if (obj.capabilities && typeof obj.capabilities === "object" && !Array.isArray(obj.capabilities)) {
+	if (
+		obj.capabilities &&
+		typeof obj.capabilities === "object" &&
+		!Array.isArray(obj.capabilities)
+	) {
 		const capVal = extractWorktreeFlag(obj.capabilities)
 		if (capVal !== undefined) return capVal
 	}

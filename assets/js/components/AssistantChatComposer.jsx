@@ -902,9 +902,7 @@ export default function AssistantChatComposer({
 												id="context-size-select"
 												className="model-picker aui-select aui-select--clean"
 												value={selectedContextSize}
-												onChange={(e) =>
-													onSelectContextSize && onSelectContextSize(e.target.value)
-												}
+												onChange={(e) => onSelectContextSize && onSelectContextSize(e.target.value)}
 												aria-label="Context Size"
 											>
 												<option value="">

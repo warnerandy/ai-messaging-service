@@ -109,13 +109,9 @@ export default function NewSessionCanvas({
 		<div className="new-session-canvas aui-agent-empty-state" data-testid="new-session-canvas">
 			{/* Minimalist Copilot-style Hero Welcome */}
 			<div className="aui-welcome-hero aui-ship-hero">
-				<h1 className="aui-ship-title">
-					What are we building?
-				</h1>
+				<h1 className="aui-ship-title">What are we building?</h1>
 				<div className="aui-welcome-meta">
-					<span className="aui-meta-pill">
-						Start a conversation with {bot?.name || "your bot"}
-					</span>
+					<span className="aui-meta-pill">Start a conversation with {bot?.name || "your bot"}</span>
 					<span className="aui-meta-pill">
 						{bot?.bot_type === "ahp" ? "AHP Protocol" : "Chat Protocol"}
 					</span>
@@ -341,9 +337,7 @@ export default function NewSessionCanvas({
 				{/* Execution Modes Segmented Control */}
 				{normalizedModes.length > 0 && (
 					<div className="aui-setup-section" data-testid="canvas-mode-section">
-						<div className="text-xs text-muted-foreground mb-1.5 font-medium">
-							Execution Mode:
-						</div>
+						<div className="text-xs text-muted-foreground mb-1.5 font-medium">Execution Mode:</div>
 						<div className="aui-segmented-control">
 							{normalizedModes.map((m) => {
 								const isSelected = mode === m.id
@@ -384,7 +378,9 @@ export default function NewSessionCanvas({
 								aria-label="Agent Role"
 								className="aui-role-select"
 								value={activeAgentItem?.id || agentType || ""}
-								onChange={(e) => !disabled && onAgentTypeChange && onAgentTypeChange(e.target.value)}
+								onChange={(e) =>
+									!disabled && onAgentTypeChange && onAgentTypeChange(e.target.value)
+								}
 								disabled={disabled}
 							>
 								{normalizedAgentTypes.map((item) => (

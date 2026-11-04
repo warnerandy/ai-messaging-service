@@ -263,7 +263,9 @@ export default function ChatView({
 			(typeof window.matchMedia === "function" && window.matchMedia("(max-width: 900px)").matches)
 		const isMobileUA =
 			typeof navigator !== "undefined" &&
-			/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || "")
+			/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+				navigator.userAgent || "",
+			)
 		return !isNarrowScreen && !isMobileUA
 	})
 
@@ -542,6 +544,54 @@ export default function ChatView({
 	hasUserPromptsRef.current =
 		(Array.isArray(messages) && messages.some((m) => m && !m.pending && m.role === "user")) ||
 		Boolean(activeConv?.last_message_at)
+
+	const hasUserPrompts = Boolean(
+		hasUserPromptsRef.current ||
+		(Array.isArray(messages) && messages.some((m) => m && !m.pending && m.role === "user")) ||
+		activeConv?.last_message_at,
+	)
+
+	const isNewSession = useMemo(() => {
+		if (!selectedConversationId) return true
+		if (activeConv?.external_session_id) return false
+		if (hasUserPrompts || (Array.isArray(messages) && messages.length > 0)) return false
+		if (
+			isAgentBusy ||
+			effectiveStatus === "running" ||
+			effectiveStatus === "thinking" ||
+			effectiveStatus === "waiting_for_input" ||
+			effectiveStatus === "needs_input"
+		) {
+			return false
+		}
+		if (
+			toolCalls.length > 0 ||
+			thinkingText ||
+			promptQueue.length > 0 ||
+			pendingQuestion ||
+			(Array.isArray(effectiveMetadata?.tool_calls) && effectiveMetadata.tool_calls.length > 0) ||
+			effectiveMetadata?.thinking
+		) {
+			return false
+		}
+		if (isArchived) return false
+		return true
+	}, [
+		selectedConversationId,
+		activeConv?.external_session_id,
+		activeConv?.last_message_at,
+		hasUserPrompts,
+		messages.length,
+		isAgentBusy,
+		effectiveStatus,
+		toolCalls.length,
+		thinkingText,
+		promptQueue.length,
+		pendingQuestion,
+		effectiveMetadata?.tool_calls,
+		effectiveMetadata?.thinking,
+		isArchived,
+	])
 
 	const handleModeChange = useCallback(
 		(newMode) => {
@@ -2840,7 +2890,7 @@ export default function ChatView({
 					className={`chat-workspace-split ${inspectorOpen && isAhp ? "chat-workspace-split--with-inspector" : ""}`}
 				>
 					<div
-						className={`chat-thread-container ${messages.length === 0 && !isLoadingMessages ? "chat-thread-container--empty" : ""}`}
+						className={`chat-thread-container ${isNewSession && !isLoadingMessages ? "chat-thread-container--empty" : ""}`}
 					>
 						{/* Messages & Assistant UI Unified Thread */}
 						<ThreadPrimitive.Root className="aui-thread-root">
@@ -2867,7 +2917,7 @@ export default function ChatView({
 										</span>
 									</div>
 								)}
-								{!isLoadingMessages && messages.length === 0 && (
+								{!isLoadingMessages && isNewSession && (
 									<NewSessionCanvas
 										key="new-session-canvas"
 										bot={bot}
@@ -2891,6 +2941,27 @@ export default function ChatView({
 										disabled={sending || uploading}
 									/>
 								)}
+								{!isLoadingMessages &&
+									!isNewSession &&
+									messages.length === 0 &&
+									!isAgentBusy &&
+									effectiveStatus !== "running" &&
+									effectiveStatus !== "thinking" && (
+										<div
+											key="chat-empty-existing-session"
+											className="chat-empty-existing-session"
+											data-testid="chat-empty-existing-session"
+										>
+											<div className="chat-empty-existing-session-title">
+												{activeConv?.title || "Active Session"}
+											</div>
+											<div className="chat-empty-existing-session-subtitle">
+												{isArchived
+													? "This session has been archived."
+													: "No messages recorded in this session yet."}
+											</div>
+										</div>
+									)}
 								{messages.map((msg) => (
 									<MessageBubbleView
 										key={msg.id}
@@ -2992,9 +3063,7 @@ export default function ChatView({
 								onBaseBranchChange={handleBaseBranchChange}
 								agentTypes={agentTypes}
 								isAHP={isAhp}
-								isNewSession={
-									!selectedConversationId || (!activeConv?.external_session_id && messages.length === 0)
-								}
+								isNewSession={isNewSession}
 								bot={bot}
 								projectInfo={projectInfo}
 								workingDirectory={workingDirectory}
