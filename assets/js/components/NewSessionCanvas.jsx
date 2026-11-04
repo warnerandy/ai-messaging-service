@@ -18,7 +18,6 @@ import {
 	FolderIcon,
 	CheckIcon,
 	ChevronDownIcon,
-	ChevronRightIcon,
 	SlidersIcon,
 } from "./Icons.jsx"
 
@@ -90,30 +89,6 @@ export default function NewSessionCanvas({
 			setCustomDirInput("")
 		}
 	}
-
-	const defaultStarters = [
-		{
-			title: "Plan Next Feature",
-			desc: `Structured implementation checklist on ${baseBranch}`,
-			prompt: `Help me plan and design a new feature on branch "${baseBranch}". Let's start with a clear requirements breakdown and checklist.`,
-		},
-		{
-			title: "Explain Codebase Architecture",
-			desc: "Project structure, key modules, and workflows",
-			prompt:
-				"Can you provide a high-level overview of this codebase architecture and its main modules?",
-		},
-		{
-			title: "Write & Verify Tests",
-			desc: "Generate comprehensive tests and verify coverage",
-			prompt: "Review recent changes or core modules and help me write unit and integration tests.",
-		},
-		{
-			title: "Audit & Optimize",
-			desc: "Inspect for potential bugs, bottlenecks, and edge cases",
-			prompt: "Audit this project for potential bugs, edge cases, and performance improvements.",
-		},
-	]
 
 	function renderRoleIcon(id) {
 		switch (id) {
@@ -430,36 +405,6 @@ export default function NewSessionCanvas({
 					</div>
 				)}
 			</div>
-
-			{/* Quick Starter Prompts (Clean typography, zero emojis) */}
-			{onSelectStarter && (
-				<div className="aui-starters-section" data-testid="canvas-starters-section">
-					<div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-						Suggested Prompts
-					</div>
-
-					<div className="aui-starters-grid">
-						{defaultStarters.map((starter, idx) => (
-							<button
-								key={idx}
-								type="button"
-								className="aui-clean-starter-card"
-								onClick={() => onSelectStarter(starter.prompt)}
-								title={starter.prompt}
-							>
-								<div className="flex items-center justify-between mb-1">
-									<div className="font-medium text-sm text-foreground">{starter.title}</div>
-									<ChevronRightIcon
-										size={14}
-										className="text-muted-foreground opacity-60 group-hover:opacity-100"
-									/>
-								</div>
-								<div className="text-xs text-muted-foreground line-clamp-2">{starter.desc}</div>
-							</button>
-						))}
-					</div>
-				</div>
-			)}
 		</div>
 	)
 }

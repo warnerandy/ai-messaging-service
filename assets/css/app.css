@@ -8656,37 +8656,43 @@ body {
 .chat-thread-container--empty {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  align-items: center;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .chat-thread-container--empty .aui-thread-root {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  align-items: center;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
   width: 100%;
   max-width: 840px;
   margin: 0 auto;
-  padding: 2rem 1.5rem;
-  height: 100%;
+  padding: 1.25rem 1.5rem 0.5rem;
+  overflow: hidden;
 }
 
 .chat-thread-container--empty .aui-thread-viewport {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-height: 0;
   width: 100%;
-  overflow: visible;
-  padding: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 1rem 0;
   display: flex;
   flex-direction: column;
   align-items: center;
+  scrollbar-gutter: stable;
 }
 
 .chat-thread-container--empty .new-session-canvas {
   width: 100%;
   max-width: 800px;
   padding: 0;
-  margin: 0 0 1.25rem 0;
+  margin: auto 0 1.25rem 0;
   background: transparent;
   border: none;
   box-shadow: none;

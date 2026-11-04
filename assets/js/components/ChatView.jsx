@@ -2888,10 +2888,6 @@ export default function ChatView({
 										agentTypes={agentTypes}
 										agentType={selectedAgentType}
 										onAgentTypeChange={handleAgentTypeChange}
-										onSelectStarter={(prompt) => {
-											setInputValue(prompt)
-											inputRef.current?.focus?.()
-										}}
 										disabled={sending || uploading}
 									/>
 								)}

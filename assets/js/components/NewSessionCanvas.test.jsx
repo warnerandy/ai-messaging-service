@@ -161,20 +161,10 @@ describe("NewSessionCanvas", () => {
 		expect(onAgentTypeChange).toHaveBeenCalledWith("coder")
 	})
 
-	it("renders starter prompt buttons and invokes onSelectStarter", async () => {
-		const user = userEvent.setup()
-		const onSelectStarter = vi.fn()
+	it("does not render suggested prompts section", () => {
+		render(<NewSessionCanvas bot={defaultBot} baseBranch="main" />)
 
-		render(
-			<NewSessionCanvas bot={defaultBot} baseBranch="main" onSelectStarter={onSelectStarter} />,
-		)
-
-		const planStarter = screen.getByRole("button", { name: /plan next feature/i })
-		await user.click(planStarter)
-
-		expect(onSelectStarter).toHaveBeenCalledTimes(1)
-		expect(onSelectStarter).toHaveBeenCalledWith(
-			expect.stringContaining('Help me plan and design a new feature on branch "main"'),
-		)
+		expect(screen.queryByTestId("canvas-starters-section")).not.toBeInTheDocument()
+		expect(screen.queryByText(/suggested prompts/i)).not.toBeInTheDocument()
 	})
 })
