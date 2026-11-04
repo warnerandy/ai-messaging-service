@@ -256,7 +256,16 @@ export default function ChatView({
 	const [settingsInitialTab, setSettingsInitialTab] = useState("alerts")
 	const [showProjectModal, setShowProjectModal] = useState(false)
 	const [showSubagentsDrawer, setShowSubagentsDrawer] = useState(false)
-	const [inspectorOpen, setInspectorOpen] = useState(true)
+	const [inspectorOpen, setInspectorOpen] = useState(() => {
+		if (typeof window === "undefined") return true
+		const isNarrowScreen =
+			window.innerWidth <= 900 ||
+			(typeof window.matchMedia === "function" && window.matchMedia("(max-width: 900px)").matches)
+		const isMobileUA =
+			typeof navigator !== "undefined" &&
+			/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || "")
+		return !isNarrowScreen && !isMobileUA
+	})
 
 	useEffect(() => {
 		const handleKeyDown = (e) => {

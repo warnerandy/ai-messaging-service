@@ -992,4 +992,44 @@ describe("normalizeMessage", () => {
 		// Verify updateConversation was NOT called over the wire
 		expect(data.updateConversation).not.toHaveBeenCalled()
 	})
+
+	it("does not open agent inspector panel on load on mobile viewports", async () => {
+		const user = userEvent.setup()
+		const originalInnerWidth = window.innerWidth
+		try {
+			// Simulate mobile viewport width
+			window.innerWidth = 390
+
+			render(
+				<ChatView
+					token="fake"
+					bot={{ id: 1, name: "Atlas", bot_type: "ahp", is_connected: true }}
+					conversations={[
+						{
+							id: 13,
+							title: "Mobile Task",
+							status: "idle",
+							metadata: {},
+						},
+					]}
+					selectedConversationId={13}
+					models={[{ name: "gpt-4o" }]}
+					onRefreshModels={vi.fn()}
+					onBotStatusChange={vi.fn()}
+					onToggleSidebar={vi.fn()}
+				/>,
+			)
+
+			// Inspector pane should NOT be present on mobile load
+			expect(screen.queryByTestId("agent-inspector-pane")).not.toBeInTheDocument()
+
+			// User can open it on demand by clicking the header toggle button
+			const toggleBtn = screen.getByTestId("toggle-inspector-btn")
+			await user.click(toggleBtn)
+
+			expect(screen.getByTestId("agent-inspector-pane")).toBeInTheDocument()
+		} finally {
+			window.innerWidth = originalInnerWidth
+		}
+	})
 })
