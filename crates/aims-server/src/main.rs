@@ -19,8 +19,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let database_url = std::env::var("DATABASE_URL")
+    let raw_database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/messaging_dev".into());
+    let database_url = if raw_database_url.starts_with("ecto://") {
+        raw_database_url.replacen("ecto://", "postgres://", 1)
+    } else {
+        raw_database_url
+    };
     let port: u16 = std::env::var("PORT")
         .ok()
         .and_then(|s| s.parse().ok())
