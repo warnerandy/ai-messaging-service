@@ -438,16 +438,29 @@ export default function ChatView({
 			}
 			if (
 				cfg.worktree_supported !== undefined ||
+				cfg.worktrees_supported !== undefined ||
+				cfg.worktrees !== undefined ||
+				cfg.worktree !== undefined ||
+				cfg.worktrees_enabled !== undefined ||
+				cfg.worktree_enabled !== undefined ||
 				cfg.supports_worktree !== undefined ||
+				cfg.supports_worktrees !== undefined ||
 				cfg.allow_worktree !== undefined ||
-				cfg.capabilities?.worktree_supported !== undefined
+				cfg.allow_worktrees !== undefined ||
+				cfg.enable_worktrees !== undefined ||
+				cfg.enable_worktree !== undefined ||
+				cfg.capabilities !== undefined ||
+				cfg.features !== undefined ||
+				cfg.git !== undefined
 			) {
 				setWorktreeSupported(isWorktreeSupported(cfg, bot))
 			}
 			if (
 				cfg.use_worktree !== undefined ||
 				cfg.useWorktree !== undefined ||
-				cfg.worktree !== undefined
+				cfg.use_worktrees !== undefined ||
+				cfg.worktree !== undefined ||
+				cfg.worktrees !== undefined
 			) {
 				setUseWorktree(
 					normalizeWorktree(
@@ -455,7 +468,11 @@ export default function ChatView({
 							? cfg.use_worktree
 							: cfg.useWorktree !== undefined
 								? cfg.useWorktree
-								: cfg.worktree,
+								: cfg.use_worktrees !== undefined
+									? cfg.use_worktrees
+									: cfg.worktrees !== undefined
+										? cfg.worktrees
+										: cfg.worktree,
 					),
 				)
 			}

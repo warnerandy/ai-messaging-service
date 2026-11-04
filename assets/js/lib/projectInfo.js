@@ -1195,25 +1195,131 @@ export function normalizeAgentMode(rawMode, customModes = []) {
 	return "interactive"
 }
 
+function isTruthyFlag(val) {
+	if (val === true || val === 1 || val === "1") return true
+	if (typeof val === "string") {
+		const s = val.trim().toLowerCase()
+		return (
+			s === "true" ||
+			s === "enabled" ||
+			s === "supported" ||
+			s === "active" ||
+			s === "yes" ||
+			s === "on" ||
+			s === "worktree"
+		)
+	}
+	return false
+}
+
+function isFalsyFlag(val) {
+	if (val === false || val === 0 || val === "0") return true
+	if (typeof val === "string") {
+		const s = val.trim().toLowerCase()
+		return (
+			s === "false" ||
+			s === "disabled" ||
+			s === "unsupported" ||
+			s === "none" ||
+			s === "no" ||
+			s === "off"
+		)
+	}
+	return false
+}
+
+export function extractWorktreeFlag(obj) {
+	if (!obj || typeof obj !== "object") return undefined
+
+	// 1. Array capabilities (e.g. capabilities: ["worktrees", "git_worktrees", ...])
+	if (Array.isArray(obj.capabilities)) {
+		const hasItem = obj.capabilities.some((c) => {
+			if (typeof c === "string") {
+				const s = c.toLowerCase()
+				return (
+					s === "worktrees" ||
+					s === "worktree" ||
+					s === "git_worktrees" ||
+					s === "git_worktree" ||
+					s.includes("worktree")
+				)
+			}
+			return false
+		})
+		if (hasItem) return true
+	}
+
+	// 2. Direct keys on obj
+	const candidates = [
+		obj.worktrees,
+		obj.worktree,
+		obj.worktrees_enabled,
+		obj.worktree_enabled,
+		obj.worktrees_supported,
+		obj.worktree_supported,
+		obj.supports_worktrees,
+		obj.supports_worktree,
+		obj.allow_worktree,
+		obj.allow_worktrees,
+		obj.enable_worktrees,
+		obj.enable_worktree,
+		obj.git_worktree,
+		obj.git_worktrees,
+	]
+
+	// Check if any direct candidate is explicitly truthy
+	for (const val of candidates) {
+		if (isTruthyFlag(val)) return true
+	}
+
+	// 3. Nested capabilities object
+	if (obj.capabilities && typeof obj.capabilities === "object" && !Array.isArray(obj.capabilities)) {
+		const capVal = extractWorktreeFlag(obj.capabilities)
+		if (capVal !== undefined) return capVal
+	}
+
+	// 4. Nested features object
+	if (obj.features && typeof obj.features === "object" && !Array.isArray(obj.features)) {
+		const featVal = extractWorktreeFlag(obj.features)
+		if (featVal !== undefined) return featVal
+	}
+
+	// 5. Nested git object
+	if (obj.git && typeof obj.git === "object" && !Array.isArray(obj.git)) {
+		const gitVal = extractWorktreeFlag(obj.git)
+		if (gitVal !== undefined) return gitVal
+	}
+
+	// Check if any candidate was explicitly falsy
+	for (const val of candidates) {
+		if (isFalsyFlag(val)) return false
+	}
+
+	return undefined
+}
+
 export function normalizeWorktree(val) {
-	if (val === true || val === "true" || val === 1 || val === "1" || val === "worktree") return true
+	if (isTruthyFlag(val)) return true
 	return false
 }
 
 export function isWorktreeSupported(meta = {}, bot = null, _projectInfo = null) {
-	if (meta && meta.worktree_supported !== undefined) return Boolean(meta.worktree_supported)
-	if (meta && meta.supports_worktree !== undefined) return Boolean(meta.supports_worktree)
-	if (meta && meta.allow_worktree !== undefined) return Boolean(meta.allow_worktree)
-	if (meta && meta.capabilities?.worktree_supported !== undefined)
-		return Boolean(meta.capabilities.worktree_supported)
+	// 1. Check meta / session directly
+	const metaFlag = extractWorktreeFlag(meta)
+	if (metaFlag === true) return true
 
-	if (bot?.metadata?.worktree_supported !== undefined)
-		return Boolean(bot.metadata.worktree_supported)
-	if (bot?.metadata?.supports_worktree !== undefined) return Boolean(bot.metadata.supports_worktree)
-	if (bot?.metadata?.allow_worktree !== undefined) return Boolean(bot.metadata.allow_worktree)
-	if (bot?.metadata?.capabilities?.worktree_supported !== undefined)
-		return Boolean(bot.metadata.capabilities.worktree_supported)
+	// 2. Check bot metadata & root bot object
+	const botMetaFlag = extractWorktreeFlag(bot?.metadata)
+	if (botMetaFlag === true) return true
 
+	const botRootFlag = extractWorktreeFlag(bot)
+	if (botRootFlag === true) return true
+
+	// 3. If explicitly marked false in meta or bot
+	if (metaFlag === false) return false
+	if (botMetaFlag === false || botRootFlag === false) return false
+
+	// 4. Default based on protocol: AHP bots support worktrees by default
 	if (bot?.bot_type === "chat") return false
 	return true
 }

@@ -572,8 +572,21 @@ test("normalizeBranches extracts unique repository branch names", () => {
 test("isWorktreeSupported respects integration capabilities", () => {
 	assert.equal(isWorktreeSupported({ worktree_supported: false }), false)
 	assert.equal(isWorktreeSupported({ supports_worktree: true }), true)
+	assert.equal(isWorktreeSupported({ worktrees: true }), true)
+	assert.equal(isWorktreeSupported({ worktrees: "enabled" }), true)
+	assert.equal(isWorktreeSupported({ worktrees_enabled: true }), true)
+	assert.equal(isWorktreeSupported({ capabilities: { worktrees: true } }), true)
+	assert.equal(isWorktreeSupported({ capabilities: ["worktrees"] }), true)
+	assert.equal(isWorktreeSupported({ capabilities: ["git_worktree"] }), true)
+	// Integration reporting worktrees enabled overrides stale fallback false
+	assert.equal(isWorktreeSupported({ worktrees: "enabled" }, { metadata: { worktree_supported: false } }), true)
+	assert.equal(isWorktreeSupported({ worktree_supported: true }, { metadata: { worktree_supported: false } }), true)
 	assert.equal(isWorktreeSupported({}, { metadata: { worktree_supported: false } }), false)
+	assert.equal(isWorktreeSupported({}, { metadata: { worktrees: true } }), true)
+	assert.equal(isWorktreeSupported({}, { metadata: { worktrees: "enabled" } }), true)
+	assert.equal(isWorktreeSupported({}, { metadata: { capabilities: { worktrees: true } } }), true)
 	assert.equal(isWorktreeSupported({}, { bot_type: "chat" }), false)
+	assert.equal(isWorktreeSupported({}, { bot_type: "ahp" }), true)
 })
 
 test("normalizeAgentTypes dynamically accepts roles from integration", () => {

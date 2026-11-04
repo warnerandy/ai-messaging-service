@@ -518,6 +518,78 @@ pub async fn update_bot_status(
         for (k, v) in patch_obj {
             obj.insert(k.clone(), v.clone());
         }
+
+        // If any worktree capability was reported as enabled/true, synchronize worktree_supported
+        let is_wt_truthy = |val: &Value| -> bool {
+            match val {
+                Value::Bool(b) => *b,
+                Value::Number(n) => n.as_i64() == Some(1),
+                Value::String(s) => {
+                    let lower = s.trim().to_lowercase();
+                    matches!(
+                        lower.as_str(),
+                        "true" | "enabled" | "supported" | "active" | "yes" | "on" | "worktree" | "1"
+                    )
+                }
+                _ => false,
+            }
+        };
+
+        let has_truthy_wt = [
+            "worktrees",
+            "worktree",
+            "worktrees_enabled",
+            "worktree_enabled",
+            "worktrees_supported",
+            "worktree_supported",
+            "supports_worktrees",
+            "supports_worktree",
+            "allow_worktree",
+            "allow_worktrees",
+            "enable_worktrees",
+            "enable_worktree",
+        ]
+        .iter()
+        .any(|k| patch_obj.get(*k).map(is_wt_truthy).unwrap_or(false))
+            || patch_obj
+                .get("capabilities")
+                .and_then(|c| c.as_object())
+                .map(|caps| {
+                    [
+                        "worktrees",
+                        "worktree",
+                        "worktrees_enabled",
+                        "worktree_enabled",
+                        "worktrees_supported",
+                        "worktree_supported",
+                        "supports_worktrees",
+                        "supports_worktree",
+                    ]
+                    .iter()
+                    .any(|k| caps.get(*k).map(is_wt_truthy).unwrap_or(false))
+                })
+                .unwrap_or(false)
+            || patch_obj
+                .get("capabilities")
+                .and_then(|c| c.as_array())
+                .map(|arr| {
+                    arr.iter().any(|item| {
+                        item.as_str()
+                            .map(|s| {
+                                let l = s.to_lowercase();
+                                l == "worktrees" || l == "worktree" || l.contains("worktree")
+                            })
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+
+        if has_truthy_wt {
+            obj.insert("worktree_supported".to_string(), json!(true));
+            obj.insert("worktrees_supported".to_string(), json!(true));
+            obj.insert("worktrees_enabled".to_string(), json!(true));
+            obj.insert("worktrees".to_string(), json!(true));
+        }
     }
 
     let row = if is_connected == Some(true) {
@@ -922,6 +994,14 @@ pub async fn create_conversation(
                 "modes",
                 "agent_modes",
                 "worktree_supported",
+                "worktrees_supported",
+                "worktrees",
+                "worktree",
+                "worktrees_enabled",
+                "worktree_enabled",
+                "supports_worktrees",
+                "supports_worktree",
+                "allow_worktree",
                 "branches",
                 "available_branches",
                 "base_branch",

@@ -1098,7 +1098,7 @@ async fn handle_bot_channel_event(
                 reply_response = json!({ "acknowledged": true, "message_id": mid });
             }
         }
-        "status" | "working_status" => {
+        "status" | "working_status" | "update_status" => {
             let is_working = frame.payload.get("is_working").and_then(|v| v.as_bool());
             if let Ok(Some(updated)) = db::update_bot_status(
                 &state.db,
@@ -1116,7 +1116,13 @@ async fn handle_bot_channel_event(
                 });
             }
         }
-        "capabilities" | "capabilities_sync" => {
+        "capabilities"
+        | "capabilities_sync"
+        | "update_capabilities"
+        | "register_capabilities"
+        | "set_capabilities"
+        | "sync_capabilities"
+        | "bot_info" => {
             if let Ok(Some(updated)) = db::update_bot_status(
                 &state.db,
                 bot.id,
@@ -1161,7 +1167,26 @@ async fn handle_bot_channel_event(
                         .unwrap_or_else(|| json!({}));
                     if let Some(obj) = meta.as_object_mut() {
                         obj.insert("synced_by_bot".to_string(), json!(true));
-                        for k in ["project", "working_directory", "working_directories", "cwd"] {
+                        for k in [
+                            "project",
+                            "working_directory",
+                            "working_directories",
+                            "cwd",
+                            "worktrees",
+                            "worktree",
+                            "worktree_supported",
+                            "worktrees_supported",
+                            "worktrees_enabled",
+                            "worktree_enabled",
+                            "supports_worktrees",
+                            "supports_worktree",
+                            "allow_worktree",
+                            "use_worktree",
+                            "base_branch",
+                            "branches",
+                            "agent_mode",
+                            "agent_type",
+                        ] {
                             if let Some(v) = s.get(k) {
                                 obj.insert(k.to_string(), v.clone());
                             }
@@ -1225,6 +1250,41 @@ async fn handle_bot_channel_event(
                     db::update_conversation(&state.db, conv.id, None, Some(status), Some(meta))
                         .await
                 {
+                    // If session advertised truthy worktree capability, ensure bot token metadata matches
+                    let is_truthy = |v: &Value| {
+                        matches!(v, Value::Bool(true))
+                            || matches!(v, Value::String(s) if {
+                                let l = s.trim().to_lowercase();
+                                l == "true" || l == "enabled" || l == "supported"
+                            })
+                    };
+                    if [
+                        "worktree_supported",
+                        "worktrees_supported",
+                        "worktrees",
+                        "worktrees_enabled",
+                        "worktree_enabled",
+                        "supports_worktrees",
+                        "supports_worktree",
+                    ]
+                    .iter()
+                    .any(|k| updated.metadata.get(*k).map(is_truthy).unwrap_or(false))
+                    {
+                        let _ = db::update_bot_status(
+                            &state.db,
+                            bot.id,
+                            None,
+                            None,
+                            Some(json!({
+                                "worktree_supported": true,
+                                "worktrees_supported": true,
+                                "worktrees_enabled": true,
+                                "worktrees": true
+                            })),
+                        )
+                        .await;
+                    }
+
                     state.hub.broadcast(
                         format!("conversation:{}", conv.id),
                         "session_status_changed",
