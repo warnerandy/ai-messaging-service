@@ -216,6 +216,18 @@ export default function ChatView({
 	const [settingsInitialTab, setSettingsInitialTab] = useState("alerts")
 	const [showProjectModal, setShowProjectModal] = useState(false)
 	const [showSubagentsDrawer, setShowSubagentsDrawer] = useState(false)
+	const [inspectorOpen, setInspectorOpen] = useState(true)
+
+	useEffect(() => {
+		const handleKeyDown = (e) => {
+			if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
+				e.preventDefault()
+				setInspectorOpen((prev) => !prev)
+			}
+		}
+		window.addEventListener("keydown", handleKeyDown)
+		return () => window.removeEventListener("keydown", handleKeyDown)
+	}, [])
 
 	useEffect(() => {
 		setShowSubagentsDrawer(false)
@@ -2354,6 +2366,32 @@ export default function ChatView({
 									</svg>
 								</button>
 							)}
+							{isAhp && (
+								<button
+									type="button"
+									className={`bot-config-btn inspector-toggle-btn ${inspectorOpen ? "inspector-toggle-btn--active" : ""}`}
+									onClick={() => setInspectorOpen((prev) => !prev)}
+									title={
+										inspectorOpen ? "Hide Inspector Pane (Ctrl+B)" : "Show Inspector Pane (Ctrl+B)"
+									}
+									aria-label={inspectorOpen ? "Hide Inspector Pane" : "Show Inspector Pane"}
+									data-testid="toggle-inspector-btn"
+								>
+									<svg
+										width="17"
+										height="17"
+										viewBox="0 0 24 24"
+										fill="none"
+										stroke="currentColor"
+										strokeWidth="1.8"
+										strokeLinecap="round"
+										strokeLinejoin="round"
+									>
+										<rect x="3" y="3" width="18" height="18" rx="2" />
+										<line x1="15" y1="3" x2="15" y2="21" />
+									</svg>
+								</button>
+							)}
 							<button
 								type="button"
 								className="bot-config-btn"
@@ -2580,37 +2618,151 @@ export default function ChatView({
 					onOpen={() => setShowSubagentsDrawer(true)}
 				/>
 
-				{/* Messages & Assistant UI Unified Thread */}
-				<ThreadPrimitive.Root className="aui-thread-root">
-					<ThreadPrimitive.Viewport
-						className="chat-messages aui-thread-viewport"
-						ref={messagesContainerRef}
-						onScroll={handleMessagesScroll}
-					>
-						{isArchived && (
-							<div key="chat-archived-banner" className="chat-archived-banner">
-								<span className="chat-archived-banner-icon">📁</span>
-								<span className="chat-archived-banner-text">
-									This session is archived. You can review history or{" "}
-									<button
-										type="button"
-										className="chat-archived-close-link"
-										onClick={() => onSelectConversation && onSelectConversation(null)}
-									>
-										close this session
-									</button>
-									.
-								</span>
-							</div>
-						)}
-						{!isLoadingMessages && messages.length === 0 && (
-							<NewSessionCanvas
-								key="new-session-canvas"
-								bot={bot}
-								isAhp={isAhp}
-								projectInfo={projectInfo}
+				{/* Workspace Split Layout: Execution Thread + Collapsible Right Inspector Pane */}
+				<div
+					className={`chat-workspace-split ${inspectorOpen && isAhp ? "chat-workspace-split--with-inspector" : ""}`}
+				>
+					<div className="chat-thread-container">
+						{/* Messages & Assistant UI Unified Thread */}
+						<ThreadPrimitive.Root className="aui-thread-root">
+							<ThreadPrimitive.Viewport
+								className="chat-messages aui-thread-viewport"
+								ref={messagesContainerRef}
+								onScroll={handleMessagesScroll}
+							>
+								{isArchived && (
+									<div key="chat-archived-banner" className="chat-archived-banner">
+										<span className="chat-archived-banner-icon">📁</span>
+										<span className="chat-archived-banner-text">
+											This session is archived. You can review history or{" "}
+											<button
+												type="button"
+												className="chat-archived-close-link"
+												onClick={() => onSelectConversation && onSelectConversation(null)}
+											>
+												close this session
+											</button>
+											.
+										</span>
+									</div>
+								)}
+								{!isLoadingMessages && messages.length === 0 && (
+									<NewSessionCanvas
+										key="new-session-canvas"
+										bot={bot}
+										isAhp={isAhp}
+										projectInfo={projectInfo}
+										modes={agentModes}
+										mode={agentMode}
+										onModeChange={handleModeChange}
+										worktreeSupported={worktreeSupported}
+										useWorktree={useWorktree}
+										onWorktreeChange={handleWorktreeChange}
+										baseBranch={baseBranch}
+										availableBranches={availableBranches}
+										onBaseBranchChange={handleBaseBranchChange}
+										agentTypes={agentTypes}
+										agentType={selectedAgentType}
+										onAgentTypeChange={handleAgentTypeChange}
+										onSelectStarter={(prompt) => {
+											setInputValue(prompt)
+											inputRef.current?.focus?.()
+										}}
+										disabled={sending || uploading}
+									/>
+								)}
+								{messages.map((msg) => (
+									<MessageBubbleView
+										key={msg.id}
+										message={msg}
+										onSuggestion={(value) => handleSuggestion(msg.id, value)}
+										usedSuggestion={usedSuggestions[msg.id]}
+									/>
+								))}
+
+								{/* AHP Interactive Question / Approval Card */}
+								{(pendingQuestion ||
+									effectiveStatus === "waiting_for_input" ||
+									effectiveStatus === "needs_input") && (
+									<QuestionApprovalCard
+										key="question-approval-card"
+										question={
+											pendingQuestion || resolvePendingQuestion(effectiveStatus, effectiveMetadata)
+										}
+										onAnswer={handleAnswerQuestion}
+									/>
+								)}
+
+								{/* AHP Live Thinking, Tool Steps, & Steering */}
+								<LiveThinking
+									key="live-thinking-view"
+									status={effectiveStatus}
+									metadata={effectiveMetadata}
+									thinkingText={thinkingText || effectiveMetadata?.thinking || ""}
+									toolCalls={
+										toolCalls.length > 0
+											? toolCalls
+											: Array.isArray(effectiveMetadata?.tool_calls)
+												? effectiveMetadata.tool_calls
+												: []
+									}
+									onStop={handleStop}
+									onSteer={handleSteer}
+								/>
+
+								{botIsTyping &&
+									effectiveStatus !== "thinking" &&
+									effectiveStatus !== "running" &&
+									!isAgentBusy && <TypingIndicatorView key="typing-indicator-view" />}
+								<div ref={messagesEndRef} key="messages-end-anchor" />
+							</ThreadPrimitive.Viewport>
+
+							<ThreadPrimitive.ScrollToBottom
+								className="chat-scroll-bottom aui-thread-scroll-bottom"
+								title="Scroll to bottom"
+								aria-label="Scroll to bottom"
+							>
+								<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+									<path
+										d="M12 4v16m0 0l-6-6m6 6l6-6"
+										stroke="currentColor"
+										strokeWidth="2.2"
+										strokeLinecap="round"
+										strokeLinejoin="round"
+									/>
+								</svg>
+							</ThreadPrimitive.ScrollToBottom>
+
+							{/* Assistant UI Chat Composer (Input, Model Picker, Agent Type, Skill, Attachments, Steering) */}
+							<AssistantChatComposer
+								value={inputValue}
+								onChange={setInputValue}
+								onSubmit={handleSend}
+								onSteerSubmit={handleSteerSend}
+								disabled={sending || uploading}
+								uploading={uploading}
+								effectiveStatus={effectiveStatus}
+								isAgentBusy={isAgentBusy}
+								effectiveMetadata={effectiveMetadata}
+								models={models}
+								selectedModel={selectedModel}
+								onSelectModel={setSelectedModel}
+								selectedContextSize={selectedContextSize}
+								onSelectContextSize={setSelectedContextSize}
+								selectedAgentType={selectedAgentType}
+								onSelectAgentType={handleAgentTypeChange}
+								selectedSkill={selectedSkill}
+								onSelectSkill={setSelectedSkill}
+								attachments={attachments}
+								onAddAttachments={handleAddAttachments}
+								onRemoveAttachment={handleRemoveAttachment}
+								promptQueue={promptQueue}
+								onRemovePrompt={handleRemovePrompt}
+								onViewProgress={handleViewProgress}
+								onStop={handleStop}
+								inputRef={inputRef}
 								modes={agentModes}
-								mode={agentMode}
+								agentMode={agentMode}
 								onModeChange={handleModeChange}
 								worktreeSupported={worktreeSupported}
 								useWorktree={useWorktree}
@@ -2619,119 +2771,33 @@ export default function ChatView({
 								availableBranches={availableBranches}
 								onBaseBranchChange={handleBaseBranchChange}
 								agentTypes={agentTypes}
-								agentType={selectedAgentType}
-								onAgentTypeChange={handleAgentTypeChange}
-								onSelectStarter={(prompt) => {
-									setInputValue(prompt)
-									inputRef.current?.focus?.()
-								}}
-								disabled={sending || uploading}
+								isAHP={isAhp}
+								isNewSession={!selectedConversationId || messages.length === 0}
 							/>
-						)}
-						{messages.map((msg) => (
-							<MessageBubbleView
-								key={msg.id}
-								message={msg}
-								onSuggestion={(value) => handleSuggestion(msg.id, value)}
-								usedSuggestion={usedSuggestions[msg.id]}
+						</ThreadPrimitive.Root>
+					</div>
+
+					{/* Collapsible Right Inspector Pane (VS Code Agents Window / Cursor secondary pane) */}
+					{inspectorOpen && isAhp && (
+						<aside className="chat-inspector-dock" data-testid="agent-inspector-pane">
+							<SubagentsPanel
+								token={token}
+								bot={bot}
+								activeConv={activeConv}
+								conversations={conversations}
+								sessionStatus={effectiveStatus}
+								sessionMetadata={effectiveMetadata}
+								thinkingText={thinkingText}
+								toolCalls={toolCalls}
+								onSelectConversation={onSelectConversation}
+								isOpen={true}
+								isDocked={true}
+								onClose={() => setInspectorOpen(false)}
+								onOpen={() => setInspectorOpen(true)}
 							/>
-						))}
-
-						{/* AHP Interactive Question / Approval Card */}
-						{(pendingQuestion ||
-							effectiveStatus === "waiting_for_input" ||
-							effectiveStatus === "needs_input") && (
-							<QuestionApprovalCard
-								key="question-approval-card"
-								question={
-									pendingQuestion || resolvePendingQuestion(effectiveStatus, effectiveMetadata)
-								}
-								onAnswer={handleAnswerQuestion}
-							/>
-						)}
-
-						{/* AHP Live Thinking, Tool Steps, & Steering */}
-						<LiveThinking
-							key="live-thinking-view"
-							status={effectiveStatus}
-							metadata={effectiveMetadata}
-							thinkingText={thinkingText || effectiveMetadata?.thinking || ""}
-							toolCalls={
-								toolCalls.length > 0
-									? toolCalls
-									: Array.isArray(effectiveMetadata?.tool_calls)
-										? effectiveMetadata.tool_calls
-										: []
-							}
-							onStop={handleStop}
-							onSteer={handleSteer}
-						/>
-
-						{botIsTyping &&
-							effectiveStatus !== "thinking" &&
-							effectiveStatus !== "running" &&
-							!isAgentBusy && <TypingIndicatorView key="typing-indicator-view" />}
-						<div ref={messagesEndRef} key="messages-end-anchor" />
-					</ThreadPrimitive.Viewport>
-
-					<ThreadPrimitive.ScrollToBottom
-						className="chat-scroll-bottom aui-thread-scroll-bottom"
-						title="Scroll to bottom"
-						aria-label="Scroll to bottom"
-					>
-						<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-							<path
-								d="M12 4v16m0 0l-6-6m6 6l6-6"
-								stroke="currentColor"
-								strokeWidth="2.2"
-								strokeLinecap="round"
-								strokeLinejoin="round"
-							/>
-						</svg>
-					</ThreadPrimitive.ScrollToBottom>
-
-					{/* Assistant UI Chat Composer (Input, Model Picker, Agent Type, Skill, Attachments, Steering) */}
-					<AssistantChatComposer
-						value={inputValue}
-						onChange={setInputValue}
-						onSubmit={handleSend}
-						onSteerSubmit={handleSteerSend}
-						disabled={sending || uploading}
-						uploading={uploading}
-						effectiveStatus={effectiveStatus}
-						isAgentBusy={isAgentBusy}
-						effectiveMetadata={effectiveMetadata}
-						models={models}
-						selectedModel={selectedModel}
-						onSelectModel={setSelectedModel}
-						selectedContextSize={selectedContextSize}
-						onSelectContextSize={setSelectedContextSize}
-						selectedAgentType={selectedAgentType}
-						onSelectAgentType={handleAgentTypeChange}
-						selectedSkill={selectedSkill}
-						onSelectSkill={setSelectedSkill}
-						attachments={attachments}
-						onAddAttachments={handleAddAttachments}
-						onRemoveAttachment={handleRemoveAttachment}
-						promptQueue={promptQueue}
-						onRemovePrompt={handleRemovePrompt}
-						onViewProgress={handleViewProgress}
-						onStop={handleStop}
-						inputRef={inputRef}
-						modes={agentModes}
-						agentMode={agentMode}
-						onModeChange={handleModeChange}
-						worktreeSupported={worktreeSupported}
-						useWorktree={useWorktree}
-						onWorktreeChange={handleWorktreeChange}
-						baseBranch={baseBranch}
-						availableBranches={availableBranches}
-						onBaseBranchChange={handleBaseBranchChange}
-						agentTypes={agentTypes}
-						isAHP={isAhp}
-						isNewSession={!selectedConversationId || messages.length === 0}
-					/>
-				</ThreadPrimitive.Root>
+						</aside>
+					)}
+				</div>
 
 				{/* Settings Modal (Alerts, Working States Showcase) */}
 				<SettingsModal

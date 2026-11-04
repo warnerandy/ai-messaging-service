@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react"
+import React, { useState, useEffect, useMemo } from "react"
 import { VSCodeWorkingStateIcon, VSCodeGearIcon } from "./VSCodeWorkingIcons.jsx"
 import {
 	formatSessionTitle,
@@ -24,13 +24,14 @@ export default function SubagentsPanel({
 	onClose,
 	onOpen,
 	defaultOpen,
+	isDocked = false,
 }) {
 	const [internalOpen, setInternalOpen] = useState(
 		defaultOpen !== undefined ? defaultOpen : isOpen === undefined ? true : false,
 	)
 	const isPanelOpen = isOpen !== undefined ? isOpen : internalOpen
 
-	const [activeTab, setActiveTab] = useState("running") // "running" | "processes" | "all"
+	const [activeTab, setActiveTab] = useState("running") // "running" | "processes" | "changeset" | "plan" | "all"
 	const [selectedSubagentId, setSelectedSubagentId] = useState(null)
 	const [inspectedData, setInspectedData] = useState(null)
 	const [loadingInspector, setLoadingInspector] = useState(false)
@@ -45,6 +46,29 @@ export default function SubagentsPanel({
 	const runningSubagents = subagents.filter((s) => s.isRunning)
 	const completedSubagents = subagents.filter((s) => !s.isRunning)
 	const runningProcesses = processes.filter((p) => p.isRunning)
+
+	const changesetFiles = useMemo(() => {
+		if (Array.isArray(sessionMetadata?.changeset?.files)) return sessionMetadata.changeset.files
+		if (Array.isArray(sessionMetadata?.changeset)) return sessionMetadata.changeset
+		if (Array.isArray(activeConv?.metadata?.changeset?.files))
+			return activeConv.metadata.changeset.files
+		if (Array.isArray(activeConv?.metadata?.changeset)) return activeConv.metadata.changeset
+		const files = new Set()
+		const allTools = [...(toolCalls || []), ...(sessionMetadata?.tool_calls || [])]
+		for (const t of allTools) {
+			const path = t?.args?.path || t?.args?.Path || t?.path || t?.file
+			if (path) files.add(path)
+		}
+		return Array.from(files).map((f) => ({ path: f, status: "modified" }))
+	}, [sessionMetadata, activeConv, toolCalls])
+
+	const planSteps = useMemo(() => {
+		if (Array.isArray(sessionMetadata?.plan?.steps)) return sessionMetadata.plan.steps
+		if (Array.isArray(sessionMetadata?.plan)) return sessionMetadata.plan
+		if (Array.isArray(activeConv?.metadata?.plan?.steps)) return activeConv.metadata.plan.steps
+		if (Array.isArray(activeConv?.metadata?.plan)) return activeConv.metadata.plan
+		return []
+	}, [sessionMetadata, activeConv])
 
 	const isNested = isSessionNested(activeConv, conversations)
 	const parentSession = isNested ? findParentSession(activeConv, conversations) : null
@@ -119,8 +143,10 @@ export default function SubagentsPanel({
 
 	const hasSubagents = subagents.length > 0
 	const hasProcesses = processes.length > 0
+	const hasChangeset = changesetFiles.length > 0
+	const hasPlan = planSteps.length > 0
 
-	if (!hasSubagents && !hasProcesses && !isNested) {
+	if (!isDocked && !hasSubagents && !hasProcesses && !hasChangeset && !hasPlan && !isNested) {
 		return null
 	}
 
@@ -260,500 +286,643 @@ export default function SubagentsPanel({
 				</div>
 			)}
 
-			{/* Subagents & Processes Inspector Panel (Slide-over drawer) */}
-			{isPanelOpen && (
-				<div
-					className="subagents-drawer-backdrop"
-					onClick={handleClose}
-					data-testid="subagents-drawer-backdrop"
-				>
-					<div
-						className="subagents-drawer"
-						onClick={(e) => e.stopPropagation()}
-						role="dialog"
-						aria-modal="true"
-						aria-label="Running Subagents and Processes"
-						data-testid="subagents-drawer"
-					>
-						{/* Drawer Header */}
-						<div className="subagents-drawer__header">
-							<div className="subagents-drawer__title-group">
-								<span className="subagents-drawer__icon" aria-hidden="true">
-									⚡
-								</span>
-								<div>
-									<h3 className="subagents-drawer__title">Running Subagents & Processes</h3>
-									<p className="subagents-drawer__subtitle">
-										{runningSubagents.length} active running subagent
-										{runningSubagents.length === 1 ? "" : "s"} • {runningProcesses.length} active
-										process{runningProcesses.length === 1 ? "" : "es"}
-									</p>
-								</div>
-							</div>
-							<button
-								type="button"
-								className="subagents-drawer__close-btn"
-								onClick={handleClose}
-								aria-label="Close panel"
-								data-testid="close-subagents-panel"
-								title="Close panel (Esc)"
-							>
-								✕ Close
-							</button>
-						</div>
-
-						{/* Segmented Filter Tabs */}
+			{/* Subagents & Processes Inspector Panel */}
+			{isPanelOpen &&
+				(() => {
+					const drawerContent = (
 						<div
-							className="subagents-drawer__tabs"
-							role="tablist"
-							aria-label="Filter subagents and processes"
+							className={`subagents-drawer ${isDocked ? "subagents-drawer--docked" : ""}`}
+							onClick={(e) => e.stopPropagation()}
+							role={isDocked ? "region" : "dialog"}
+							aria-modal={isDocked ? undefined : "true"}
+							aria-label="Running Subagents and Processes"
+							data-testid="subagents-drawer"
 						>
-							<button
-								type="button"
-								role="tab"
-								aria-selected={activeTab === "running"}
-								className={`subagents-tab ${activeTab === "running" ? "subagents-tab--active" : ""}`}
-								onClick={() => {
-									setActiveTab("running")
-									setCompletedExpanded(false)
-								}}
-								data-testid="tab-running-subagents"
-							>
-								<span className="subagents-tab__icon">⚡</span>
-								<span>Running ({runningSubagents.length})</span>
-							</button>
-							<button
-								type="button"
-								role="tab"
-								aria-selected={activeTab === "processes"}
-								className={`subagents-tab ${activeTab === "processes" ? "subagents-tab--active" : ""}`}
-								onClick={() => setActiveTab("processes")}
-								data-testid="tab-processes"
-							>
-								<span className="subagents-tab__icon">⚙️</span>
-								<span>Processes ({processes.length})</span>
-							</button>
-							<button
-								type="button"
-								role="tab"
-								aria-selected={activeTab === "all"}
-								className={`subagents-tab ${activeTab === "all" ? "subagents-tab--active" : ""}`}
-								onClick={() => {
-									setActiveTab("all")
-									setCompletedExpanded(true)
-								}}
-								data-testid="tab-all-subagents"
-							>
-								<span>All Subagents ({subagents.length})</span>
-							</button>
-						</div>
-
-						{/* Drawer Scrollable Body */}
-						<div className="subagents-drawer__body">
-							{/* Subagents Section */}
-							{hasSubagents && shouldShowSubagents && (
-								<div className="subagents-section" data-testid="subagents-section">
-									<div className="subagents-header">
-										<button
-											type="button"
-											className="subagents-header__toggle"
-											onClick={() => setSubagentsExpanded((prev) => !prev)}
-											aria-expanded={subagentsExpanded}
-											aria-label={subagentsExpanded ? "Collapse subagents" : "Expand subagents"}
-										>
-											<span className="subagents-header__chevron">
-												{subagentsExpanded ? "▾" : "▸"}
-											</span>
-											<span className="subagents-header__title">
-												{activeTab === "running" ? "Running Subagents" : "Subagents"}
-											</span>
-											{runningSubagents.length > 0 && (
-												<span className="subagents-badge subagents-badge--running">
-													<VSCodeWorkingStateIcon
-														status="running"
-														size={11}
-														className="inline mr-1"
-													/>
-													{runningSubagents.length} running
-												</span>
-											)}
-											<span className="subagents-badge subagents-badge--total">
-												{subagents.length} total
-											</span>
-										</button>
+							{/* Drawer Header */}
+							<div className="subagents-drawer__header">
+								<div className="subagents-drawer__title-group">
+									<span className="subagents-drawer__icon" aria-hidden="true">
+										⚡
+									</span>
+									<div>
+										<h3 className="subagents-drawer__title">Agent Inspector</h3>
+										<p className="subagents-drawer__subtitle">
+											{runningSubagents.length} active running subagent
+											{runningSubagents.length === 1 ? "" : "s"} • {runningProcesses.length} active
+											process{runningProcesses.length === 1 ? "" : "es"}
+										</p>
 									</div>
-
-									{subagentsExpanded && (
-										<>
-											{/* Running subagents grid */}
-											{runningSubagents.length > 0 && (
-												<div
-													className="subagents-grid"
-													role="list"
-													aria-label="Running subagents"
-													data-testid="running-subagents-grid"
-												>
-													{runningSubagents.map(renderSubagentCard)}
-												</div>
-											)}
-
-											{/* Notice when no subagents are currently running */}
-											{runningSubagents.length === 0 && completedSubagents.length > 0 && (
-												<div
-													className="subagents-all-completed-banner"
-													data-testid="subagents-all-completed-banner"
-												>
-													<span className="subagents-all-completed-banner__icon">✓</span>
-													<span>No active subagents running.</span>
-												</div>
-											)}
-
-											{/* Collapsible item for completed subagents */}
-											{completedSubagents.length > 0 && (
-												<div
-													className="completed-subagents-group"
-													data-testid="completed-subagents-group"
-												>
-													<button
-														type="button"
-														className="completed-subagents-toggle"
-														data-testid="toggle-completed-subagents"
-														onClick={() => setCompletedExpanded((prev) => !prev)}
-														aria-expanded={completedExpanded}
-														aria-label={
-															completedExpanded
-																? "Collapse completed subagents"
-																: "Expand completed subagents"
-														}
-													>
-														<div className="completed-subagents-toggle__left">
-															<span className="completed-subagents-toggle__chevron">
-																{completedExpanded ? "▾" : "▸"}
-															</span>
-															<span className="completed-subagents-toggle__icon">✓</span>
-															<span className="completed-subagents-toggle__title">
-																Completed Subagents
-															</span>
-															<span className="completed-subagents-toggle__count">
-																({completedSubagents.length})
-															</span>
-														</div>
-														<span className="completed-subagents-toggle__action">
-															{completedExpanded ? "Collapse" : "Expand"}
-														</span>
-													</button>
-
-													{completedExpanded && (
-														<div
-															className="subagents-grid completed-subagents-grid"
-															role="list"
-															aria-label="Completed subagents"
-															data-testid="completed-subagents-list"
-														>
-															{completedSubagents.map(renderSubagentCard)}
-														</div>
-													)}
-												</div>
-											)}
-
-											{/* Empty state when no subagents exist in session */}
-											{subagents.length === 0 && (
-												<div className="subagents-empty-state" data-testid="subagents-empty-state">
-													<span className="subagents-empty-state__icon">ℹ️</span>
-													<p className="subagents-empty-state__title">No subagents</p>
-													<p className="subagents-empty-state__desc">
-														No subagents have been launched in this session.
-													</p>
-												</div>
-											)}
-										</>
-									)}
-
-									{/* Clicked Subagent Live Activity Inspector */}
-									{selectedSubagent && (
-										<div
-											className="subagent-inspector"
-											data-testid="subagent-inspector"
-											role="region"
-											aria-label={`Subagent inspector: ${selectedSubagent.title}`}
-										>
-											<div className="subagent-inspector__header">
-												<div className="subagent-inspector__title-row">
-													<VSCodeWorkingStateIcon
-														status={selectedSubagent.status || "idle"}
-														size={16}
-													/>
-													<div className="subagent-inspector__titles">
-														<span className="subagent-inspector__title">
-															{selectedSubagent.title}
-														</span>
-														{selectedSubagent.role && (
-															<span className="subagent-inspector__role">
-																Role: {selectedSubagent.role}
-															</span>
-														)}
-													</div>
-													<span
-														className={`subagent-inspector__badge subagent-inspector__badge--${selectedSubagent.status || "idle"}`}
-													>
-														{formatStatusLabel(selectedSubagent.status)}
-													</span>
-												</div>
-												<div className="subagent-inspector__header-actions">
-													{selectedSubagent.conversationId && onSelectConversation && (
-														<button
-															type="button"
-															className="subagent-inspector__open-btn"
-															data-testid="open-subagent-session-btn"
-															onClick={() => {
-																handleClose()
-																onSelectConversation(selectedSubagent.conversationId)
-															}}
-															title="Open full subagent session chat"
-														>
-															Open Subagent Session →
-														</button>
-													)}
-													<button
-														type="button"
-														className="subagent-inspector__close-btn"
-														onClick={() => setSelectedSubagentId(null)}
-														title="Close inspector"
-														aria-label="Close subagent inspector"
-													>
-														✕
-													</button>
-												</div>
-											</div>
-
-											<div className="subagent-inspector__content">
-												{inspectedStep && (
-													<div className="subagent-inspector__block">
-														<span className="subagent-inspector__label">Current Action</span>
-														<p className="subagent-inspector__step">{inspectedStep}</p>
-													</div>
-												)}
-
-												{selectedSubagent.prompt && (
-													<div className="subagent-inspector__block">
-														<span className="subagent-inspector__label">Assigned Goal / Task</span>
-														<p className="subagent-inspector__prompt">{selectedSubagent.prompt}</p>
-													</div>
-												)}
-
-												{inspectedTools.length > 0 && (
-													<div className="subagent-inspector__block">
-														<span className="subagent-inspector__label">Tool Execution</span>
-														<div className="subagent-inspector__tools">
-															{inspectedTools.map((tc, idx) => (
-																<div key={idx} className="subagent-inspector__tool-item">
-																	<VSCodeGearIcon
-																		size={12}
-																		spin={selectedSubagent.isRunning}
-																		className="inline mr-1 text-emerald-400"
-																	/>
-																	<span className="font-mono text-xs">
-																		{tc.name || tc.tool || "tool_call"}
-																	</span>
-																	{tc.step && (
-																		<span className="text-xs opacity-75"> — {tc.step}</span>
-																	)}
-																</div>
-															))}
-														</div>
-													</div>
-												)}
-
-												{inspectedThinking && (
-													<div className="subagent-inspector__block">
-														<span className="subagent-inspector__label">
-															Reasoning & Execution Stream
-														</span>
-														<pre className="subagent-inspector__thinking">{inspectedThinking}</pre>
-													</div>
-												)}
-
-												{selectedSubagent.output && (
-													<div className="subagent-inspector__block">
-														<span className="subagent-inspector__label">Result / Output</span>
-														<pre className="subagent-inspector__thinking">
-															{selectedSubagent.output}
-														</pre>
-													</div>
-												)}
-
-												{loadingInspector && (
-													<div className="subagent-inspector__loading">
-														Loading subagent activity log...
-													</div>
-												)}
-
-												{inspectedMessages.length > 0 && (
-													<div className="subagent-inspector__block">
-														<span className="subagent-inspector__label">
-															Recent Subagent Messages ({inspectedMessages.length})
-														</span>
-														<div className="subagent-inspector__messages">
-															{inspectedMessages.slice(-4).map((m) => (
-																<div
-																	key={m.id}
-																	className={`subagent-inspector__msg subagent-inspector__msg--${m.role}`}
-																>
-																	<span className="subagent-inspector__msg-role">
-																		{m.role === "bot" ? "Subagent" : m.role}:
-																	</span>
-																	<span className="subagent-inspector__msg-body">{m.body}</span>
-																</div>
-															))}
-														</div>
-													</div>
-												)}
-											</div>
-										</div>
-									)}
 								</div>
-							)}
+								<button
+									type="button"
+									className="subagents-drawer__close-btn"
+									onClick={handleClose}
+									aria-label="Close panel"
+									data-testid="close-subagents-panel"
+									title="Close panel (Esc)"
+								>
+									✕ Close
+								</button>
+							</div>
 
-							{/* Running Processes Section */}
-							{hasProcesses && shouldShowProcesses && (
-								<div className="processes-section" data-testid="running-processes-section">
-									<div className="processes-header">
-										<button
-											type="button"
-											className="processes-header__toggle"
-											onClick={() => setProcessesExpanded((prev) => !prev)}
-											aria-expanded={processesExpanded}
-											aria-label={processesExpanded ? "Collapse processes" : "Expand processes"}
-										>
-											<span className="subagents-header__chevron">
-												{processesExpanded ? "▾" : "▸"}
-											</span>
-											<span className="processes-header__title">
-												{activeTab === "running" ? "Active Processes" : "Running Processes"}
-											</span>
-											{runningProcesses.length > 0 ? (
-												<span className="subagents-badge subagents-badge--running">
-													<VSCodeGearIcon size={11} spin={true} className="inline mr-1" />
-													{runningProcesses.length} active
+							{/* Segmented Filter Tabs */}
+							<div
+								className="subagents-drawer__tabs"
+								role="tablist"
+								aria-label="Filter subagents and processes"
+							>
+								<button
+									type="button"
+									role="tab"
+									aria-selected={activeTab === "running"}
+									className={`subagents-tab ${activeTab === "running" ? "subagents-tab--active" : ""}`}
+									onClick={() => {
+										setActiveTab("running")
+										setCompletedExpanded(false)
+									}}
+									data-testid="tab-running-subagents"
+								>
+									<span className="subagents-tab__icon">⚡</span>
+									<span>Running ({runningSubagents.length})</span>
+								</button>
+								<button
+									type="button"
+									role="tab"
+									aria-selected={activeTab === "processes"}
+									className={`subagents-tab ${activeTab === "processes" ? "subagents-tab--active" : ""}`}
+									onClick={() => setActiveTab("processes")}
+									data-testid="tab-processes"
+								>
+									<span className="subagents-tab__icon">⚙️</span>
+									<span>Processes ({processes.length})</span>
+								</button>
+								<button
+									type="button"
+									role="tab"
+									aria-selected={activeTab === "changeset"}
+									className={`subagents-tab ${activeTab === "changeset" ? "subagents-tab--active" : ""}`}
+									onClick={() => setActiveTab("changeset")}
+									data-testid="tab-changeset"
+								>
+									<span className="subagents-tab__icon">📝</span>
+									<span>Changes ({changesetFiles.length})</span>
+								</button>
+								<button
+									type="button"
+									role="tab"
+									aria-selected={activeTab === "plan"}
+									className={`subagents-tab ${activeTab === "plan" ? "subagents-tab--active" : ""}`}
+									onClick={() => setActiveTab("plan")}
+									data-testid="tab-plan"
+								>
+									<span className="subagents-tab__icon">📋</span>
+									<span>Plan ({planSteps.length})</span>
+								</button>
+								<button
+									type="button"
+									role="tab"
+									aria-selected={activeTab === "all"}
+									className={`subagents-tab ${activeTab === "all" ? "subagents-tab--active" : ""}`}
+									onClick={() => {
+										setActiveTab("all")
+										setCompletedExpanded(true)
+									}}
+									data-testid="tab-all-subagents"
+								>
+									<span>All ({subagents.length})</span>
+								</button>
+							</div>
+
+							{/* Drawer Scrollable Body */}
+							<div className="subagents-drawer__body">
+								{/* Subagents Section */}
+								{hasSubagents && shouldShowSubagents && (
+									<div className="subagents-section" data-testid="subagents-section">
+										<div className="subagents-header">
+											<button
+												type="button"
+												className="subagents-header__toggle"
+												onClick={() => setSubagentsExpanded((prev) => !prev)}
+												aria-expanded={subagentsExpanded}
+												aria-label={subagentsExpanded ? "Collapse subagents" : "Expand subagents"}
+											>
+												<span className="subagents-header__chevron">
+													{subagentsExpanded ? "▾" : "▸"}
 												</span>
-											) : (
+												<span className="subagents-header__title">
+													{activeTab === "running" ? "Running Subagents" : "Subagents"}
+												</span>
+												{runningSubagents.length > 0 && (
+													<span className="subagents-badge subagents-badge--running">
+														<VSCodeWorkingStateIcon
+															status="running"
+															size={11}
+															className="inline mr-1"
+														/>
+														{runningSubagents.length} running
+													</span>
+												)}
 												<span className="subagents-badge subagents-badge--total">
-													{processes.length} executed
+													{subagents.length} total
 												</span>
-											)}
-										</button>
-									</div>
+											</button>
+										</div>
 
-									{processesExpanded && (
-										<div className="processes-list" role="list" aria-label="Session processes">
-											{displayedProcesses.slice(-12).map((proc) => {
-												const isSelected = selectedProcessId === proc.id
-												return (
-													<div key={proc.id} className="process-item-wrapper" role="listitem">
+										{subagentsExpanded && (
+											<>
+												{/* Running subagents grid */}
+												{runningSubagents.length > 0 && (
+													<div
+														className="subagents-grid"
+														role="list"
+														aria-label="Running subagents"
+														data-testid="running-subagents-grid"
+													>
+														{runningSubagents.map(renderSubagentCard)}
+													</div>
+												)}
+
+												{/* Notice when no subagents are currently running */}
+												{runningSubagents.length === 0 && completedSubagents.length > 0 && (
+													<div
+														className="subagents-all-completed-banner"
+														data-testid="subagents-all-completed-banner"
+													>
+														<span className="subagents-all-completed-banner__icon">✓</span>
+														<span>No active subagents running.</span>
+													</div>
+												)}
+
+												{/* Collapsible item for completed subagents */}
+												{completedSubagents.length > 0 && (
+													<div
+														className="completed-subagents-group"
+														data-testid="completed-subagents-group"
+													>
 														<button
 															type="button"
-															data-testid={`process-item-${proc.id}`}
-															className={[
-																"process-item",
-																proc.isRunning
-																	? "process-item--running"
-																	: "process-item--completed",
-																proc.isError ? "process-item--error" : "",
-																isSelected ? "process-item--selected" : "",
-															]
-																.filter(Boolean)
-																.join(" ")}
-															onClick={() =>
-																setSelectedProcessId((prev) => (prev === proc.id ? null : proc.id))
+															className="completed-subagents-toggle"
+															data-testid="toggle-completed-subagents"
+															onClick={() => setCompletedExpanded((prev) => !prev)}
+															aria-expanded={completedExpanded}
+															aria-label={
+																completedExpanded
+																	? "Collapse completed subagents"
+																	: "Expand completed subagents"
 															}
-															aria-expanded={isSelected}
 														>
-															<span className="process-item__icon">
-																<VSCodeGearIcon
-																	size={12}
-																	spin={proc.isRunning}
-																	className={proc.isRunning ? "text-emerald-400" : "opacity-70"}
-																/>
-															</span>
-															<code className="process-item__name">{proc.name}</code>
-															{proc.pid && (
-																<span className="process-item__pid">PID {proc.pid}</span>
-															)}
-															{proc.step && proc.step !== proc.name && (
-																<span className="process-item__step">{proc.step}</span>
-															)}
-															<span
-																className={`process-item__status process-item__status--${proc.isRunning ? "running" : "completed"}`}
-															>
-																{proc.isRunning ? "Running" : proc.isError ? "Failed" : "Done"}
+															<div className="completed-subagents-toggle__left">
+																<span className="completed-subagents-toggle__chevron">
+																	{completedExpanded ? "▾" : "▸"}
+																</span>
+																<span className="completed-subagents-toggle__icon">✓</span>
+																<span className="completed-subagents-toggle__title">
+																	Completed Subagents
+																</span>
+																<span className="completed-subagents-toggle__count">
+																	({completedSubagents.length})
+																</span>
+															</div>
+															<span className="completed-subagents-toggle__action">
+																{completedExpanded ? "Collapse" : "Expand"}
 															</span>
 														</button>
 
-														{isSelected && selectedProcess && (
+														{completedExpanded && (
 															<div
-																className="process-item__details"
-																data-testid={`process-details-${proc.id}`}
+																className="subagents-grid completed-subagents-grid"
+																role="list"
+																aria-label="Completed subagents"
+																data-testid="completed-subagents-list"
 															>
-																{selectedProcess.command && (
-																	<div className="process-detail-row">
-																		<span className="process-detail-label">Command:</span>
-																		<code className="process-detail-code">
-																			{selectedProcess.command}
-																		</code>
-																	</div>
-																)}
-																{selectedProcess.step && (
-																	<div className="process-detail-row">
-																		<span className="process-detail-label">Step:</span>
-																		<span className="process-detail-text">
-																			{selectedProcess.step}
-																		</span>
-																	</div>
-																)}
-																{selectedProcess.args &&
-																	typeof selectedProcess.args === "object" &&
-																	Object.keys(selectedProcess.args).length > 0 && (
-																		<div className="process-detail-row">
-																			<span className="process-detail-label">Arguments:</span>
-																			<pre className="process-detail-pre">
-																				{JSON.stringify(selectedProcess.args, null, 2)}
-																			</pre>
-																		</div>
-																	)}
-																{(selectedProcess.output ||
-																	(selectedProcess.isRunning && thinkingText)) && (
-																	<div className="process-detail-row">
-																		<span className="process-detail-label">Process Output:</span>
-																		<pre className="process-detail-pre">
-																			{selectedProcess.output || thinkingText}
-																		</pre>
-																	</div>
-																)}
+																{completedSubagents.map(renderSubagentCard)}
 															</div>
 														)}
 													</div>
-												)
-											})}
-										</div>
-									)}
-								</div>
-							)}
-						</div>
+												)}
 
-						{/* Drawer Footer */}
-						<div className="subagents-drawer__footer">
-							<button
-								type="button"
-								className="subagents-drawer__return-btn"
-								onClick={handleClose}
-								title="Return to conversation"
-							>
-								← Return to Chat
-							</button>
+												{/* Empty state when no subagents exist in session */}
+												{subagents.length === 0 && (
+													<div
+														className="subagents-empty-state"
+														data-testid="subagents-empty-state"
+													>
+														<span className="subagents-empty-state__icon">ℹ️</span>
+														<p className="subagents-empty-state__title">No subagents</p>
+														<p className="subagents-empty-state__desc">
+															No subagents have been launched in this session.
+														</p>
+													</div>
+												)}
+											</>
+										)}
+
+										{/* Clicked Subagent Live Activity Inspector */}
+										{selectedSubagent && (
+											<div
+												className="subagent-inspector"
+												data-testid="subagent-inspector"
+												role="region"
+												aria-label={`Subagent inspector: ${selectedSubagent.title}`}
+											>
+												<div className="subagent-inspector__header">
+													<div className="subagent-inspector__title-row">
+														<VSCodeWorkingStateIcon
+															status={selectedSubagent.status || "idle"}
+															size={16}
+														/>
+														<div className="subagent-inspector__titles">
+															<span className="subagent-inspector__title">
+																{selectedSubagent.title}
+															</span>
+															{selectedSubagent.role && (
+																<span className="subagent-inspector__role">
+																	Role: {selectedSubagent.role}
+																</span>
+															)}
+														</div>
+														<span
+															className={`subagent-inspector__badge subagent-inspector__badge--${selectedSubagent.status || "idle"}`}
+														>
+															{formatStatusLabel(selectedSubagent.status)}
+														</span>
+													</div>
+													<div className="subagent-inspector__header-actions">
+														{selectedSubagent.conversationId && onSelectConversation && (
+															<button
+																type="button"
+																className="subagent-inspector__open-btn"
+																data-testid="open-subagent-session-btn"
+																onClick={() => {
+																	handleClose()
+																	onSelectConversation(selectedSubagent.conversationId)
+																}}
+																title="Open full subagent session chat"
+															>
+																Open Subagent Session →
+															</button>
+														)}
+														<button
+															type="button"
+															className="subagent-inspector__close-btn"
+															onClick={() => setSelectedSubagentId(null)}
+															title="Close inspector"
+															aria-label="Close subagent inspector"
+														>
+															✕
+														</button>
+													</div>
+												</div>
+
+												<div className="subagent-inspector__content">
+													{inspectedStep && (
+														<div className="subagent-inspector__block">
+															<span className="subagent-inspector__label">Current Action</span>
+															<p className="subagent-inspector__step">{inspectedStep}</p>
+														</div>
+													)}
+
+													{selectedSubagent.prompt && (
+														<div className="subagent-inspector__block">
+															<span className="subagent-inspector__label">
+																Assigned Goal / Task
+															</span>
+															<p className="subagent-inspector__prompt">
+																{selectedSubagent.prompt}
+															</p>
+														</div>
+													)}
+
+													{inspectedTools.length > 0 && (
+														<div className="subagent-inspector__block">
+															<span className="subagent-inspector__label">Tool Execution</span>
+															<div className="subagent-inspector__tools">
+																{inspectedTools.map((tc, idx) => (
+																	<div key={idx} className="subagent-inspector__tool-item">
+																		<VSCodeGearIcon
+																			size={12}
+																			spin={selectedSubagent.isRunning}
+																			className="inline mr-1 text-emerald-400"
+																		/>
+																		<span className="font-mono text-xs">
+																			{tc.name || tc.tool || "tool_call"}
+																		</span>
+																		{tc.step && (
+																			<span className="text-xs opacity-75"> — {tc.step}</span>
+																		)}
+																	</div>
+																))}
+															</div>
+														</div>
+													)}
+
+													{inspectedThinking && (
+														<div className="subagent-inspector__block">
+															<span className="subagent-inspector__label">
+																Reasoning & Execution Stream
+															</span>
+															<pre className="subagent-inspector__thinking">
+																{inspectedThinking}
+															</pre>
+														</div>
+													)}
+
+													{selectedSubagent.output && (
+														<div className="subagent-inspector__block">
+															<span className="subagent-inspector__label">Result / Output</span>
+															<pre className="subagent-inspector__thinking">
+																{selectedSubagent.output}
+															</pre>
+														</div>
+													)}
+
+													{loadingInspector && (
+														<div className="subagent-inspector__loading">
+															Loading subagent activity log...
+														</div>
+													)}
+
+													{inspectedMessages.length > 0 && (
+														<div className="subagent-inspector__block">
+															<span className="subagent-inspector__label">
+																Recent Subagent Messages ({inspectedMessages.length})
+															</span>
+															<div className="subagent-inspector__messages">
+																{inspectedMessages.slice(-4).map((m) => (
+																	<div
+																		key={m.id}
+																		className={`subagent-inspector__msg subagent-inspector__msg--${m.role}`}
+																	>
+																		<span className="subagent-inspector__msg-role">
+																			{m.role === "bot" ? "Subagent" : m.role}:
+																		</span>
+																		<span className="subagent-inspector__msg-body">{m.body}</span>
+																	</div>
+																))}
+															</div>
+														</div>
+													)}
+												</div>
+											</div>
+										)}
+									</div>
+								)}
+
+								{/* Running Processes Section */}
+								{hasProcesses && shouldShowProcesses && (
+									<div className="processes-section" data-testid="running-processes-section">
+										<div className="processes-header">
+											<button
+												type="button"
+												className="processes-header__toggle"
+												onClick={() => setProcessesExpanded((prev) => !prev)}
+												aria-expanded={processesExpanded}
+												aria-label={processesExpanded ? "Collapse processes" : "Expand processes"}
+											>
+												<span className="subagents-header__chevron">
+													{processesExpanded ? "▾" : "▸"}
+												</span>
+												<span className="processes-header__title">
+													{activeTab === "running" ? "Active Processes" : "Running Processes"}
+												</span>
+												{runningProcesses.length > 0 ? (
+													<span className="subagents-badge subagents-badge--running">
+														<VSCodeGearIcon size={11} spin={true} className="inline mr-1" />
+														{runningProcesses.length} active
+													</span>
+												) : (
+													<span className="subagents-badge subagents-badge--total">
+														{processes.length} executed
+													</span>
+												)}
+											</button>
+										</div>
+
+										{processesExpanded && (
+											<div className="processes-list" role="list" aria-label="Session processes">
+												{displayedProcesses.slice(-12).map((proc) => {
+													const isSelected = selectedProcessId === proc.id
+													return (
+														<div key={proc.id} className="process-item-wrapper" role="listitem">
+															<button
+																type="button"
+																data-testid={`process-item-${proc.id}`}
+																className={[
+																	"process-item",
+																	proc.isRunning
+																		? "process-item--running"
+																		: "process-item--completed",
+																	proc.isError ? "process-item--error" : "",
+																	isSelected ? "process-item--selected" : "",
+																]
+																	.filter(Boolean)
+																	.join(" ")}
+																onClick={() =>
+																	setSelectedProcessId((prev) =>
+																		prev === proc.id ? null : proc.id,
+																	)
+																}
+																aria-expanded={isSelected}
+															>
+																<span className="process-item__icon">
+																	<VSCodeGearIcon
+																		size={12}
+																		spin={proc.isRunning}
+																		className={proc.isRunning ? "text-emerald-400" : "opacity-70"}
+																	/>
+																</span>
+																<code className="process-item__name">{proc.name}</code>
+																{proc.pid && (
+																	<span className="process-item__pid">PID {proc.pid}</span>
+																)}
+																{proc.step && proc.step !== proc.name && (
+																	<span className="process-item__step">{proc.step}</span>
+																)}
+																<span
+																	className={`process-item__status process-item__status--${proc.isRunning ? "running" : "completed"}`}
+																>
+																	{proc.isRunning ? "Running" : proc.isError ? "Failed" : "Done"}
+																</span>
+															</button>
+
+															{isSelected && selectedProcess && (
+																<div
+																	className="process-item__details"
+																	data-testid={`process-details-${proc.id}`}
+																>
+																	{selectedProcess.command && (
+																		<div className="process-detail-row">
+																			<span className="process-detail-label">Command:</span>
+																			<code className="process-detail-code">
+																				{selectedProcess.command}
+																			</code>
+																		</div>
+																	)}
+																	{selectedProcess.step && (
+																		<div className="process-detail-row">
+																			<span className="process-detail-label">Step:</span>
+																			<span className="process-detail-text">
+																				{selectedProcess.step}
+																			</span>
+																		</div>
+																	)}
+																	{selectedProcess.args &&
+																		typeof selectedProcess.args === "object" &&
+																		Object.keys(selectedProcess.args).length > 0 && (
+																			<div className="process-detail-row">
+																				<span className="process-detail-label">Arguments:</span>
+																				<pre className="process-detail-pre">
+																					{JSON.stringify(selectedProcess.args, null, 2)}
+																				</pre>
+																			</div>
+																		)}
+																	{(selectedProcess.output ||
+																		(selectedProcess.isRunning && thinkingText)) && (
+																		<div className="process-detail-row">
+																			<span className="process-detail-label">Process Output:</span>
+																			<pre className="process-detail-pre">
+																				{selectedProcess.output || thinkingText}
+																			</pre>
+																		</div>
+																	)}
+																</div>
+															)}
+														</div>
+													)
+												})}
+											</div>
+										)}
+									</div>
+								)}
+								{/* Changeset / Modified Files Section */}
+								{activeTab === "changeset" && (
+									<div className="subagents-section" data-testid="inspector-changeset-section">
+										<div className="subagents-header">
+											<div className="subagents-header__title-row">
+												<span className="subagents-header__title">Modified Files & Changesets</span>
+												<span className="subagents-badge subagents-badge--total">
+													{changesetFiles.length} files
+												</span>
+											</div>
+										</div>
+										{changesetFiles.length > 0 ? (
+											<div className="subagents-grid" role="list" aria-label="Modified files">
+												{changesetFiles.map((file, idx) => (
+													<div key={file.path || idx} className="subagent-card">
+														<div className="subagent-card__header">
+															<div className="subagent-card__name-group">
+																<span className="subagent-card__avatar">📄</span>
+																<div>
+																	<div className="subagent-card__title" title={file.path}>
+																		{file.path ? file.path.split(/[/\\]/).pop() : "File"}
+																	</div>
+																	<div className="subagent-card__role" title={file.path}>
+																		{file.path || "workspace file"}
+																	</div>
+																</div>
+															</div>
+															<span className="subagent-card__status subagent-card__status--completed">
+																{file.status || "modified"}
+															</span>
+														</div>
+													</div>
+												))}
+											</div>
+										) : (
+											<div className="subagents-empty-state">
+												<p className="subagents-empty-desc">
+													No files modified yet in this session. When tools edit or create files,
+													they will appear here.
+												</p>
+											</div>
+										)}
+									</div>
+								)}
+
+								{/* Plan & Checklist Section */}
+								{activeTab === "plan" && (
+									<div className="subagents-section" data-testid="inspector-plan-section">
+										<div className="subagents-header">
+											<div className="subagents-header__title-row">
+												<span className="subagents-header__title">Agent Execution Plan</span>
+												<span className="subagents-badge subagents-badge--total">
+													{planSteps.length} steps
+												</span>
+											</div>
+										</div>
+										{planSteps.length > 0 ? (
+											<div className="subagents-grid" role="list" aria-label="Plan steps">
+												{planSteps.map((step, idx) => {
+													const stepTitle =
+														typeof step === "string"
+															? step
+															: step.title || step.step || step.name || `Step ${idx + 1}`
+													const isDone =
+														typeof step === "object"
+															? Boolean(step.done || step.status === "completed")
+															: false
+													return (
+														<div key={idx} className="subagent-card">
+															<div className="subagent-card__header">
+																<div className="subagent-card__name-group">
+																	<span className="subagent-card__avatar">
+																		{isDone ? "✓" : `${idx + 1}`}
+																	</span>
+																	<div>
+																		<div className="subagent-card__title">{stepTitle}</div>
+																		<div className="subagent-card__role">
+																			{isDone ? "Completed" : "Pending step"}
+																		</div>
+																	</div>
+																</div>
+																<span
+																	className={`subagent-card__status ${isDone ? "subagent-card__status--completed" : "subagent-card__status--running"}`}
+																>
+																	{isDone ? "Done" : "Pending"}
+																</span>
+															</div>
+														</div>
+													)
+												})}
+											</div>
+										) : (
+											<div className="subagents-empty-state">
+												<p className="subagents-empty-desc">
+													No structured plan reported yet. When the agent decomposes a task into
+													steps, they will appear here.
+												</p>
+											</div>
+										)}
+									</div>
+								)}
+							</div>
+
+							{/* Drawer Footer */}
+							<div className="subagents-drawer__footer">
+								<button
+									type="button"
+									className="subagents-drawer__return-btn"
+									onClick={handleClose}
+									title="Return to conversation"
+								>
+									← Return to Chat
+								</button>
+							</div>
 						</div>
-					</div>
-				</div>
-			)}
+					)
+
+					return isDocked ? (
+						drawerContent
+					) : (
+						<div
+							className="subagents-drawer-backdrop"
+							onClick={handleClose}
+							data-testid="subagents-drawer-backdrop"
+						>
+							{drawerContent}
+						</div>
+					)
+				})()}
 		</>
 	)
 }
