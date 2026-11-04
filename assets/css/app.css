@@ -3363,6 +3363,11 @@ body {
     border-radius: 50%;
   }
 
+  .file-input-btn.hidden,
+  .file-input-btn[hidden] {
+    display: none !important;
+  }
+
   .file-input-btn {
     width: 36px;
     height: 36px;
@@ -8692,7 +8697,7 @@ body {
   width: 100%;
   max-width: 800px;
   padding: 0;
-  margin: auto 0 1.25rem 0;
+  margin: 0 auto 1.25rem auto;
   background: transparent;
   border: none;
   box-shadow: none;
@@ -8976,4 +8981,84 @@ body {
 
 .send-btn--circle.send-btn--active:hover {
   transform: scale(1.05);
+}
+
+
+/* ───────── Mobile Optimizations for New Session & Composer ───────── */
+@media (max-width: 768px) {
+  .chat-thread-container--empty .agent-prompt-controls {
+    display: none !important;
+  }
+
+  .chat-thread-container--empty .new-session-canvas {
+    margin: 0 auto 0.75rem auto;
+    width: 100%;
+  }
+
+  .chat-thread-container--empty .aui-ship-title {
+    font-size: 1.6rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .chat-thread-container--empty .aui-ship-hero {
+    margin-bottom: 0.85rem;
+  }
+
+  .chat-thread-container--empty .aui-session-setup-panel {
+    padding: 0.75rem;
+    gap: 0.65rem;
+  }
+
+  .chat-thread-container--empty .aui-target-switcher {
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+  }
+
+  .chat-thread-container--empty .aui-role-select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .chat-thread-container--empty .aui-setup-pills-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+
+  .chat-input-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.45rem;
+    padding: 0.45rem 0.6rem;
+  }
+
+  .chat-input-left {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    width: 100%;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 2px;
+  }
+
+  .chat-input-left::-webkit-scrollbar {
+    display: none;
+  }
+
+  .chat-input-left > * {
+    flex-shrink: 0;
+  }
+
+  .chat-send-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    margin-left: 0;
+    gap: 0.45rem;
+  }
 }
