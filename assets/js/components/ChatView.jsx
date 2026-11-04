@@ -532,8 +532,7 @@ export default function ChatView({
 	const hasUserPromptsRef = useRef(false)
 	hasUserPromptsRef.current =
 		(Array.isArray(messages) && messages.some((m) => m && !m.pending && m.role === "user")) ||
-		Boolean(activeConv?.last_message_at) ||
-		Boolean(activeConv?.external_session_id)
+		Boolean(activeConv?.last_message_at)
 
 	const handleModeChange = useCallback(
 		(newMode) => {
@@ -555,20 +554,16 @@ export default function ChatView({
 
 	const handleWorktreeChange = useCallback(
 		(newWorktree) => {
-			if (hasUserPromptsRef.current) {
-				return
-			}
 			setUseWorktree(newWorktree)
 			setSessionMetadata((prev) => ({ ...prev, use_worktree: newWorktree }))
 			onConversationStatusChange?.(selectedConversationId, null, { use_worktree: newWorktree })
-			// On a new session without user prompts, do not send anything over the wire until a prompt is submitted
+			if (selectedConversationId && token) {
+				updateConversation(token, selectedConversationId, {
+					metadata: { use_worktree: newWorktree },
+				}).catch(() => {})
+			}
 			if (hasUserPromptsRef.current) {
 				channelRef.current?.push("update_session_config", { use_worktree: newWorktree })
-				if (selectedConversationId && token) {
-					updateConversation(token, selectedConversationId, {
-						metadata: { use_worktree: newWorktree },
-					}).catch(() => {})
-				}
 			}
 		},
 		[selectedConversationId, token, onConversationStatusChange],
@@ -1844,7 +1839,7 @@ export default function ChatView({
 			hasUserPromptsRef.current ||
 			(Array.isArray(messages) && messages.some((m) => m && !m.pending && m.role === "user")) ||
 			Boolean(activeConv?.last_message_at)
-		const isExistingSession = hasUserPrompts || isSteer
+		const isExistingSession = Boolean(activeConv?.external_session_id) || hasUserPrompts || isSteer
 		const isNewSession = !isExistingSession
 
 		const metadata = {
@@ -1932,7 +1927,7 @@ export default function ChatView({
 			hasUserPromptsRef.current ||
 			(Array.isArray(messages) && messages.some((m) => m && !m.pending && m.role === "user")) ||
 			Boolean(activeConv?.last_message_at)
-		const isExistingSession = hasUserPrompts || is_steer
+		const isExistingSession = Boolean(activeConv?.external_session_id) || hasUserPrompts || is_steer
 		const isNewSession = !isExistingSession
 
 		const primary = currentAttachments[0]

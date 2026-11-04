@@ -4,7 +4,6 @@ use chrono::{NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
-use uuid::Uuid;
 
 use crate::auth::{
     decode_session_token, generate_bot_credentials, generate_session_token, hash_bot_token,
@@ -977,8 +976,7 @@ pub async fn create_conversation(
 
     let ext_id = external_session_id
         .filter(|s| !s.trim().is_empty())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
+        .map(|s| s.to_string());
 
     let bot = get_bot_token(pool, bot_token_id, None).await?;
     let mut merged_meta = json!({});
