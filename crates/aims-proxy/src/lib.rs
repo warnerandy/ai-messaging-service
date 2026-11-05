@@ -14,7 +14,10 @@ use ahp_types::commands::{
     CreateChatParams, CreateSessionParams, DispatchActionParams, ListSessionsParams,
     ListSessionsResult,
 };
-use ahp_types::state::{RootState, SnapshotState};
+use ahp_types::state::{
+    ChatState, ChatSummary, ProjectInfo, RootState, SessionState, SessionSummary, SnapshotState,
+};
+use futures_util::future::BoxFuture;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -110,8 +113,19 @@ pub async fn run_proxy(config: ProxyConfig) -> Result<(), Box<dyn std::error::Er
             } else {
                 "ws://localhost/".to_string()
             };
-            let (ws_stream, response) = tokio_tungstenite::client_async(handshake_url, stream).await
-                .map_err(|e| format!("WebSocket handshake over Unix socket failed: {}", e))?;
+            // VS Code AHP can send very large snapshots (e.g. a chat with many
+            // turns and large tool outputs). tokio-tungstenite defaults cap a
+            // frame at 16 MiB, and exceeding it tears down the whole AHP
+            // connection ("Space limit exceeded: Message too long"), which then
+            // makes every later subscribe/sync fail with "client shut down".
+            // Raise the limits well above observed snapshot sizes.
+            let ws_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+                .max_message_size(Some(256 << 20))
+                .max_frame_size(Some(256 << 20));
+            let (ws_stream, response) =
+                tokio_tungstenite::client_async_with_config(handshake_url, stream, Some(ws_config))
+                    .await
+                    .map_err(|e| format!("WebSocket handshake over Unix socket failed: {}", e))?;
             info!("WebSocket handshake established over Unix socket (status={})", response.status());
             ahp::transport::BoxedTransport::new(GenericWsTransport::new(ws_stream))
         }
@@ -230,30 +244,45 @@ pub async fn run_proxy(config: ProxyConfig) -> Result<(), Box<dyn std::error::Er
         outbound_tx.clone(),
     );
 
-    // Discover and subscribe to all existing active AHP sessions and their chats
-    let list_params = ListSessionsParams {
-        channel: ahp_types::ROOT_RESOURCE_URI.to_string(),
-        meta: None,
-        limit: Some(100),
-        cursor: None,
-    };
-    if let Ok(res) = ahp_client
-        .request::<_, ListSessionsResult>("listSessions", list_params)
-        .await
-    {
+    // Discover and subscribe to all existing active AHP sessions and their chats.
+    // Page through the full list (the host caps page size) so active sessions
+    // beyond the first page aren't silently missed.
+    let sessions = list_all_sessions(&ahp_client).await;
+    if !sessions.is_empty() {
         info!(
             "Discovered {} existing AHP sessions on startup",
-            res.items.len()
+            sessions.len()
         );
-        for item in res.items {
+        let mut archived_entries = Vec::new();
+        for item in sessions {
+            if session_status_is_archived(item.status) {
+                // Don't subscribe or import chats for archived sessions, but do
+                // forward a lightweight entry so aims-server marks any already
+                // synced conversation as archived (dropping it from the active
+                // list) instead of leaving stale rows behind.
+                archived_entries.push(session_summary_to_sync_entry(&item));
+                continue;
+            }
             ensure_resource_subscribed(
                 &ahp_client,
                 &mirror,
                 &subscribed_uris,
                 &item.resource,
                 &outbound_tx,
+                true,
             )
             .await;
+        }
+        if !archived_entries.is_empty() {
+            info!(
+                "Marking {} archived AHP sessions as archived upstream",
+                archived_entries.len()
+            );
+            let _ = outbound_tx.send(json!({
+                "topic": "bot:proxy",
+                "event": "sync_sessions",
+                "payload": { "sessions": archived_entries },
+            }));
         }
     }
 
@@ -319,12 +348,34 @@ fn spawn_resource_listener(
 
                     // If a new chat was added to a session, subscribe to the chat channel
                     if let StateAction::SessionChatAdded(ref chat_added) = envelope.action {
+                        // Enrich the new chat conversation with its parent session's
+                        // project/branch details (apply_envelope above already added
+                        // the chat to the session's catalog in the mirror).
+                        let enriched = {
+                            let m = mirror.lock().await;
+                            m.sessions()
+                                .values()
+                                .find(|s| {
+                                    s.chats
+                                        .iter()
+                                        .any(|c| c.resource == chat_added.summary.resource)
+                                })
+                                .map(|s| chat_summary_to_sync_entry(&chat_added.summary, s))
+                        };
+                        if let Some(entry) = enriched {
+                            let _ = outbound_tx.send(json!({
+                                "topic": "bot:proxy",
+                                "event": "sync_sessions",
+                                "payload": { "sessions": [entry] },
+                            }));
+                        }
                         ensure_resource_subscribed(
                             &ahp_client,
                             &mirror,
                             &subscribed_uris,
                             &chat_added.summary.resource,
                             &outbound_tx,
+                            true,
                         )
                         .await;
                     }
@@ -343,6 +394,7 @@ fn spawn_resource_listener(
                         &subscribed_uris,
                         &notif.summary.resource,
                         &outbound_tx,
+                        true,
                     )
                     .await;
                 }
@@ -352,13 +404,557 @@ fn spawn_resource_listener(
     });
 }
 
-async fn ensure_resource_subscribed(
+/// Extract the bare session UUID from an `ahp-session:/<uuid>` or
+/// `ahp-chat:/<uuid>/...` URI so it matches how `aims-server` keys conversations.
+fn extract_session_id_from_uri(uri: &str) -> Option<String> {
+    if let Some(rest) = uri.strip_prefix("ahp-session:/") {
+        let id = rest.trim_matches('/');
+        if !id.is_empty() {
+            return Some(id.to_string());
+        }
+    }
+    if let Some(rest) = uri.strip_prefix("ahp-chat:/") {
+        let first = rest.trim_matches('/').split('/').next().unwrap_or("");
+        if !first.is_empty() {
+            return Some(first.to_string());
+        }
+    }
+    None
+}
+
+/// Archived flag of an AHP `SessionStatus` bitset (mirrors
+/// `ahp_types::state::SessionStatus::IsArchived`).
+const SESSION_STATUS_ARCHIVED: u32 = 64;
+
+/// Whether an AHP session is archived. Archived sessions are historical and are
+/// intentionally not surfaced in aims, so we skip subscribing/syncing them.
+fn session_status_is_archived(status: u32) -> bool {
+    status & SESSION_STATUS_ARCHIVED == SESSION_STATUS_ARCHIVED
+}
+
+/// Map an AHP `SessionStatus` bitset to the UI status string used by `aims-server`.
+/// Flag values mirror `ahp_types::state::SessionStatus`.
+fn ahp_session_status_to_ui(status: u32) -> &'static str {
+    const ERROR: u32 = 2;
+    const IN_PROGRESS: u32 = 8;
+    const INPUT_NEEDED: u32 = 24;
+    const IS_ARCHIVED: u32 = SESSION_STATUS_ARCHIVED;
+    if status & IS_ARCHIVED == IS_ARCHIVED {
+        "archived"
+    } else if status & INPUT_NEEDED == INPUT_NEEDED {
+        "waiting_for_input"
+    } else if status & IN_PROGRESS == IN_PROGRESS {
+        "running"
+    } else if status & ERROR == ERROR {
+        "error"
+    } else {
+        "idle"
+    }
+}
+
+/// Normalize a `file://` URI into a plain local filesystem path, percent-decoding
+/// escapes (e.g. `%20` -> space) so project/working-directory paths display
+/// correctly. Plain (non-`file://`) paths are returned unchanged.
+fn local_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    match trimmed.strip_prefix("file://") {
+        Some(rest) => percent_encoding::percent_decode_str(rest)
+            .decode_utf8_lossy()
+            .into_owned(),
+        None => trimmed.to_string(),
+    }
+}
+
+/// Git details resolved from a session's merged config/metadata values.
+#[derive(Default)]
+struct GitInfo {
+    /// Current working branch.
+    branch: Option<String>,
+    /// Base branch the work targets (e.g. the PR base).
+    base_branch: Option<String>,
+    /// `owner/repo` when a GitHub remote is known.
+    repository: Option<String>,
+}
+
+/// Resolve git branch/repository details from merged session config/metadata.
+///
+/// VS Code hosts expose rich data under `_meta.git` (`branchName`,
+/// `baseBranchName`, `githubOwner`/`githubRepo`), while web-UI-created sessions
+/// store `base_branch`/`branch` directly in the session config values. Both
+/// shapes are tolerated.
+fn git_info_from_metadata(values: &serde_json::Map<String, Value>) -> GitInfo {
+    fn str_at(m: &serde_json::Map<String, Value>, k: &str) -> Option<String> {
+        m.get(k)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    }
+
+    let mut info = GitInfo {
+        branch: str_at(values, "branch").or_else(|| str_at(values, "git_branch")),
+        base_branch: str_at(values, "base_branch").or_else(|| str_at(values, "baseBranch")),
+        repository: str_at(values, "repository").or_else(|| str_at(values, "repo")),
+    };
+
+    if let Some(git) = values.get("git").and_then(|v| v.as_object()) {
+        if info.branch.is_none() {
+            info.branch = str_at(git, "branchName")
+                .or_else(|| str_at(git, "currentBranch"))
+                .or_else(|| str_at(git, "branch"));
+        }
+        if info.base_branch.is_none() {
+            info.base_branch =
+                str_at(git, "baseBranchName").or_else(|| str_at(git, "defaultBranchName"));
+        }
+        if info.repository.is_none() {
+            if let (Some(owner), Some(repo)) = (str_at(git, "githubOwner"), str_at(git, "githubRepo"))
+            {
+                info.repository = Some(format!("{owner}/{repo}"));
+            }
+        }
+    }
+
+    info
+}
+
+/// Build a `sync_sessions` entry from an AHP session snapshot, carrying the
+/// details (title, status, project, branch, working directories) that
+/// `aims-server` needs to create or enrich the corresponding conversation.
+fn session_state_to_sync_entry(uri: &str, state: &SessionState) -> Value {
+    build_sync_entry(
+        uri,
+        &state.title,
+        state.status,
+        state.project.as_ref(),
+        state.working_directories.as_ref(),
+        state.meta.as_ref(),
+        state.config.as_ref().map(|c| &c.values),
+    )
+}
+
+/// Build a `sync_sessions` entry from a lightweight `listSessions` summary.
+/// Used to archive existing conversations without subscribing to or importing
+/// an archived session's chat history.
+fn session_summary_to_sync_entry(summary: &SessionSummary) -> Value {
+    build_sync_entry(
+        &summary.resource,
+        &summary.title,
+        summary.status,
+        summary.project.as_ref(),
+        summary.working_directories.as_ref(),
+        summary.meta.as_ref(),
+        None,
+    )
+}
+
+/// Shared builder for a `sync_sessions` entry from the fields common to an AHP
+/// `SessionState` snapshot and a `SessionSummary` list item.
+fn build_sync_entry(
+    uri: &str,
+    title: &str,
+    status: u32,
+    project_info: Option<&ProjectInfo>,
+    working_directories: Option<&Vec<String>>,
+    meta: Option<&serde_json::Map<String, Value>>,
+    config_values: Option<&serde_json::Map<String, Value>>,
+) -> Value {
+    let session_id = extract_session_id_from_uri(uri).unwrap_or_else(|| uri.to_string());
+
+    // Merge provider `_meta` and current config values so the server can pick up
+    // base_branch / model / agent_mode / etc.
+    let mut metadata = serde_json::Map::new();
+    if let Some(meta) = meta {
+        for (k, v) in meta {
+            metadata.insert(k.clone(), v.clone());
+        }
+    }
+    if let Some(values) = config_values {
+        for (k, v) in values {
+            metadata.insert(k.clone(), v.clone());
+        }
+    }
+
+    let git = git_info_from_metadata(&metadata);
+    // Current branch surfaces to the UI via metadata.branch / project.branch;
+    // base branch (PR target) via base_branch.
+    if let Some(ref b) = git.branch {
+        metadata.insert("branch".to_string(), json!(b));
+    }
+    let effective_base = git.base_branch.clone().or_else(|| git.branch.clone());
+    if let Some(ref b) = effective_base {
+        metadata.insert("base_branch".to_string(), json!(b));
+    }
+    if let Some(ref repo) = git.repository {
+        metadata.insert("repository".to_string(), json!(repo));
+    }
+
+    let mut entry = serde_json::Map::new();
+    entry.insert("session_id".to_string(), json!(session_id));
+    entry.insert("session_uri".to_string(), json!(uri));
+    entry.insert("title".to_string(), json!(title));
+    entry.insert(
+        "status".to_string(),
+        json!(ahp_session_status_to_ui(status)),
+    );
+    if let Some(ref b) = effective_base {
+        entry.insert("base_branch".to_string(), json!(b));
+    }
+
+    if let Some(wds) = working_directories {
+        entry.insert("working_directories".to_string(), json!(wds));
+        if let Some(first) = wds.first() {
+            entry.insert("working_directory".to_string(), json!(local_path(first)));
+        }
+    }
+
+    let mut project = serde_json::Map::new();
+    if let Some(p) = project_info {
+        project.insert("name".to_string(), json!(p.display_name));
+        project.insert("uri".to_string(), json!(p.uri));
+        project.insert("path".to_string(), json!(local_path(&p.uri)));
+    }
+    if !project.contains_key("path") {
+        if let Some(first) = working_directories.and_then(|w| w.first()) {
+            let path = local_path(first);
+            if !project.contains_key("name") {
+                if let Some(name) = path.rsplit('/').find(|s| !s.is_empty()) {
+                    project.insert("name".to_string(), json!(name));
+                }
+            }
+            project.insert("path".to_string(), json!(path));
+        }
+    }
+    if let Some(ref b) = git.branch {
+        project.insert("branch".to_string(), json!(b));
+    }
+    if let Some(ref repo) = git.repository {
+        project.insert("repository".to_string(), json!(repo));
+    }
+    if !project.is_empty() {
+        entry.insert("project".to_string(), Value::Object(project));
+    }
+
+    entry.insert("metadata".to_string(), Value::Object(metadata));
+    Value::Object(entry)
+}
+
+/// Build an enriched `sync_sessions` entry for an individual chat/thread.
+///
+/// A single AHP session contains many chats, and aims surfaces each chat as its
+/// own conversation. The project, working directories, and git metadata only
+/// live on the parent `SessionState`, so we key the entry by the chat's own URI,
+/// title, and status while borrowing the session's details. Without this a chat
+/// conversation shows up as a bare "Session <id>" with no project or branch.
+fn chat_summary_to_sync_entry(chat: &ChatSummary, session: &SessionState) -> Value {
+    let title = if chat.title.trim().is_empty() {
+        session.title.as_str()
+    } else {
+        chat.title.as_str()
+    };
+    let working_dirs = chat
+        .working_directories
+        .as_ref()
+        .filter(|w| !w.is_empty())
+        .or(session.working_directories.as_ref());
+    build_sync_entry(
+        &chat.resource,
+        title,
+        chat.status,
+        session.project.as_ref(),
+        working_dirs,
+        session.meta.as_ref(),
+        session.config.as_ref().map(|c| &c.values),
+    )
+}
+
+/// Build a `sync_sessions` entry from a chat snapshot alone. Used when the
+/// parent session can't be resolved (e.g. an orphaned running chat that is not
+/// present in `listSessions`); project details are then derived from the chat's
+/// own working directories where available.
+fn chat_state_to_sync_entry(uri: &str, chat: &ChatState) -> Value {
+    build_sync_entry(
+        uri,
+        &chat.title,
+        chat.status,
+        None,
+        chat.working_directories.as_ref(),
+        chat.meta.as_ref(),
+        None,
+    )
+}
+
+/// Convert a chat's turns into aims message payloads (user prompts plus bot
+/// responses and any tool calls). Shared by the live subscription path and the
+/// forced manual resync so both emit identical history.
+fn build_chat_messages(chat_state: &ChatState) -> Vec<Value> {
+    let mut messages = Vec::new();
+    for turn in &chat_state.turns {
+        let user_prompt = turn.message.text.trim();
+        if !user_prompt.is_empty() {
+            messages.push(json!({
+                "role": "user",
+                "content_type": "text",
+                "body": user_prompt,
+                "inserted_at": turn.started_at,
+                "metadata": {
+                    "turn_id": turn.id,
+                }
+            }));
+        }
+
+        let mut bot_text_parts = Vec::new();
+        let mut tool_calls = Vec::new();
+        for part in &turn.response_parts {
+            match part {
+                ahp_types::state::ResponsePart::Markdown(ref m) => {
+                    if !m.content.trim().is_empty() {
+                        bot_text_parts.push(m.content.clone());
+                    }
+                }
+                ahp_types::state::ResponsePart::ToolCall(ref tc) => {
+                    if let Ok(tc_val) = serde_json::to_value(&tc.tool_call) {
+                        tool_calls.push(tc_val);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let bot_body = bot_text_parts.join("\n\n");
+        if !bot_body.trim().is_empty() || !tool_calls.is_empty() {
+            let mut meta = json!({ "turn_id": turn.id });
+            if !tool_calls.is_empty() {
+                meta["tool_calls"] = json!(tool_calls);
+            }
+            messages.push(json!({
+                "role": "bot",
+                "content_type": "text",
+                "body": if bot_body.trim().is_empty() { " " } else { &bot_body },
+                "inserted_at": turn.started_at,
+                "metadata": meta,
+            }));
+        }
+    }
+    messages
+}
+
+/// Page through every session summary the host knows about, following the
+/// pagination cursor. Hosts cap page sizes (and this user has 500+ sessions), so
+/// a single `listSessions` call would silently drop active sessions beyond the
+/// first page. A safety bound prevents an unbounded loop on a misbehaving host.
+async fn list_all_sessions(ahp_client: &Arc<Client>) -> Vec<SessionSummary> {
+    let mut all = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..50 {
+        let params = ListSessionsParams {
+            channel: ahp_types::ROOT_RESOURCE_URI.to_string(),
+            meta: None,
+            limit: Some(200),
+            cursor: cursor.clone(),
+        };
+        match ahp_client
+            .request::<_, ListSessionsResult>("listSessions", params)
+            .await
+        {
+            Ok(res) => {
+                all.extend(res.items);
+                match res.next_cursor {
+                    Some(c) if !c.is_empty() => cursor = Some(c),
+                    _ => break,
+                }
+            }
+            Err(e) => {
+                warn!("listSessions page failed: {}", e);
+                break;
+            }
+        }
+    }
+    all
+}
+
+/// Whether a session summary (its own URI, default chat, or any of its chats)
+/// corresponds to `needle` — a bare UUID or URI from a conversation's stored
+/// external session id.
+fn session_summary_matches(summary: &SessionSummary, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    if summary.resource.contains(needle) {
+        return true;
+    }
+    if summary
+        .default_chat
+        .as_deref()
+        .is_some_and(|d| d.contains(needle))
+    {
+        return true;
+    }
+    summary
+        .chats
+        .as_ref()
+        .is_some_and(|cs| cs.iter().any(|c| c.resource.contains(needle)))
+}
+
+/// Re-fetch a chat's current snapshot and re-emit its history upstream, without
+/// touching `subscribed_uris` or spawning a listener. Used by the manual sync so
+/// messages reload even when the chat is already subscribed (the live path
+/// dedups and would otherwise emit nothing).
+async fn resync_chat_messages(
     ahp_client: &Arc<Client>,
     mirror: &Arc<Mutex<MultiHostStateMirror>>,
-    subscribed_uris: &Arc<Mutex<HashSet<String>>>,
     uri: &str,
     outbound_tx: &mpsc::UnboundedSender<Value>,
 ) {
+    match ahp_client.subscribe(uri.to_string()).await {
+        Ok((res, _handle)) => {
+            if let Some(ref snap) = res.snapshot {
+                let host_id = HostId::new("local");
+                mirror.lock().await.apply_snapshot(&host_id, snap);
+                if let SnapshotState::Chat(ref chat_state) = snap.state {
+                    let messages = build_chat_messages(chat_state);
+                    if !messages.is_empty() {
+                        info!("Resync sending {} messages for chat {}", messages.len(), uri);
+                        let _ = outbound_tx.send(json!({
+                            "topic": "bot:proxy",
+                            "event": "sync_messages",
+                            "payload": {
+                                "chat_uri": uri,
+                                "external_session_id": uri,
+                                "messages": messages,
+                            }
+                        }));
+                    }
+                }
+            }
+        }
+        Err(e) => warn!("Resync of chat {} failed: {}", uri, e),
+    }
+}
+
+/// Force a full resync of a session: re-emit the session entry plus an enriched
+/// entry for every chat (so each chat conversation gets project/branch details),
+/// then reload chat history for the chat(s) matching `target` (or all chats when
+/// `target` is `None` or matches only the session itself). Bypasses the live
+/// subscription dedup so the manual sync button actually reloads content.
+async fn force_resync_session(
+    ahp_client: &Arc<Client>,
+    mirror: &Arc<Mutex<MultiHostStateMirror>>,
+    session_uri: &str,
+    target: Option<&str>,
+    outbound_tx: &mpsc::UnboundedSender<Value>,
+) {
+    let snap = match ahp_client.subscribe(session_uri.to_string()).await {
+        Ok((res, _handle)) => res.snapshot,
+        Err(e) => {
+            warn!("Force resync of session {} failed: {}", session_uri, e);
+            return;
+        }
+    };
+    let Some(snap) = snap else { return };
+    let host_id = HostId::new("local");
+    mirror.lock().await.apply_snapshot(&host_id, &snap);
+    let SnapshotState::Session(ref session_state) = snap.state else {
+        return;
+    };
+
+    let mut entries = vec![session_state_to_sync_entry(session_uri, session_state)];
+    for chat in &session_state.chats {
+        entries.push(chat_summary_to_sync_entry(chat, session_state));
+    }
+    let _ = outbound_tx.send(json!({
+        "topic": "bot:proxy",
+        "event": "sync_sessions",
+        "payload": { "sessions": entries },
+    }));
+
+    if session_status_is_archived(session_state.status) {
+        return;
+    }
+
+    let matching: Vec<&str> = match target.filter(|t| !t.is_empty()) {
+        Some(t) => session_state
+            .chats
+            .iter()
+            .filter(|c| c.resource.contains(t))
+            .map(|c| c.resource.as_str())
+            .collect(),
+        None => Vec::new(),
+    };
+    // When the target is the session itself (no specific chat matched), reload
+    // every chat so a session-level sync still pulls all history.
+    if matching.is_empty() {
+        for chat in &session_state.chats {
+            resync_chat_messages(ahp_client, mirror, &chat.resource, outbound_tx).await;
+        }
+    } else {
+        for chat_uri in matching {
+            resync_chat_messages(ahp_client, mirror, chat_uri, outbound_tx).await;
+        }
+    }
+}
+
+/// Force a resync of a bare resource URI that could not be mapped to a parent
+/// session (an orphaned chat). Emits a best-effort entry from the chat snapshot
+/// and reloads its history.
+async fn force_resync_orphan(
+    ahp_client: &Arc<Client>,
+    mirror: &Arc<Mutex<MultiHostStateMirror>>,
+    uri: &str,
+    outbound_tx: &mpsc::UnboundedSender<Value>,
+) {
+    match ahp_client.subscribe(uri.to_string()).await {
+        Ok((res, _handle)) => {
+            if let Some(ref snap) = res.snapshot {
+                let host_id = HostId::new("local");
+                mirror.lock().await.apply_snapshot(&host_id, snap);
+                match &snap.state {
+                    SnapshotState::Chat(chat_state) => {
+                        let _ = outbound_tx.send(json!({
+                            "topic": "bot:proxy",
+                            "event": "sync_sessions",
+                            "payload": { "sessions": [chat_state_to_sync_entry(uri, chat_state)] },
+                        }));
+                        let messages = build_chat_messages(chat_state);
+                        if !messages.is_empty() {
+                            info!("Resync sending {} messages for chat {}", messages.len(), uri);
+                            let _ = outbound_tx.send(json!({
+                                "topic": "bot:proxy",
+                                "event": "sync_messages",
+                                "payload": {
+                                    "chat_uri": uri,
+                                    "external_session_id": uri,
+                                    "messages": messages,
+                                }
+                            }));
+                        }
+                    }
+                    SnapshotState::Session(_) => {
+                        force_resync_session(ahp_client, mirror, uri, None, outbound_tx).await;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Err(e) => warn!("Force resync of {} failed: {}", uri, e),
+    }
+}
+
+/// Subscribe to an AHP resource (session or chat), forward its snapshot upstream,
+/// and keep a live listener for updates.
+///
+/// Returns an explicitly boxed `Send` future: the function recurses (a session
+/// cascades into its chats) and is also spawned from the transient-retry path,
+/// and the compiler can't prove `Send` for a self-recursive `async fn` on its
+/// own.
+fn ensure_resource_subscribed<'a>(
+    ahp_client: &'a Arc<Client>,
+    mirror: &'a Arc<Mutex<MultiHostStateMirror>>,
+    subscribed_uris: &'a Arc<Mutex<HashSet<String>>>,
+    uri: &'a str,
+    outbound_tx: &'a mpsc::UnboundedSender<Value>,
+    allow_retry_spawn: bool,
+) -> BoxFuture<'a, ()> {
+    Box::pin(async move {
     {
         let mut set = subscribed_uris.lock().await;
         if !set.insert(uri.to_string()) {
@@ -372,66 +968,48 @@ async fn ensure_resource_subscribed(
                 let host_id = HostId::new("local");
                 mirror.lock().await.apply_snapshot(&host_id, snap);
                 if let SnapshotState::Session(ref session_state) = snap.state {
+                    // Archived sessions are historical; don't import their chats.
+                    // Still forward a lightweight entry so aims-server marks any
+                    // existing conversation archived (dropping it from the active
+                    // list) rather than leaving a stale active row.
+                    if session_status_is_archived(session_state.status) {
+                        let _ = outbound_tx.send(json!({
+                            "topic": "bot:proxy",
+                            "event": "sync_sessions",
+                            "payload": {
+                                "sessions": [session_state_to_sync_entry(uri, session_state)],
+                            }
+                        }));
+                        return;
+                    }
+                    // Forward this session's details plus an enriched entry for each
+                    // of its chats in one batch. aims surfaces each chat as its own
+                    // conversation, but project/branch/working-directory details only
+                    // live on the session, so without the per-chat entries those
+                    // conversations show up as bare "Session <id>" rows. Subscribing
+                    // to a chat alone only streams its messages.
+                    let mut entries = vec![session_state_to_sync_entry(uri, session_state)];
                     for chat in &session_state.chats {
-                        Box::pin(ensure_resource_subscribed(
+                        entries.push(chat_summary_to_sync_entry(chat, session_state));
+                    }
+                    let _ = outbound_tx.send(json!({
+                        "topic": "bot:proxy",
+                        "event": "sync_sessions",
+                        "payload": { "sessions": entries },
+                    }));
+                    for chat in &session_state.chats {
+                        ensure_resource_subscribed(
                             ahp_client,
                             mirror,
                             subscribed_uris,
                             &chat.resource,
                             outbound_tx,
-                        ))
+                            true,
+                        )
                         .await;
                     }
                 } else if let SnapshotState::Chat(ref chat_state) = snap.state {
-                    let mut messages = Vec::new();
-                    for turn in &chat_state.turns {
-                        let user_prompt = turn.message.text.trim();
-                        if !user_prompt.is_empty() {
-                            messages.push(json!({
-                                "role": "user",
-                                "content_type": "text",
-                                "body": user_prompt,
-                                "inserted_at": turn.started_at,
-                                "metadata": {
-                                    "turn_id": turn.id,
-                                }
-                            }));
-                        }
-
-                        let mut bot_text_parts = Vec::new();
-                        let mut tool_calls = Vec::new();
-                        for part in &turn.response_parts {
-                            match part {
-                                ahp_types::state::ResponsePart::Markdown(ref m) => {
-                                    if !m.content.trim().is_empty() {
-                                        bot_text_parts.push(m.content.clone());
-                                    }
-                                }
-                                ahp_types::state::ResponsePart::ToolCall(ref tc) => {
-                                    if let Ok(tc_val) = serde_json::to_value(&tc.tool_call) {
-                                        tool_calls.push(tc_val);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        let bot_body = bot_text_parts.join("\n\n");
-                        if !bot_body.trim().is_empty() || !tool_calls.is_empty() {
-                            let mut meta = json!({ "turn_id": turn.id });
-                            if !tool_calls.is_empty() {
-                                meta["tool_calls"] = json!(tool_calls);
-                            }
-                            messages.push(json!({
-                                "role": "bot",
-                                "content_type": "text",
-                                "body": if bot_body.trim().is_empty() { " " } else { &bot_body },
-                                "inserted_at": turn.started_at,
-                                "metadata": meta,
-                            }));
-                        }
-                    }
-
+                    let messages = build_chat_messages(chat_state);
                     if !messages.is_empty() {
                         info!(
                             "Sending {} historical messages for chat {}",
@@ -460,8 +1038,51 @@ async fn ensure_resource_subscribed(
         }
         Err(e) => {
             warn!("Failed to subscribe to AHP resource {}: {}", uri, e);
+            // Leaving a failed URI in the set would wedge it permanently: every
+            // later retry (startup races, the UI sync button, SessionAdded)
+            // short-circuits on the "already subscribed" guard. Remove it so it
+            // can be retried.
+            subscribed_uris.lock().await.remove(uri);
+
+            // "Provider … is not ready … it may still be starting" is a transient
+            // startup race for running sessions. Schedule a few delayed retries so
+            // their details self-heal without the user manually syncing.
+            let msg = e.to_string();
+            if allow_retry_spawn && (msg.contains("not ready") || msg.contains("still be starting"))
+            {
+                let ahp_client = Arc::clone(ahp_client);
+                let mirror = Arc::clone(mirror);
+                let subscribed_uris = Arc::clone(subscribed_uris);
+                let outbound_tx = outbound_tx.clone();
+                let uri = uri.to_string();
+                tokio::spawn(async move {
+                    for delay_secs in [2u64, 5, 10, 20] {
+                        tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                        if subscribed_uris.lock().await.contains(&uri) {
+                            return; // another path already subscribed it
+                        }
+                        // Pass allow_retry_spawn=false: this loop IS the retry, so
+                        // nested spawns would compound into a storm of tasks.
+                        ensure_resource_subscribed(
+                            &ahp_client,
+                            &mirror,
+                            &subscribed_uris,
+                            &uri,
+                            &outbound_tx,
+                            false,
+                        )
+                        .await;
+                        if subscribed_uris.lock().await.contains(&uri) {
+                            info!("Retry subscribed to previously not-ready session {}", uri);
+                            return; // success: ensure_resource_subscribed kept it in the set
+                        }
+                    }
+                    warn!("Gave up subscribing to not-ready session {} after retries", uri);
+                });
+            }
         }
     }
+    })
 }
 
 async fn handle_upstream_command(
@@ -498,6 +1119,7 @@ async fn handle_upstream_command(
                         subscribed_uris,
                         &session_uri,
                         outbound_tx,
+                        true,
                     )
                     .await;
                 }
@@ -517,6 +1139,7 @@ async fn handle_upstream_command(
                         subscribed_uris,
                         &chat_uri,
                         outbound_tx,
+                        true,
                     )
                     .await;
                 }
@@ -545,6 +1168,7 @@ async fn handle_upstream_command(
                         subscribed_uris,
                         &dispatch_params.channel,
                         outbound_tx,
+                        true,
                     )
                     .await;
 
@@ -590,50 +1214,41 @@ async fn handle_upstream_command(
                 "AHP proxy handling request_session_sync for external_session_id={}",
                 ext_id
             );
-
-            // Re-list sessions to discover any newly created or existing sessions
-            let list_params = ListSessionsParams {
-                channel: ahp_types::ROOT_RESOURCE_URI.to_string(),
-                meta: None,
-                limit: Some(100),
-                cursor: None,
-            };
-            if let Ok(res) = ahp_client
-                .request::<_, ListSessionsResult>("listSessions", list_params)
-                .await
-            {
-                for item in res.items {
-                    // Force re-fetch snapshot turns by removing from set first
-                    subscribed_uris.lock().await.remove(&item.resource);
-                    ensure_resource_subscribed(
-                        ahp_client,
-                        mirror,
-                        subscribed_uris,
-                        &item.resource,
-                        outbound_tx,
-                    )
-                    .await;
-                }
+            if ext_id.is_empty() {
+                return;
             }
 
-            // If ext_id contains a chat URI, also directly re-subscribe to fetch turns
-            if ext_id.contains("ahp-chat:") {
-                let chat_uri = if ext_id.starts_with("ahp-chat:") {
-                    ext_id.to_string()
-                } else if let Some(idx) = ext_id.find("ahp-chat:") {
-                    ext_id[idx..].split('&').next().unwrap_or("").to_string()
-                } else {
-                    ext_id.to_string()
-                };
-                subscribed_uris.lock().await.remove(&chat_uri);
-                ensure_resource_subscribed(
+            // Resolve the clicked conversation to its parent AHP session so we can
+            // re-emit full details (project/branch) and reload chat history. The
+            // stored ext_id may be a session URI, a chat URI, or a bare UUID of
+            // either. A conversation's history lives in chat resources, so the old
+            // "re-list and re-subscribe" approach did nothing useful: the live
+            // subscription dedup short-circuits, and the session's child chats were
+            // never force-refreshed. force_resync_* bypasses that dedup.
+            let needle = extract_session_id_from_uri(ext_id).unwrap_or_else(|| ext_id.to_string());
+            let sessions = list_all_sessions(ahp_client).await;
+            if let Some(parent) = sessions.iter().find(|s| session_summary_matches(s, &needle)) {
+                force_resync_session(
                     ahp_client,
                     mirror,
-                    subscribed_uris,
-                    &chat_uri,
+                    &parent.resource,
+                    Some(needle.as_str()),
                     outbound_tx,
                 )
                 .await;
+            } else {
+                // Orphan: not present in listSessions (e.g. a detached running
+                // thread). Resync the specific resource directly.
+                let direct = if ext_id.contains("ahp-chat:") {
+                    let start = ext_id.find("ahp-chat:").unwrap_or(0);
+                    ext_id[start..].split('&').next().unwrap_or(ext_id).to_string()
+                } else if ext_id.contains("ahp-session:") || ext_id.contains("copilotcli:") {
+                    ext_id.to_string()
+                } else {
+                    // Bare UUID: these have been observed to be chat IDs.
+                    format!("ahp-chat:/{needle}")
+                };
+                force_resync_orphan(ahp_client, mirror, &direct, outbound_tx).await;
             }
         }
         _ => {}
@@ -715,5 +1330,148 @@ mod tests {
         assert_eq!(caps["worktree_supported"], true);
         assert_eq!(caps["agent_roles"][0]["id"], "copilot");
         assert_eq!(caps["models"][0]["name"], "claude-sonnet-4");
+    }
+
+    #[test]
+    fn test_session_state_to_sync_entry_carries_name_project_branch() {
+        let uri = "ahp-session:/9c051ba7-dcd6-4e8e-bf96-6fb3f6ea0876";
+        let state: SessionState = serde_json::from_value(json!({
+            "provider": "copilotcli",
+            "title": "overflow-x: auto issue",
+            "status": 1,
+            "lifecycle": "ready",
+            "activeClients": [],
+            "chats": [],
+            "project": { "uri": "file:///Users/andy/repos/app", "displayName": "app" },
+            "workingDirectories": ["file:///Users/andy/repos/app.worktrees/fix"],
+            "config": {
+                "schema": { "type": "object", "properties": {} },
+                "values": { "model": "claude-sonnet-4" }
+            },
+            "_meta": {
+                "git": {
+                    "branchName": "agents/fix-overflow",
+                    "baseBranchName": "dev-9.2",
+                    "defaultBranchName": "dev-9.2",
+                    "githubOwner": "HPE-EMU",
+                    "githubRepo": "morpheus-ui"
+                }
+            }
+        }))
+        .expect("valid session state");
+
+        let entry = session_state_to_sync_entry(uri, &state);
+
+        assert_eq!(entry["session_id"], "9c051ba7-dcd6-4e8e-bf96-6fb3f6ea0876");
+        assert_eq!(entry["title"], "overflow-x: auto issue");
+        assert_eq!(entry["status"], "idle");
+        assert_eq!(entry["project"]["name"], "app");
+        assert_eq!(entry["project"]["branch"], "agents/fix-overflow");
+        assert_eq!(entry["project"]["repository"], "HPE-EMU/morpheus-ui");
+        assert_eq!(entry["base_branch"], "dev-9.2");
+        assert_eq!(entry["metadata"]["branch"], "agents/fix-overflow");
+        assert_eq!(entry["metadata"]["base_branch"], "dev-9.2");
+        assert_eq!(entry["working_directory"], "/Users/andy/repos/app.worktrees/fix");
+        assert_eq!(entry["metadata"]["model"], "claude-sonnet-4");
+    }
+
+    #[test]
+    fn test_ahp_session_status_to_ui_prioritizes_input_needed_over_in_progress() {
+        assert_eq!(ahp_session_status_to_ui(1), "idle");
+        assert_eq!(ahp_session_status_to_ui(8), "running");
+        assert_eq!(ahp_session_status_to_ui(24), "waiting_for_input");
+        assert_eq!(ahp_session_status_to_ui(64), "archived");
+    }
+
+    #[test]
+    fn test_session_status_is_archived_matches_real_statuses() {
+        // Observed live statuses: archived entries carry bit 64 (65 = 64|1,
+        // 97 = 64|32|1); active entries (1 idle, 33 read+idle, 40 read+running)
+        // do not.
+        assert!(session_status_is_archived(65));
+        assert!(session_status_is_archived(97));
+        assert!(session_status_is_archived(64));
+        assert!(!session_status_is_archived(1));
+        assert!(!session_status_is_archived(33));
+        assert!(!session_status_is_archived(40));
+    }
+
+    #[test]
+    fn test_local_path_decodes_percent_encoding() {
+        assert_eq!(
+            local_path("file:///Users/andy/repos/My%20Project"),
+            "/Users/andy/repos/My Project"
+        );
+        // Plain paths are returned unchanged (no spurious decoding).
+        assert_eq!(local_path("/Users/andy/plain"), "/Users/andy/plain");
+    }
+
+    #[test]
+    fn test_chat_summary_to_sync_entry_inherits_parent_project_keeps_chat_identity() {
+        // A session holds many chats; aims shows each chat as its own
+        // conversation. Project/branch live on the session, so a chat entry must
+        // borrow them while keyed by the chat's own URI, title, and status.
+        let state: SessionState = serde_json::from_value(json!({
+            "provider": "copilotcli",
+            "title": "Plan Groups React migration",
+            "status": 40,
+            "lifecycle": "ready",
+            "activeClients": [],
+            "project": { "uri": "file:///Users/andy/repos/morpheus-ui", "displayName": "morpheus-ui" },
+            "workingDirectories": ["file:///Users/andy/repos/morpheus-ui"],
+            "_meta": { "git": { "branchName": "main", "githubOwner": "HPE", "githubRepo": "morpheus-ui" } },
+            "chats": [{
+                "resource": "ahp-chat:/fe31e002-5f0d-490d-90e3-debcb1f9531e",
+                "title": "Implement Groups list backend",
+                "status": 8,
+                "modifiedAt": "2026-11-05T04:00:00.000Z"
+            }]
+        }))
+        .expect("valid session state");
+
+        let entry = chat_summary_to_sync_entry(&state.chats[0], &state);
+
+        // Keyed by the chat, not the session.
+        assert_eq!(entry["session_id"], "fe31e002-5f0d-490d-90e3-debcb1f9531e");
+        assert_eq!(
+            entry["session_uri"],
+            "ahp-chat:/fe31e002-5f0d-490d-90e3-debcb1f9531e"
+        );
+        assert_eq!(entry["title"], "Implement Groups list backend");
+        // Chat's own status (running), not the session's.
+        assert_eq!(entry["status"], "running");
+        // Details inherited from the parent session.
+        assert_eq!(entry["project"]["name"], "morpheus-ui");
+        assert_eq!(entry["project"]["branch"], "main");
+        assert_eq!(entry["project"]["repository"], "HPE/morpheus-ui");
+    }
+
+    #[test]
+    fn test_session_summary_matches_by_session_chat_and_bare_uuid() {
+        let summary: SessionSummary = serde_json::from_value(json!({
+            "provider": "copilotcli",
+            "title": "Plan Groups React migration",
+            "status": 40,
+            "resource": "ahp-session:/7bf34ef0-baa0-47a5-82be-c24113ff263d",
+            "createdAt": "2026-11-05T03:00:00.000Z",
+            "modifiedAt": "2026-11-05T04:00:00.000Z",
+            "defaultChat": "ahp-chat:/fe31e002-5f0d-490d-90e3-debcb1f9531e",
+            "chats": [{
+                "resource": "ahp-chat:/fe31e002-5f0d-490d-90e3-debcb1f9531e",
+                "title": "Plan Groups React migration"
+            }]
+        }))
+        .expect("valid session summary");
+
+        // Matches the session's own id, a child chat id, and bare UUIDs of each.
+        assert!(session_summary_matches(&summary, "7bf34ef0-baa0-47a5-82be-c24113ff263d"));
+        assert!(session_summary_matches(&summary, "fe31e002-5f0d-490d-90e3-debcb1f9531e"));
+        assert!(session_summary_matches(
+            &summary,
+            "ahp-session:/7bf34ef0-baa0-47a5-82be-c24113ff263d"
+        ));
+        // Unrelated id does not match; empty needle never matches.
+        assert!(!session_summary_matches(&summary, "deadbeef-0000-0000-0000-000000000000"));
+        assert!(!session_summary_matches(&summary, ""));
     }
 }

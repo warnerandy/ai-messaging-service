@@ -29,3 +29,4 @@ thiserror.workspace = true
 futures-util.workspace = true
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "handshake", "rustls-tls-native-roots"] }
 url = "2.5"
+percent-encoding = "2"
