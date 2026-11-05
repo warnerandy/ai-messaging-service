@@ -929,7 +929,13 @@ pub async fn get_conversation_by_external_session(
                (SELECT MAX(m.inserted_at) FROM messages m WHERE m.conversation_id = c.id AND m.role = 'user') AS last_user_input_time
         FROM conversations c
         INNER JOIN bot_tokens b ON b.id = c.bot_token_id
-        WHERE c.bot_token_id = $1 AND c.external_session_id = $2
+        WHERE c.bot_token_id = $1 AND $2 <> '' AND (
+            c.external_session_id = $2
+            OR c.external_session_id LIKE '%' || $2 || '%'
+            OR $2 LIKE '%' || c.external_session_id || '%'
+            OR c.metadata->>'default_chat_uri' = $2
+            OR c.metadata->>'session_uri' = $2
+        )
         ORDER BY c.id DESC
         LIMIT 1
         "#,

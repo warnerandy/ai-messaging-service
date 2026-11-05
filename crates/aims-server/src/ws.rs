@@ -16,6 +16,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, RwLock};
+use tracing::info;
 use uuid::Uuid;
 
 use crate::{
@@ -925,6 +926,43 @@ async fn handle_incoming_ahp_envelope(
         return;
     };
 
+    // If a turn started on the AHP side (e.g. user typed directly in VS Code), record the user message
+    if let ahp_types::actions::StateAction::ChatTurnStarted(ref turn_action) = envelope.action {
+        let user_prompt = turn_action.message.text.trim();
+        if !user_prompt.is_empty() {
+            let already_exists = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id = $1 AND role = 'user' AND body = $2)",
+            )
+            .bind(conv.id)
+            .bind(user_prompt)
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(false);
+
+            if !already_exists {
+                if let Ok(msg) = db::create_message(
+                    &state.db,
+                    conv.id,
+                    "user",
+                    "text",
+                    Some(user_prompt),
+                    json!({ "turn_id": turn_action.turn_id, "synced_from_ahp": true }),
+                    None,
+                    None,
+                    false,
+                )
+                .await
+                {
+                    state.hub.broadcast(
+                        format!("conversation:{}", conv.id),
+                        "new_message",
+                        json!({ "message": msg }),
+                    );
+                }
+            }
+        }
+    }
+
     // Accumulate streaming markdown deltas and finalize on turn_completed
     if let Some(ref delta) = translated.text_delta {
         let turn_id = translated
@@ -1020,6 +1058,76 @@ async fn handle_bot_channel_event(
         "ahp_envelope" => {
             if let Ok(env) = serde_json::from_value::<ActionEnvelope>(frame.payload.clone()) {
                 handle_incoming_ahp_envelope(state, bot, env).await;
+            }
+        }
+        "sync_messages" | "session_messages" => {
+            if let Ok(Some(conv)) =
+                db::resolve_bot_conversation(&state.db, bot, &frame.payload).await
+            {
+                if let Some(msgs_arr) = frame.payload.get("messages").and_then(|v| v.as_array()) {
+                    let mut inserted = Vec::new();
+                    for m in msgs_arr {
+                        let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("bot");
+                        let body = m.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                        if body.trim().is_empty() {
+                            continue;
+                        }
+                        let content_type = m
+                            .get("content_type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("text");
+                        let metadata = m
+                            .get("metadata")
+                            .cloned()
+                            .unwrap_or_else(|| json!({}));
+
+                        let exists = sqlx::query_scalar::<_, bool>(
+                            "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id = $1 AND role = $2 AND body = $3)",
+                        )
+                        .bind(conv.id)
+                        .bind(role)
+                        .bind(body)
+                        .fetch_one(&state.db)
+                        .await
+                        .unwrap_or(false);
+
+                        if !exists {
+                            if let Ok(msg) = db::create_message(
+                                &state.db,
+                                conv.id,
+                                role,
+                                content_type,
+                                Some(body),
+                                metadata,
+                                None,
+                                None,
+                                false,
+                            )
+                            .await
+                            {
+                                inserted.push(msg);
+                            }
+                        }
+                    }
+
+                    if !inserted.is_empty() {
+                        info!(
+                            "Synced {} messages for conversation {}",
+                            inserted.len(),
+                            conv.id
+                        );
+                        state.hub.broadcast(
+                            format!("conversation:{}", conv.id),
+                            "messages_synced",
+                            json!({
+                                "conversation_id": conv.id,
+                                "count": inserted.len(),
+                                "messages": inserted,
+                            }),
+                        );
+                    }
+                    reply_response = json!({ "synced_count": inserted.len() });
+                }
             }
         }
         "bot_message" | "new_message" => {

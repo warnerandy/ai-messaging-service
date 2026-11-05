@@ -1122,6 +1122,24 @@ export default function ChatView({
 					})
 				})
 
+				ch.on("messages_synced", (payload) => {
+					if (!payload?.messages || !Array.isArray(payload.messages)) return
+					setMessages((prev) => {
+						const existingIds = new Set(prev.map((m) => m.id))
+						const toAdd = payload.messages
+							.map((m) => normalizeMessage(m))
+							.filter((m) => !existingIds.has(m.id))
+						if (toAdd.length === 0) return prev
+						toAdd.forEach((m) => renderedIdsRef.current.add(m.id))
+						const next = [...prev, ...toAdd].sort((a, b) =>
+							(a.inserted_at || "").localeCompare(b.inserted_at || ""),
+						)
+						const state = deriveConversationState(next)
+						setBotIsTyping(state.botIsTyping)
+						return state.messages
+					})
+				})
+
 				ch.on("message_acknowledged", (payload) => {
 					if (!payload?.message_id) return
 

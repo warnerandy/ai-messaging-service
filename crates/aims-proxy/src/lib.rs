@@ -10,7 +10,10 @@ use std::sync::Arc;
 use ahp::hosts::HostId;
 use ahp::{Client, ClientConfig, MultiHostStateMirror, SubscriptionEvent};
 use ahp_types::actions::StateAction;
-use ahp_types::commands::{CreateChatParams, CreateSessionParams, DispatchActionParams};
+use ahp_types::commands::{
+    CreateChatParams, CreateSessionParams, DispatchActionParams, ListSessionsParams,
+    ListSessionsResult,
+};
 use ahp_types::state::{RootState, SnapshotState};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -134,6 +137,33 @@ pub async fn run_proxy(config: ProxyConfig) -> Result<(), Box<dyn std::error::Er
         ahp_types::ROOT_RESOURCE_URI.to_string(),
         outbound_tx.clone(),
     );
+
+    // Discover and subscribe to all existing active AHP sessions and their chats
+    let list_params = ListSessionsParams {
+        channel: ahp_types::ROOT_RESOURCE_URI.to_string(),
+        meta: None,
+        limit: Some(100),
+        cursor: None,
+    };
+    if let Ok(res) = ahp_client
+        .request::<_, ListSessionsResult>("listSessions", list_params)
+        .await
+    {
+        info!(
+            "Discovered {} existing AHP sessions on startup",
+            res.items.len()
+        );
+        for item in res.items {
+            ensure_resource_subscribed(
+                &ahp_client,
+                &mirror,
+                &subscribed_uris,
+                &item.resource,
+                &outbound_tx,
+            )
+            .await;
+        }
+    }
 
     loop {
         tokio::select! {
@@ -259,6 +289,72 @@ async fn ensure_resource_subscribed(
                             outbound_tx,
                         ))
                         .await;
+                    }
+                } else if let SnapshotState::Chat(ref chat_state) = snap.state {
+                    let mut messages = Vec::new();
+                    for turn in &chat_state.turns {
+                        let user_prompt = turn.message.text.trim();
+                        if !user_prompt.is_empty() {
+                            messages.push(json!({
+                                "role": "user",
+                                "content_type": "text",
+                                "body": user_prompt,
+                                "inserted_at": turn.started_at,
+                                "metadata": {
+                                    "turn_id": turn.id,
+                                }
+                            }));
+                        }
+
+                        let mut bot_text_parts = Vec::new();
+                        let mut tool_calls = Vec::new();
+                        for part in &turn.response_parts {
+                            match part {
+                                ahp_types::state::ResponsePart::Markdown(ref m) => {
+                                    if !m.content.trim().is_empty() {
+                                        bot_text_parts.push(m.content.clone());
+                                    }
+                                }
+                                ahp_types::state::ResponsePart::ToolCall(ref tc) => {
+                                    if let Ok(tc_val) = serde_json::to_value(&tc.tool_call) {
+                                        tool_calls.push(tc_val);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        let bot_body = bot_text_parts.join("\n\n");
+                        if !bot_body.trim().is_empty() || !tool_calls.is_empty() {
+                            let mut meta = json!({ "turn_id": turn.id });
+                            if !tool_calls.is_empty() {
+                                meta["tool_calls"] = json!(tool_calls);
+                            }
+                            messages.push(json!({
+                                "role": "bot",
+                                "content_type": "text",
+                                "body": if bot_body.trim().is_empty() { " " } else { &bot_body },
+                                "inserted_at": turn.started_at,
+                                "metadata": meta,
+                            }));
+                        }
+                    }
+
+                    if !messages.is_empty() {
+                        info!(
+                            "Sending {} historical messages for chat {}",
+                            messages.len(),
+                            uri
+                        );
+                        let _ = outbound_tx.send(json!({
+                            "topic": "bot:proxy",
+                            "event": "sync_messages",
+                            "payload": {
+                                "chat_uri": uri,
+                                "external_session_id": uri,
+                                "messages": messages,
+                            }
+                        }));
                     }
                 }
             }
@@ -390,6 +486,62 @@ async fn handle_upstream_command(
                 let _ = ahp_client
                     .dispatch(dispatch_params.channel, dispatch_params.action)
                     .await;
+            }
+        }
+        "request_session_sync" => {
+            let ext_id = payload
+                .get("external_session_id")
+                .or_else(|| payload.get("session_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            info!(
+                "AHP proxy handling request_session_sync for external_session_id={}",
+                ext_id
+            );
+
+            // Re-list sessions to discover any newly created or existing sessions
+            let list_params = ListSessionsParams {
+                channel: ahp_types::ROOT_RESOURCE_URI.to_string(),
+                meta: None,
+                limit: Some(100),
+                cursor: None,
+            };
+            if let Ok(res) = ahp_client
+                .request::<_, ListSessionsResult>("listSessions", list_params)
+                .await
+            {
+                for item in res.items {
+                    // Force re-fetch snapshot turns by removing from set first
+                    subscribed_uris.lock().await.remove(&item.resource);
+                    ensure_resource_subscribed(
+                        ahp_client,
+                        mirror,
+                        subscribed_uris,
+                        &item.resource,
+                        outbound_tx,
+                    )
+                    .await;
+                }
+            }
+
+            // If ext_id contains a chat URI, also directly re-subscribe to fetch turns
+            if ext_id.contains("ahp-chat:") {
+                let chat_uri = if ext_id.starts_with("ahp-chat:") {
+                    ext_id.to_string()
+                } else if let Some(idx) = ext_id.find("ahp-chat:") {
+                    ext_id[idx..].split('&').next().unwrap_or("").to_string()
+                } else {
+                    ext_id.to_string()
+                };
+                subscribed_uris.lock().await.remove(&chat_uri);
+                ensure_resource_subscribed(
+                    ahp_client,
+                    mirror,
+                    subscribed_uris,
+                    &chat_uri,
+                    outbound_tx,
+                )
+                .await;
             }
         }
         _ => {}
