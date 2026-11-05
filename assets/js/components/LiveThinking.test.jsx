@@ -9,7 +9,7 @@ describe("LiveThinking", () => {
 		expect(container.firstChild).toBeNull()
 	})
 
-	it("renders thinking text and formatted status for waiting_for_input", () => {
+	it("renders agent activity and formatted status for waiting_for_input", () => {
 		render(
 			<LiveThinking
 				status="waiting_for_input"
@@ -18,9 +18,9 @@ describe("LiveThinking", () => {
 		)
 
 		expect(screen.getByText("Waiting for Input")).toBeInTheDocument()
-		expect(screen.getByText("Reasoning & Execution Log:")).toBeInTheDocument()
+		expect(screen.getByText("Agent activity")).toBeInTheDocument()
 		expect(screen.getByText("Evaluating playwright test config...")).toBeInTheDocument()
-		expect(screen.getByRole("button", { name: /Collapse thinking/i })).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: /Collapse activity/i })).toBeInTheDocument()
 	})
 
 	it("toggles collapse and expand when clicking toggle button", () => {
@@ -28,14 +28,27 @@ describe("LiveThinking", () => {
 
 		expect(screen.getByText("Deep thoughts in progress...")).toBeInTheDocument()
 
-		const toggleBtn = screen.getByRole("button", { name: /Collapse thinking/i })
+		const toggleBtn = screen.getByRole("button", { name: /Collapse activity/i })
 		fireEvent.click(toggleBtn)
 
 		expect(screen.queryByText("Deep thoughts in progress...")).not.toBeInTheDocument()
-		expect(screen.getByRole("button", { name: /Expand thinking/i })).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: /Expand activity/i })).toBeInTheDocument()
 
-		fireEvent.click(screen.getByRole("button", { name: /Expand thinking/i }))
+		fireEvent.click(screen.getByRole("button", { name: /Expand activity/i }))
 		expect(screen.getByText("Deep thoughts in progress...")).toBeInTheDocument()
+	})
+
+	it("renders each streamed update as a connected activity timeline entry", () => {
+		render(
+			<LiveThinking
+				status="running"
+				thinkingText={"Inspecting the chat renderer\nRunning focused tests\nReviewing the result"}
+			/>,
+		)
+
+		expect(screen.getAllByTestId("live-thinking-entry")).toHaveLength(3)
+		expect(screen.getByRole("list", { name: "Agent activity updates" })).toBeInTheDocument()
+		expect(screen.getByText("Reviewing the result")).toBeInTheDocument()
 	})
 
 	it("renders steer and stop buttons when busy and callbacks provided", () => {

@@ -46,6 +46,14 @@ export default function LiveThinking({
 
 	const currentStep = metadata?.step || metadata?.action || metadata?.current_step || ""
 	const currentTool = metadata?.tool || metadata?.tool_name || ""
+	const activityEntries = useMemo(
+		() =>
+			String(thinkingText || "")
+				.split(/\n+/)
+				.map((entry) => entry.trim())
+				.filter(Boolean),
+		[thinkingText],
+	)
 
 	useLayoutEffect(() => {
 		if (isOpen && bodyRef.current && !userScrolledUpRef.current) {
@@ -238,9 +246,9 @@ export default function LiveThinking({
 						type="button"
 						className="btn-toggle-thinking"
 						onClick={() => setIsOpen(!isOpen)}
-						aria-label={isOpen ? "Collapse thinking" : "Expand thinking"}
+						aria-label={isOpen ? "Collapse activity" : "Expand activity"}
 					>
-						{isOpen ? "Hide Thoughts ▲" : "Show Thoughts ▼"}
+						{isOpen ? "Hide activity ▲" : "Show activity ▼"}
 					</button>
 				</div>
 			</div>
@@ -272,7 +280,7 @@ export default function LiveThinking({
 			{/* @assistant-ui/react Live Tool Execution Steps */}
 			{isOpen && liveToolParts.length > 0 && (
 				<div className="aui-live-tools-stream" data-testid="aui-live-tools-stream">
-					<span className="tool-chips-label">Process Steps:</span>
+					<span className="tool-chips-label">Actions</span>
 					<AssistantRuntimeProvider runtime={runtime}>
 						<ThreadPrimitive.Root className="aui-live-thread">
 							<ThreadPrimitive.Messages
@@ -289,9 +297,38 @@ export default function LiveThinking({
 			{/* Collapsible Thinking Stream Body */}
 			{isOpen && (thinkingText || isBusy) && (
 				<div className="live-thinking-body" ref={bodyRef} onScroll={handleScroll}>
-					<div className="live-thinking-label">Reasoning & Execution Log:</div>
-					{thinkingText ? (
-						<pre className="live-thinking-content">{thinkingText}</pre>
+					<div className="live-thinking-label">Agent activity</div>
+					{activityEntries.length > 0 ? (
+						<div className="live-thinking-timeline" role="list" aria-label="Agent activity updates">
+							{activityEntries.map((entry, index) => {
+								const isLatest = index === activityEntries.length - 1
+								return (
+									<div
+										className="live-thinking-entry"
+										key={`${index}-${entry}`}
+										role="listitem"
+										data-testid="live-thinking-entry"
+									>
+										<span
+											className={[
+												"live-thinking-entry__marker",
+												isLatest && isBusy ? "live-thinking-entry__marker--active" : "",
+											]
+												.filter(Boolean)
+												.join(" ")}
+											aria-hidden="true"
+										>
+											{isLatest && isBusy ? (
+												<span className="live-thinking-pulse" />
+											) : (
+												<VSCodeWorkingStateIcon status="completed" size={12} />
+											)}
+										</span>
+										<p className="live-thinking-entry__text">{entry}</p>
+									</div>
+								)
+							})}
+						</div>
 					) : (
 						<div className="live-thinking-stream-active">
 							<span className="live-thinking-pulse" />

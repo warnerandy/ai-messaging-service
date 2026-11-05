@@ -4666,7 +4666,7 @@ body {
 .live-thinking-body {
   padding: 0.85rem 1rem;
   background: rgba(0, 0, 0, 0.25);
-  min-height: 230px;
+  min-height: 0;
   max-height: 420px;
   overflow-y: auto;
   scroll-behavior: auto;
@@ -4708,6 +4708,58 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
+}
+
+.live-thinking-timeline {
+  display: flex;
+  flex-direction: column;
+}
+
+.live-thinking-entry {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  gap: 0.55rem;
+  min-height: 1.7rem;
+}
+
+.live-thinking-entry:not(:last-child)::before {
+  position: absolute;
+  top: 1rem;
+  bottom: -0.1rem;
+  left: 0.36rem;
+  width: 1px;
+  background: rgba(148, 163, 184, 0.28);
+  content: "";
+}
+
+.live-thinking-entry__marker {
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 0.2rem;
+  color: #64748b;
+}
+
+.live-thinking-entry__marker--active {
+  color: #38bdf8;
+}
+
+.live-thinking-entry__marker .live-thinking-pulse {
+  width: 7px;
+  height: 7px;
+  margin-top: 0.16rem;
+}
+
+.live-thinking-entry__text {
+  min-width: 0;
+  margin: 0;
+  padding: 0.08rem 0 0.55rem;
+  color: #d1d5db;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .live-thinking-stream-active {
