@@ -16,8 +16,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let args: Vec<String> = env::args().collect();
-    let mut local_ahp_url = env::var("AHP_LOCAL_URL").unwrap_or_else(|_| "ws://127.0.0.1:12345".to_string());
-    let mut upstream_ws_url = env::var("AIMS_SERVER_WS_URL").unwrap_or_else(|_| "ws://127.0.0.1:4000/bot/websocket".to_string());
+    let mut local_ahp_url = env::var("AHP_LOCAL_URL").unwrap_or_else(|_| "ws://127.0.0.1:4034/ahp/v1".to_string());
+    let mut upstream_ws_url = env::var("AIMS_SERVER_WS_URL").unwrap_or_else(|_| "wss://aims.thebitvoid.dev/bot/websocket".to_string());
     let mut bot_token = env::var("AIMS_BOT_TOKEN").unwrap_or_default();
     let mut default_working_directory = env::var("AHP_WORKING_DIRECTORY").ok();
 
