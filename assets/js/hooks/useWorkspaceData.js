@@ -23,94 +23,108 @@ const USER_EMAIL_STORAGE_KEY = "messaging.user.email"
 const SELECTED_BOT_STORAGE_KEY = "messaging.selected.bot_id"
 const SELECTED_CONV_STORAGE_KEY = "messaging.selected.conversation_id"
 
+function isSubagentSession(item) {
+	return (
+		item?.metadata?.is_subagent === true ||
+		[item?.external_session_id, item?.metadata?.session_id, item?.metadata?.session_uri].some(
+			(id) => typeof id === "string" && id.startsWith("ahp-chat://subagent/"),
+		)
+	)
+}
+
 function mergeSessionsIntoList(prevList, incomingSessions) {
 	if (!Array.isArray(incomingSessions)) return prevList
-	const byKey = new Map()
+	const sessionKeys = (item) => {
+		if (!item) return []
+		const keys = []
+		if (item.id != null) keys.push(`id:${String(item.id)}`)
 
-	const findExisting = (item) => {
-		if (!item) return null
-		if (item.id != null && byKey.has(`id:${item.id}`)) return byKey.get(`id:${item.id}`)
-		if (
-			item.external_session_id != null &&
-			item.external_session_id !== "" &&
-			byKey.has(`ext:${item.external_session_id}`)
-		) {
-			return byKey.get(`ext:${item.external_session_id}`)
+		const addExternalKey = (value) => {
+			if (value == null || value === "") return
+			const id = String(value)
+			const ahpUri = id.match(/^ahp-(?:session|chat):\/(.+)$/)
+			const bareId = ahpUri?.[1].replace(/^\/+|\/+$/g, "")
+			keys.push(`ext:${bareId && !bareId.includes("/") ? bareId : id}`)
 		}
-		if (
-			item.metadata?.session_id != null &&
-			item.metadata.session_id !== "" &&
-			byKey.has(`ext:${item.metadata.session_id}`)
-		) {
-			return byKey.get(`ext:${item.metadata.session_id}`)
-		}
-		return null
+
+		addExternalKey(item.external_session_id)
+		addExternalKey(item.metadata?.session_id)
+		return keys
 	}
 
-	const deleteKeys = (item) => {
+	const timestamp = (item) => {
+		const value = Date.parse(item?.updated_at || item?.last_modified_time || "")
+		return Number.isNaN(value) ? 0 : value
+	}
+
+	const items = []
+	const indexByKey = new Map()
+
+	const mergeItem = (item, incoming) => {
 		if (!item) return
-		if (item.id != null) byKey.delete(`id:${item.id}`)
-		if (item.external_session_id != null && item.external_session_id !== "") {
-			byKey.delete(`ext:${item.external_session_id}`)
-		}
-		if (item.metadata?.session_id != null && item.metadata.session_id !== "") {
-			byKey.delete(`ext:${item.metadata.session_id}`)
-		}
-	}
+		const keys = sessionKeys(item)
+		const matchedIndexes = [
+			...new Set(keys.map((key) => indexByKey.get(key)).filter((index) => index != null)),
+		].sort((a, b) => a - b)
+		const excluded = item.status === "archived" || isSubagentSession(item)
+		const archivedIndexes = excluded ? matchedIndexes : []
 
-	const registerItem = (item) => {
-		if (!item) return
-		let hasKey = false
-		if (item.id != null) {
-			byKey.set(`id:${item.id}`, item)
-			hasKey = true
+		for (const index of archivedIndexes) {
+			const removed = items[index]
+			for (const key of sessionKeys(removed)) indexByKey.delete(key)
+			items[index] = null
 		}
-		if (item.external_session_id != null && item.external_session_id !== "") {
-			byKey.set(`ext:${item.external_session_id}`, item)
-			hasKey = true
+		if (excluded || matchedIndexes.length === 0) {
+			if (!excluded) {
+				const index = items.push(item) - 1
+				for (const key of keys) indexByKey.set(key, index)
+			}
+			return
 		}
-		if (item.metadata?.session_id != null && item.metadata.session_id !== "") {
-			byKey.set(`ext:${item.metadata.session_id}`, item)
-			hasKey = true
-		}
-		if (!hasKey) {
-			const anonKey = item.__key || `anon:${Math.random().toString(36).slice(2)}`
-			item.__key = anonKey
-			byKey.set(anonKey, item)
-		}
-	}
 
-	// Register existing
-	for (const c of prevList) {
-		if (!c) continue
-		registerItem(c)
-	}
+		const index = matchedIndexes[0]
+		const existing = items[index]
+		if (existing?.status === "archived") return
 
-	for (const s of incomingSessions) {
-		if (!s) continue
-		if (s.status === "archived") {
-			const existing = findExisting(s)
-			if (existing) deleteKeys(existing)
-			deleteKeys(s)
-			continue
-		}
-		const existing = findExisting(s)
-		if (existing?.status === "archived") {
-			continue
-		}
+		const itemIsNewer = incoming
+			? timestamp(item) >= timestamp(existing) || !timestamp(item)
+			: timestamp(item) > timestamp(existing)
+		const newer = itemIsNewer ? item : existing
+		const older = itemIsNewer ? existing : item
+		const mergedKeys = [
+			...new Set([
+				...matchedIndexes.flatMap((matchedIndex) => sessionKeys(items[matchedIndex])),
+				...keys,
+			]),
+		]
 		const merged = {
-			...(existing || {}),
-			...s,
-			last_user_input_time: s.last_user_input_time || existing?.last_user_input_time,
-			last_modified_time: s.last_modified_time || existing?.last_modified_time,
-			last_message_at: existing?.last_message_at || s.last_message_at,
-			metadata: { ...(existing?.metadata || {}), ...(s.metadata || {}) },
+			...older,
+			...newer,
+			last_user_input_time: newer.last_user_input_time || older.last_user_input_time,
+			last_modified_time: newer.last_modified_time || older.last_modified_time,
+			last_message_at: newer.last_message_at || older.last_message_at,
+			metadata: { ...(older.metadata || {}), ...(newer.metadata || {}) },
 		}
-		if (existing) deleteKeys(existing)
-		registerItem(merged)
+
+		for (const matchedIndex of matchedIndexes) {
+			const duplicate = items[matchedIndex]
+			if (matchedIndex !== index) {
+				for (const key of sessionKeys(duplicate)) {
+					if (indexByKey.get(key) === matchedIndex) indexByKey.delete(key)
+				}
+				items[matchedIndex] = null
+			}
+		}
+		for (const key of mergedKeys) indexByKey.set(key, index)
+		items[index] = merged
 	}
 
-	return Array.from(new Set(byKey.values()))
+	for (const item of [...prevList].sort((a, b) => timestamp(b) - timestamp(a))) {
+		mergeItem(item, false)
+	}
+	for (const item of incomingSessions) mergeItem(item, true)
+
+	return items.filter(Boolean)
 }
 
 export function useWorkspaceData() {
@@ -222,8 +236,9 @@ export function useWorkspaceData() {
 					(conversation) =>
 						conversation.bot_token_id === botId && conversation.status !== "archived",
 				)
-				setConversations(filtered)
-				return filtered
+				const sessions = mergeSessionsIntoList([], filtered)
+				setConversations(sessions)
+				return sessions
 			} catch {
 				setConversations([])
 				return []
@@ -346,16 +361,18 @@ export function useWorkspaceData() {
 	const handleConversationStatusChange = useCallback((convId, status, metadata) => {
 		if (!convId) return
 		setConversations((prev) =>
-			prev.map((c) => {
-				if (c.id === convId) {
-					return {
-						...c,
-						status: status ?? c.status,
-						metadata: metadata ? { ...(c.metadata || {}), ...metadata } : c.metadata,
+			prev
+				.map((c) => {
+					if (c.id === convId) {
+						return {
+							...c,
+							status: status ?? c.status,
+							metadata: metadata ? { ...(c.metadata || {}), ...metadata } : c.metadata,
+						}
 					}
-				}
-				return c
-			}),
+					return c
+				})
+				.filter((c) => c.status !== "archived" && !isSubagentSession(c)),
 		)
 	}, [])
 
@@ -482,18 +499,20 @@ export function useWorkspaceData() {
 			}
 
 			setConversations((prev) =>
-				prev.map((c) => {
-					if (c.id === payload.conversation_id) {
-						return {
-							...c,
-							status: payload.status ?? c.status,
-							metadata: payload.metadata
-								? { ...(c.metadata || {}), ...payload.metadata }
-								: c.metadata,
+				prev
+					.map((c) => {
+						if (c.id === payload.conversation_id) {
+							return {
+								...c,
+								status: payload.status ?? c.status,
+								metadata: payload.metadata
+									? { ...(c.metadata || {}), ...payload.metadata }
+									: c.metadata,
+							}
 						}
-					}
-					return c
-				}),
+						return c
+					})
+					.filter((c) => c.status !== "archived" && !isSubagentSession(c)),
 			)
 		})
 
@@ -504,23 +523,13 @@ export function useWorkspaceData() {
 
 		channel.on("bot_sessions_updated", (payload) => {
 			if (!payload?.sessions || cancelled) return
-			setConversations((prev) => mergeSessionsIntoList(prev, payload.sessions))
+			setConversations(mergeSessionsIntoList([], payload.sessions))
 		})
 
 		channel.on("conversation_created", (payload) => {
 			if (!payload?.conversation || cancelled) return
 			const newConv = payload.conversation
-			setConversations((prev) => {
-				const isMatch = (c) =>
-					(newConv.id != null && c.id != null && String(c.id) === String(newConv.id)) ||
-					(newConv.external_session_id &&
-						c.external_session_id &&
-						String(c.external_session_id) === String(newConv.external_session_id))
-				if (prev.some(isMatch)) {
-					return prev.map((c) => (isMatch(c) ? { ...c, ...newConv } : c))
-				}
-				return [newConv, ...prev]
-			})
+			setConversations((prev) => mergeSessionsIntoList(prev, [newConv]))
 		})
 
 		channel.on("session_message_created", (payload) => {
@@ -548,7 +557,7 @@ export function useWorkspaceData() {
 					setBots((prev) => prev.map((b) => (b.id === resp.bot.id ? { ...b, ...resp.bot } : b)))
 				}
 				if (Array.isArray(resp?.sessions)) {
-					setConversations((prev) => mergeSessionsIntoList(prev, resp.sessions))
+					setConversations(mergeSessionsIntoList([], resp.sessions))
 				}
 			})
 			.receive("error", (err) => {

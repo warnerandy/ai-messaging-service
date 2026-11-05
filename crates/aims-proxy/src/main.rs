@@ -3,7 +3,7 @@
 use std::env;
 use std::time::Duration;
 
-use aims_proxy::{run_proxy, ProxyConfig};
+use aims_proxy::{admin, run_proxy_with_admin, ProxyConfig};
 use tracing::{error, info};
 
 #[tokio::main]
@@ -17,8 +17,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = env::args().collect();
     let mut local_ahp_url: Option<String> = env::var("AHP_LOCAL_URL").ok();
-    let mut local_ahp_socket: Option<std::path::PathBuf> =
-        env::var("AHP_LOCAL_SOCKET").ok().map(std::path::PathBuf::from);
+    let mut local_ahp_socket: Option<std::path::PathBuf> = env::var("AHP_LOCAL_SOCKET")
+        .ok()
+        .map(std::path::PathBuf::from);
     let mut local_ahp_token: Option<String> = env::var("AHP_CONNECTION_TOKEN").ok();
     let mut force_discovery = false;
 
@@ -84,27 +85,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if is_auto_requested {
         info!("Searching for active local VS Code AHP endpoints...");
         match aims_proxy::discovery::discover_active_endpoint() {
-            Some(discovered) => {
-                match discovered.target {
-                    aims_proxy::discovery::AhpTarget::UnixSocket(path) => {
-                        info!("Using discovered Unix domain socket: {}", path.display());
-                        local_ahp_socket = Some(path);
-                        if local_ahp_token.is_none() {
-                            local_ahp_token = discovered.token;
-                        }
-                        local_ahp_url = None;
+            Some(discovered) => match discovered.target {
+                aims_proxy::discovery::AhpTarget::UnixSocket(path) => {
+                    info!("Using discovered Unix domain socket: {}", path.display());
+                    local_ahp_socket = Some(path);
+                    if local_ahp_token.is_none() {
+                        local_ahp_token = discovered.token;
                     }
-                    aims_proxy::discovery::AhpTarget::Tcp { host, port } => {
-                        let url = format!("ws://{}:{}", host, port);
-                        info!("Using discovered TCP endpoint: {}", url);
-                        local_ahp_url = Some(url);
-                        if local_ahp_token.is_none() {
-                            local_ahp_token = discovered.token;
-                        }
-                        local_ahp_socket = None;
-                    }
+                    local_ahp_url = None;
                 }
-            }
+                aims_proxy::discovery::AhpTarget::Tcp { host, port } => {
+                    let url = format!("ws://{}:{}", host, port);
+                    info!("Using discovered TCP endpoint: {}", url);
+                    local_ahp_url = Some(url);
+                    if local_ahp_token.is_none() {
+                        local_ahp_token = discovered.token;
+                    }
+                    local_ahp_socket = None;
+                }
+            },
             None => {
                 if local_ahp_url.as_deref() == Some("auto") || local_ahp_url.is_none() {
                     info!("No active VS Code AHP endpoints discovered, falling back to default ws://127.0.0.1:4034/ahp/v1");
@@ -154,10 +153,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bot_token,
         default_working_directory,
     };
+    let (dashboard, mut commands) = admin::start().await?;
 
     loop {
+        dashboard.reconnecting().await;
         info!("Starting AHP proxy loop...");
-        if let Err(e) = run_proxy(config.clone()).await {
+        if let Err(e) =
+            run_proxy_with_admin(config.clone(), Some(dashboard.clone()), &mut commands).await
+        {
+            dashboard.disconnected().await;
             error!("AHP proxy disconnected ({}). Reconnecting in 3s...", e);
             tokio::time::sleep(Duration::from_secs(3)).await;
         } else {

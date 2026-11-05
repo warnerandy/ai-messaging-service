@@ -791,6 +791,13 @@ async fn handle_bot_socket(
                 if frame.event == "phx_join" {
                     active_channel_topic = frame.topic.clone();
                     active_join_ref = frame.join_ref.clone();
+                    let archived_sessions: Vec<Value> = db::list_conversations_for_bot(&state.db, bot.id, true)
+                        .await.unwrap_or_default().into_iter()
+                        .filter(|session| session.metadata["explicitly_archived"] == true)
+                        .map(|session| json!({
+                            "external_session_id": session.external_session_id,
+                            "title": session.title,
+                        })).collect();
 
                     let reply = encode_frame(
                         &frame.format,
@@ -805,6 +812,8 @@ async fn handle_bot_socket(
                                 "bot_name": bot.name,
                                 "protocol": "ahp",
                                 "protocol_version": ahp_types::PROTOCOL_VERSION,
+                                "archive_sessions_supported": true,
+                                "archived_sessions": archived_sessions,
                             }
                         }),
                     );
@@ -1012,7 +1021,10 @@ async fn handle_incoming_ahp_envelope(
 
     if let Some(ref st) = translated.status {
         if let Ok(Some(updated_conv)) =
-            db::update_conversation(&state.db, conv.id, None, Some(st), None).await
+            db::update_conversation(
+                &state.db, conv.id, None, Some(st),
+                Some(json!({ "last_turn_complete": translated.event_type == "turn_completed" })),
+            ).await
         {
             state.hub.broadcast(
                 format!("conversation:{}", conv.id),
@@ -1055,6 +1067,37 @@ async fn handle_bot_channel_event(
     let mut reply_response = json!({});
 
     match frame.event.as_str() {
+        "archive_sessions" => {
+            if let Some(ids) = frame.payload.get("session_ids").and_then(Value::as_array)
+                .filter(|ids| !ids.is_empty() && ids.len() <= 100 && ids.iter().all(Value::is_string))
+            {
+                let mut archived = Vec::new();
+                let mut failed = Vec::new();
+                for id in ids {
+                    let id = id.as_str().unwrap();
+                    match db::archive_completed_bot_session(&state.db, bot.id, id).await {
+                        Ok(Some(conv)) => {
+                            archived.push(id);
+                            let payload = json!({
+                                "conversation_id": conv.id,
+                                "status": "archived",
+                                "metadata": conv.metadata,
+                            });
+                            state.hub.broadcast(format!("conversation:{}", conv.id), "session_status_changed", payload.clone());
+                            state.hub.broadcast(format!("bot_sessions:{}", bot.id), "session_status_changed", payload);
+                        }
+                        _ => failed.push(id),
+                    }
+                }
+                reply_response = json!({
+                    "archived_session_ids": archived,
+                    "failed_session_ids": failed,
+                });
+            } else {
+                reply_status = "error";
+                reply_response = json!({ "error": "Select between 1 and 100 session IDs." });
+            }
+        }
         "ahp_envelope" => {
             if let Ok(env) = serde_json::from_value::<ActionEnvelope>(frame.payload.clone()) {
                 handle_incoming_ahp_envelope(state, bot, env).await;

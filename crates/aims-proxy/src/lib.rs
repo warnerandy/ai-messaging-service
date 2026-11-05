@@ -26,6 +26,8 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{error, info, warn};
 
 pub mod discovery;
+pub mod admin;
+mod visibility;
 
 /// Transport adapter for any stream implementing `AsyncRead + AsyncWrite + Unpin + Send + 'static`
 /// (such as `tokio::net::UnixStream` on macOS/Linux).
@@ -102,6 +104,15 @@ pub struct ProxyConfig {
 
 /// Run a single proxy session bridging a local `ahp::Client` and the upstream `aims-server` WebSocket.
 pub async fn run_proxy(config: ProxyConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let (_sender, mut commands) = mpsc::channel(1);
+    run_proxy_with_admin(config, None, &mut commands).await
+}
+
+pub async fn run_proxy_with_admin(
+    config: ProxyConfig,
+    admin: Option<admin::AdminState>,
+    commands: &mut mpsc::Receiver<admin::AdminCommand>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let ahp_transport: ahp::transport::BoxedTransport = if let Some(ref socket_path) = config.local_ahp_socket {
         #[cfg(unix)]
         {
@@ -247,57 +258,141 @@ pub async fn run_proxy(config: ProxyConfig) -> Result<(), Box<dyn std::error::Er
     // Discover and subscribe to all existing active AHP sessions and their chats.
     // Page through the full list (the host caps page size) so active sessions
     // beyond the first page aren't silently missed.
-    let sessions = list_all_sessions(&ahp_client).await;
-    if !sessions.is_empty() {
-        info!(
-            "Discovered {} existing AHP sessions on startup",
-            sessions.len()
-        );
-        let mut archived_entries = Vec::new();
-        for item in sessions {
-            if session_status_is_archived(item.status) {
-                // Don't subscribe or import chats for archived sessions, but do
-                // forward a lightweight entry so aims-server marks any already
-                // synced conversation as archived (dropping it from the active
-                // list) instead of leaving stale rows behind.
-                archived_entries.push(session_summary_to_sync_entry(&item));
-                continue;
-            }
-            ensure_resource_subscribed(
-                &ahp_client,
-                &mirror,
-                &subscribed_uris,
-                &item.resource,
-                &outbound_tx,
-                true,
-            )
-            .await;
-        }
-        if !archived_entries.is_empty() {
+    // Poll discovery alongside the upstream socket so large history imports
+    // don't delay joining the bot channel or forwarding live updates.
+    let discovery = async {
+        let sessions = list_all_sessions(&ahp_client).await;
+        if !sessions.is_empty() {
             info!(
-                "Marking {} archived AHP sessions as archived upstream",
-                archived_entries.len()
+                "Discovered {} existing AHP sessions on startup",
+                sessions.len()
             );
-            let _ = outbound_tx.send(json!({
-                "topic": "bot:proxy",
-                "event": "sync_sessions",
-                "payload": { "sessions": archived_entries },
-            }));
+            let mut archived_entries = Vec::new();
+            for item in sessions {
+                if session_status_is_archived(item.status) {
+                    // Don't import archived chats, but update existing rows.
+                    archived_entries.push(session_summary_to_sync_entry(&item));
+                    continue;
+                }
+                ensure_resource_subscribed(
+                    &ahp_client,
+                    &mirror,
+                    &subscribed_uris,
+                    &item.resource,
+                    &outbound_tx,
+                    true,
+                )
+                .await;
+            }
+            if !archived_entries.is_empty() {
+                info!(
+                    "Marking {} archived AHP sessions as archived upstream",
+                    archived_entries.len()
+                );
+                let _ = outbound_tx.send(json!({
+                    "topic": "bot:proxy",
+                    "event": "sync_sessions",
+                    "payload": { "sessions": archived_entries },
+                }));
+            }
         }
-    }
+    };
+    tokio::pin!(discovery);
+    let mut discovery_complete = false;
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(25));
+    heartbeat.tick().await;
+    let mut pending_archives = std::collections::HashMap::<
+        String,
+        tokio::sync::oneshot::Sender<Result<Value, String>>,
+    >::new();
+    let mut hidden_subagents = HashSet::new();
+    let mut pending_subagent_syncs = std::collections::HashMap::<String, Vec<String>>::new();
 
-    loop {
+    let disconnect_reason = loop {
         tokio::select! {
-            Some(frame_val) = outbound_rx.recv() => {
-                let text = serde_json::to_string(&frame_val)?;
-                if up_tx.send(WsMessage::Text(text.into())).await.is_err() {
-                    break;
+            () = &mut discovery, if !discovery_complete => {
+                discovery_complete = true;
+                if let Some(admin) = &admin {
+                    admin.data.write().await.syncing = false;
+                }
+                info!("Initial AHP session synchronization queued");
+            }
+            Some(command) = commands.recv() => {
+                if command.archive {
+                    if let Some(admin) = &admin {
+                        if !admin.eligible(&command.ids).await {
+                            let _ = command.reply.send(Err("Session is no longer completed.".into()));
+                            continue;
+                        }
+                    }
+                    let request_id = format!("admin:{}", uuid::Uuid::new_v4());
+                    let _ = outbound_tx.send(json!({
+                        "topic": "bot:proxy",
+                        "event": "archive_sessions",
+                        "ref": request_id,
+                        "payload": { "session_ids": command.ids },
+                    }));
+                    pending_archives.insert(request_id, command.reply);
+                } else {
+                    let client = Arc::clone(&ahp_client);
+                    let mirror = Arc::clone(&mirror);
+                    let subscribed = Arc::clone(&subscribed_uris);
+                    let outbound = outbound_tx.clone();
+                    let config = config.clone();
+                    tokio::spawn(async move {
+                        for id in &command.ids {
+                            handle_upstream_command(
+                                &client, &mirror, &subscribed, &outbound, &config,
+                                "request_session_sync", &json!({ "external_session_id": id }),
+                            ).await;
+                        }
+                        let _ = command.reply.send(Ok(json!({ "message": "Session refresh queued for AIMS." })));
+                    });
                 }
             }
-            Some(Ok(ws_msg)) = up_rx.next() => {
+            _ = heartbeat.tick() => {
+                pending_archives.retain(|_, reply| !reply.is_closed());
+                let text = json!({
+                    "topic": "phoenix",
+                    "event": "heartbeat",
+                    "payload": {},
+                    "ref": "heartbeat",
+                }).to_string();
+                if let Err(error) = up_tx.send(WsMessage::Text(text.into())).await {
+                    break format!("Upstream heartbeat failed: {error}");
+                }
+            }
+            Some(frame_val) = outbound_rx.recv() => {
+                if let Some(admin) = &admin {
+                    admin.observe(&frame_val).await;
+                }
+                let Some(mut frame_val) = visibility::for_aims(frame_val, &mut hidden_subagents) else {
+                    continue;
+                };
+                if frame_val["event"] == "sync_sessions" {
+                    let ids: Vec<String> = frame_val["payload"]["sessions"].as_array().into_iter()
+                        .flatten().filter(|entry| visibility::subagent_entry(entry))
+                        .filter_map(|entry| entry["session_id"].as_str().map(str::to_string)).collect();
+                    if !ids.is_empty() {
+                        let request_id = format!("subagent-hide:{}", uuid::Uuid::new_v4());
+                        frame_val["ref"] = json!(request_id);
+                        pending_subagent_syncs.insert(request_id, ids);
+                    }
+                }
+                let text = serde_json::to_string(&frame_val)?;
+                if let Err(error) = up_tx.send(WsMessage::Text(text.into())).await {
+                    break format!("Upstream send failed: {error}");
+                }
+            }
+            ws_msg = up_rx.next() => {
+                let ws_msg = match ws_msg {
+                    Some(Ok(message)) => message,
+                    Some(Err(error)) => break format!("Upstream receive failed: {error}"),
+                    None => break "Upstream connection ended".to_string(),
+                };
                 let WsMessage::Text(text) = ws_msg else {
                     if matches!(ws_msg, WsMessage::Close(_)) {
-                        break;
+                        break "Upstream connection closed".to_string();
                     }
                     continue;
                 };
@@ -307,6 +402,75 @@ pub async fn run_proxy(config: ProxyConfig) -> Result<(), Box<dyn std::error::Er
                 };
                 let event = val.get("event").and_then(|v| v.as_str()).unwrap_or("");
                 let payload = val.get("payload").cloned().unwrap_or_else(|| json!({}));
+
+                if event == "phx_reply" {
+                    if let Some(ids) = val.get("ref").and_then(Value::as_str)
+                        .and_then(|id| pending_subagent_syncs.remove(id)) {
+                        if payload["status"] == "ok" && payload["response"]["count"].is_number() {
+                            info!("AIMS acknowledged hiding {} subagent resources", ids.len());
+                            if let Some(admin) = &admin {
+                                let mut data = admin.data.write().await;
+                                for id in ids {
+                                    if let Some(session) = data.sessions.get_mut(&id) {
+                                        session.hidden_in_aims = true;
+                                    }
+                                }
+                            }
+                        } else {
+                            warn!("AIMS did not acknowledge the subagent visibility update");
+                        }
+                        continue;
+                    }
+                    if let Some(reply) = val.get("ref").and_then(Value::as_str)
+                        .and_then(|id| pending_archives.remove(id)) {
+                        let response = &payload["response"];
+                        if payload["status"] == "ok" && response["archived_session_ids"].is_array() {
+                            if let Some(admin) = &admin {
+                                let mut data = admin.data.write().await;
+                                for id in response["archived_session_ids"].as_array().unwrap() {
+                                    if let Some(session) = id.as_str().and_then(|id| data.sessions.get_mut(id)) {
+                                        session.status = "archived".into();
+                                        session.completed = false;
+                                    }
+                                }
+                            }
+                            let _ = reply.send(Ok(response.clone()));
+                        } else {
+                            let _ = reply.send(Err(response["error"].as_str()
+                                .unwrap_or("AIMS did not acknowledge archiving. Deploy the updated aims-server before using this action.")
+                                .to_string()));
+                        }
+                        continue;
+                    }
+                }
+                if event == "phx_reply" && val.get("ref").and_then(Value::as_str) == Some("1") {
+                    if payload.get("status").and_then(Value::as_str) != Some("ok") {
+                        break "AIMS rejected the bot channel join".to_string();
+                    }
+                    if let Some(admin) = &admin {
+                        let mut data = admin.data.write().await;
+                        data.connected = true;
+                        data.archive_supported = payload["response"]["archive_sessions_supported"] == true;
+                        if let Some(sessions) = payload["response"]["archived_sessions"].as_array() {
+                            for session in sessions {
+                                if let Some(id) = session["external_session_id"].as_str() {
+                                    let canonical_id = extract_session_id_from_uri(id).unwrap_or_else(|| id.to_string());
+                                    data.sessions.insert(canonical_id.clone(), admin::AdminSession {
+                                        id: canonical_id.clone(),
+                                        title: session["title"].as_str().unwrap_or(id).to_string(),
+                                        status: "archived".into(),
+                                        completed: false,
+                                        is_subagent: visibility::subagent_uri(&canonical_id),
+                                        hidden_in_aims: visibility::subagent_uri(&canonical_id),
+                                    });
+                                }
+                            }
+                        }
+                        data.syncing = !discovery_complete;
+                        data.error = None;
+                    }
+                    info!("Joined AIMS bot channel");
+                }
 
                 handle_upstream_command(
                     &ahp_client,
@@ -319,12 +483,11 @@ pub async fn run_proxy(config: ProxyConfig) -> Result<(), Box<dyn std::error::Er
                 )
                 .await;
             }
-            else => break,
         }
-    }
+    };
 
     ahp_client.shutdown().await;
-    Ok(())
+    Err(disconnect_reason.into())
 }
 
 fn spawn_resource_listener(
@@ -404,8 +567,7 @@ fn spawn_resource_listener(
     });
 }
 
-/// Extract the bare session UUID from an `ahp-session:/<uuid>` or
-/// `ahp-chat:/<uuid>/...` URI so it matches how `aims-server` keys conversations.
+/// Preserve compound chat URIs; their first segment is a kind, not an identity.
 fn extract_session_id_from_uri(uri: &str) -> Option<String> {
     if let Some(rest) = uri.strip_prefix("ahp-session:/") {
         let id = rest.trim_matches('/');
@@ -414,9 +576,9 @@ fn extract_session_id_from_uri(uri: &str) -> Option<String> {
         }
     }
     if let Some(rest) = uri.strip_prefix("ahp-chat:/") {
-        let first = rest.trim_matches('/').split('/').next().unwrap_or("");
-        if !first.is_empty() {
-            return Some(first.to_string());
+        let id = rest.trim_matches('/');
+        if !id.is_empty() {
+            return Some(if id.contains('/') { uri.to_string() } else { id.to_string() });
         }
     }
     None
@@ -572,6 +734,10 @@ fn build_sync_entry(
         for (k, v) in values {
             metadata.insert(k.clone(), v.clone());
         }
+        if visibility::subagent_uri(uri) {
+            metadata.insert("is_subagent".to_string(), json!(true));
+            metadata.insert("hidden_from_session_list".to_string(), json!(true));
+        }
     }
 
     let git = git_info_from_metadata(&metadata);
@@ -672,7 +838,7 @@ fn chat_summary_to_sync_entry(chat: &ChatSummary, session: &SessionState) -> Val
 /// present in `listSessions`); project details are then derived from the chat's
 /// own working directories where available.
 fn chat_state_to_sync_entry(uri: &str, chat: &ChatState) -> Value {
-    build_sync_entry(
+    let mut entry = build_sync_entry(
         uri,
         &chat.title,
         chat.status,
@@ -680,7 +846,18 @@ fn chat_state_to_sync_entry(uri: &str, chat: &ChatState) -> Value {
         chat.working_directories.as_ref(),
         chat.meta.as_ref(),
         None,
-    )
+    );
+    entry["metadata"]["last_turn_complete"] = json!(
+        chat.active_turn.is_none()
+            && matches!(chat.turns.last().map(|turn| &turn.state),
+                Some(ahp_types::state::TurnState::Complete))
+    );
+    if let Some(ahp_types::state::ChatOrigin::Tool { chat: parent, .. }) = &chat.origin {
+        entry["metadata"]["is_subagent"] = json!(true);
+        entry["metadata"]["hidden_from_session_list"] = json!(true);
+        entry["metadata"]["parent_chat_uri"] = json!(parent);
+    }
+    entry
 }
 
 /// Convert a chat's turns into aims message payloads (user prompts plus bot
@@ -811,6 +988,11 @@ async fn resync_chat_messages(
                 let host_id = HostId::new("local");
                 mirror.lock().await.apply_snapshot(&host_id, snap);
                 if let SnapshotState::Chat(ref chat_state) = snap.state {
+                    let _ = outbound_tx.send(json!({
+                        "topic": "bot:proxy",
+                        "event": "sync_sessions",
+                        "payload": { "sessions": [chat_state_to_sync_entry(uri, chat_state)] },
+                    }));
                     let messages = build_chat_messages(chat_state);
                     if !messages.is_empty() {
                         info!("Resync sending {} messages for chat {}", messages.len(), uri);
@@ -1009,6 +1191,11 @@ fn ensure_resource_subscribed<'a>(
                         .await;
                     }
                 } else if let SnapshotState::Chat(ref chat_state) = snap.state {
+                    let _ = outbound_tx.send(json!({
+                        "topic": "bot:proxy",
+                        "event": "sync_sessions",
+                        "payload": { "sessions": [chat_state_to_sync_entry(uri, chat_state)] },
+                    }));
                     let messages = build_chat_messages(chat_state);
                     if !messages.is_empty() {
                         info!(
@@ -1295,6 +1482,100 @@ pub fn extract_root_capabilities(root: &RootState) -> Value {
 mod tests {
     use super::*;
     use ahp_types::state::{AgentInfo, SessionModelInfo};
+
+    #[test]
+    fn tool_spawned_chats_are_subagents_but_user_forks_are_not() {
+        let mut snapshot = json!({
+            "resource": "ahp-chat:/worker",
+            "title": "Investigate",
+            "status": 8,
+            "modifiedAt": "2026-11-05T16:00:00Z",
+            "turns": [],
+            "origin": { "kind": "tool", "chat": "ahp-chat:/parent", "toolCallId": "call-1" }
+        });
+        let chat: ChatState = serde_json::from_value(snapshot.clone()).unwrap();
+        let entry = chat_state_to_sync_entry(&chat.resource, &chat);
+        assert_eq!(entry["metadata"]["is_subagent"], true);
+        assert_eq!(entry["metadata"]["parent_chat_uri"], "ahp-chat:/parent");
+        snapshot["origin"] = json!({"kind": "fork", "chat": "ahp-chat:/parent", "turnId": "turn-1"});
+        let chat: ChatState = serde_json::from_value(snapshot).unwrap();
+        assert_ne!(chat_state_to_sync_entry(&chat.resource, &chat)["metadata"]["is_subagent"], true);
+    }
+
+    #[test]
+    fn compound_chat_resources_keep_their_full_identity() {
+        assert_eq!(extract_session_id_from_uri("ahp-chat:/chat-id").as_deref(), Some("chat-id"));
+        for uri in ["ahp-chat://default/session-one", "ahp-chat://default/session-two", "ahp-chat://subagent/session-one/worker"] {
+            assert_eq!(extract_session_id_from_uri(uri).as_deref(), Some(uri));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_upstream_join_and_disconnect_while_discovery_is_pending() {
+        let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = ProxyConfig {
+            local_ahp_url: Some(format!("ws://{}", local.local_addr().unwrap())),
+            local_ahp_socket: None,
+            local_ahp_token: None,
+            upstream_ws_url: format!("ws://{}/", upstream.local_addr().unwrap()),
+            bot_token: "test-token".to_string(),
+            default_working_directory: None,
+        };
+        let (discovery_tx, discovery_rx) = tokio::sync::oneshot::channel();
+        let host = tokio::spawn(async move {
+            let (stream, _) = local.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut discovery_tx = Some(discovery_tx);
+            while let Some(Ok(WsMessage::Text(text))) = socket.next().await {
+                let request: Value = serde_json::from_str(&text).unwrap();
+                let result = match request.get("method").and_then(Value::as_str) {
+                    Some("initialize") => json!({
+                        "protocolVersion": ahp_types::PROTOCOL_VERSION,
+                        "serverSeq": 0,
+                        "snapshots": [],
+                    }),
+                    Some("subscribe") => json!({}),
+                    Some("listSessions") => {
+                        if let Some(tx) = discovery_tx.take() {
+                            let _ = tx.send(());
+                        }
+                        continue;
+                    }
+                    _ => continue,
+                };
+                socket
+                    .send(WsMessage::Text(
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": request["id"],
+                            "result": result,
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+        });
+        let server = async move {
+            let (stream, _) = upstream.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            discovery_rx.await.unwrap();
+            let frame = socket.next().await.unwrap().unwrap();
+            let join: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+            assert_eq!(join["event"], "phx_join");
+            socket.close(None).await.unwrap();
+        };
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(run_proxy(config), server)
+        })
+        .await;
+        host.abort();
+        let (proxy_result, ()) = outcome.expect("discovery must not block upstream I/O");
+        assert!(proxy_result.is_err(), "disconnect must trigger reconnection");
+    }
 
     #[test]
     fn test_extract_root_capabilities_from_ahp_root_state() {

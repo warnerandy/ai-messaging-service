@@ -888,9 +888,9 @@ pub fn extract_session_id_from_uri(uri: &str) -> Option<String> {
         }
     }
     if let Some(rest) = uri.strip_prefix("ahp-chat:/") {
-        let first = rest.trim_matches('/').split('/').next().unwrap_or("");
-        if !first.is_empty() {
-            return Some(first.to_string());
+        let id = rest.trim_matches('/');
+        if !id.is_empty() {
+            return Some(if id.contains('/') { uri.to_string() } else { id.to_string() });
         }
     }
     None
@@ -901,6 +901,13 @@ mod tests {
     use super::*;
     use ahp_types::actions::RootAgentsChangedAction;
     use ahp_types::state::{AgentInfo, SessionModelInfo};
+
+    #[test]
+    fn compound_chat_resources_are_not_collapsed_to_their_kind() {
+        for uri in ["ahp-chat://default/session-one", "ahp-chat://default/session-two", "ahp-chat://subagent/session-one/worker"] {
+            assert_eq!(extract_session_id_from_uri(uri).as_deref(), Some(uri));
+        }
+    }
 
     #[test]
     fn test_bot_ahp_mirror_applies_root_agents_changed() {

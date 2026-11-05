@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AIMS Proxy · Administration</title>
+  <script src="/admin.js" defer></script>
+  <link rel="stylesheet" href="/admin.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div><p class="eyebrow">LOCAL CONTROL PLANE</p><h1>AIMS Proxy</h1><p class="muted">Your sessions. One clear view.</p></div>
+      <span class="local-badge">127.0.0.1 · Private to this Mac</span>
+    </header>
+    <section class="health" aria-label="Proxy health">
+      <article><span>AIMS connection</span><strong id="connection">Connecting…</strong></article>
+      <article><span>Discovered resources</span><strong id="total">—</strong></article>
+      <article><span>Completed turns</span><strong id="completed">—</strong></article>
+      <article><span>Last local update</span><strong id="updated">—</strong></article>
+    </section>
+    <section class="panel">
+      <div class="section-heading"><div><h2>Session administration</h2><p class="muted">Archive in AIMS only. VS Code sessions and files are never changed.</p></div><button id="refresh" type="button">Refresh view</button></div>
+      <p class="notice">Only resources with an explicitly completed latest turn can be selected for archive. Idle alone does not mean done. Review the titles before confirming.</p>
+      <div class="toolbar">
+        <label class="search">Search sessions<input id="search" type="search" placeholder="Find a title or session ID"></label>
+        <label>Show<select id="filter"><option value="all">All resources</option><option value="completed">Completed turns</option><option value="active">Running / needs input</option><option value="subagents">Subagents</option><option value="archived">Archived in AIMS</option></select></label>
+      </div>
+      <div class="actions"><span id="selection">0 selected</span><button id="select-completed" type="button">Select visible completed</button><button id="resync" type="button" disabled>Resync selected</button><button id="archive" class="primary" type="button" disabled>Archive selected</button></div>
+      <p id="subagents" class="muted" role="status"></p>
+      <p id="feedback" role="status" aria-live="polite"></p>
+      <div class="table-wrap"><table><thead><tr><th><span class="sr-only">Select</span></th><th>Session / resource</th><th>Current state</th><th>AIMS visibility / archive</th></tr></thead><tbody id="sessions"></tbody></table></div>
+      <p id="empty" class="empty" hidden>No matching sessions.</p>
+    </section>
+    <footer>Live view refreshes every 5 seconds · No credentials are sent to the browser.</footer>
+  </main>
+  <dialog id="confirm">
+    <h2>Archive selected sessions?</h2>
+    <p>This hides these resources in AIMS. VS Code is unchanged. Future proxy syncs preserve the AIMS archive.</p>
+    <ul id="confirm-titles"></ul>
+    <div class="dialog-actions"><button id="cancel" type="button">Cancel</button><button id="confirm-archive" class="primary" type="button">Archive in AIMS</button></div>
+  </dialog>
+</body>
+</html>

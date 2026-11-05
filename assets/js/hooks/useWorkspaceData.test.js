@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from "@testing-library/react"
+import { act, renderHook, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { useWorkspaceData } from "./useWorkspaceData.js"
 import {
@@ -62,6 +62,7 @@ describe("useWorkspaceData", () => {
 		vi.mocked(refreshBotModels).mockReset()
 		vi.mocked(registerServiceWorker).mockReset()
 		vi.mocked(requestNotificationPermission).mockReset()
+		mockChannel.on.mockReset()
 	})
 
 	it("creates the first conversation using the selected bot name", async () => {
@@ -107,6 +108,147 @@ describe("useWorkspaceData", () => {
 			expect(result.current.selectedBotId).toBe(2)
 			expect(result.current.selectedConversationId).toBe(20)
 		})
+	})
+
+	it("coalesces duplicate AHP session rows and keeps the newest status", async () => {
+		localStorage.setItem("messaging.user.token", "token-1")
+		localStorage.setItem("messaging.selected.bot_id", "2")
+
+		listBots.mockResolvedValue({
+			bot_tokens: [{ id: 2, name: "Bot2", is_connected: true }],
+		})
+		listBotModels.mockResolvedValue({ models: [] })
+		listConversations.mockResolvedValue({
+			conversations: [
+				{
+					id: 20,
+					bot_token_id: 2,
+					external_session_id: "agent-session-1",
+					title: "Fix shared-volume race",
+					status: "running",
+					updated_at: "2026-11-04T10:00:00Z",
+				},
+				{
+					id: 21,
+					bot_token_id: 2,
+					external_session_id: "ahp-session:/agent-session-1",
+					title: "Fix shared-volume race",
+					status: "idle",
+					updated_at: "2026-11-04T11:00:00Z",
+				},
+			],
+		})
+		pingApp.mockResolvedValue({})
+
+		const { result } = renderHook(() => useWorkspaceData())
+
+		await waitFor(() => {
+			expect(result.current.conversations).toHaveLength(1)
+			expect(result.current.conversations[0].status).toBe("idle")
+			expect(result.current.conversations[0].id).toBe(21)
+		})
+	})
+
+	it("excludes confirmed subagents without merging distinct primary chats", async () => {
+		localStorage.setItem("messaging.user.token", "token-1")
+		localStorage.setItem("messaging.selected.bot_id", "2")
+		listBots.mockResolvedValue({
+			bot_tokens: [{ id: 2, name: "Bot2", is_connected: true }],
+		})
+		listBotModels.mockResolvedValue({ models: [] })
+		listConversations.mockResolvedValue({
+			conversations: [
+				{
+					id: 20,
+					bot_token_id: 2,
+					external_session_id: "ahp-chat://default/one",
+					title: "Main one",
+				},
+				{
+					id: 21,
+					bot_token_id: 2,
+					external_session_id: "ahp-chat://default/two",
+					title: "Main two",
+				},
+				{
+					id: 22,
+					bot_token_id: 2,
+					external_session_id: "ahp-chat://subagent/one/worker",
+					title: "Worker",
+				},
+				{ id: 23, bot_token_id: 2, external_session_id: "worker", metadata: { is_subagent: true } },
+			],
+		})
+		pingApp.mockResolvedValue({})
+		const { result } = renderHook(() => useWorkspaceData())
+		await waitFor(() => {
+			expect(result.current.conversations.map((session) => session.id)).toEqual([20, 21])
+		})
+	})
+
+	it.each([{ status: "archived" }, { status: "running", metadata: { is_subagent: true } }])(
+		"removes sessions immediately after visibility changes: %j",
+		async (update) => {
+			localStorage.setItem("messaging.user.token", "token-1")
+			localStorage.setItem("messaging.selected.bot_id", "2")
+			listBots.mockResolvedValue({
+				bot_tokens: [{ id: 2, name: "Bot2", is_connected: true }],
+			})
+			listBotModels.mockResolvedValue({ models: [] })
+			listConversations.mockResolvedValue({
+				conversations: [
+					{ id: 20, bot_token_id: 2, title: "Main", status: "running" },
+					{ id: 21, bot_token_id: 2, title: "Worker", status: "running" },
+				],
+			})
+			pingApp.mockResolvedValue({})
+			const handlers = {}
+			mockChannel.on.mockImplementation((event, handler) => {
+				handlers[event] = handler
+			})
+			const { result } = renderHook(() => useWorkspaceData())
+			await waitFor(() => expect(result.current.conversations).toHaveLength(2))
+
+			act(() => handlers.session_status_changed({ conversation_id: 21, ...update }))
+			expect(result.current.conversations.map((session) => session.id)).toEqual([20])
+
+			act(() =>
+				handlers.conversation_created({
+					conversation: {
+						id: 22,
+						external_session_id: "ahp-chat://subagent/main/worker",
+						status: "running",
+					},
+				}),
+			)
+			expect(result.current.conversations.map((session) => session.id)).toEqual([20])
+		},
+	)
+
+	it("removes omitted sessions when a complete active-session snapshot arrives", async () => {
+		localStorage.setItem("messaging.user.token", "token-1")
+		localStorage.setItem("messaging.selected.bot_id", "2")
+		listBots.mockResolvedValue({
+			bot_tokens: [{ id: 2, name: "Bot2", is_connected: true }],
+		})
+		listBotModels.mockResolvedValue({ models: [] })
+		const main = { id: 20, bot_token_id: 2, title: "Main", status: "running" }
+		listConversations.mockResolvedValue({
+			conversations: [main, { id: 21, bot_token_id: 2, title: "Worker", status: "running" }],
+		})
+		pingApp.mockResolvedValue({})
+		const handlers = {}
+		mockChannel.on.mockImplementation((event, handler) => {
+			handlers[event] = handler
+		})
+		const { result } = renderHook(() => useWorkspaceData())
+		await waitFor(() => expect(result.current.conversations).toHaveLength(2))
+
+		act(() => handlers.bot_sessions_updated({ bot_token_id: 2, sessions: [main] }))
+		expect(result.current.conversations.map((session) => session.id)).toEqual([20])
+
+		act(() => handlers.bot_sessions_updated({ bot_token_id: 2, sessions: [] }))
+		expect(result.current.conversations).toEqual([])
 	})
 
 	it("updates conversation status in real-time when session_status_changed is received", async () => {

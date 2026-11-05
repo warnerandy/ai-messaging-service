@@ -798,6 +798,14 @@ fn map_conversation_row(r: &sqlx::postgres::PgRow) -> ConversationRecord {
     }
 }
 
+fn subagent_conversation(conversation: &ConversationRecord) -> bool {
+    conversation.external_session_id.as_deref()
+        .is_some_and(|id| id.starts_with("ahp-chat://subagent/"))
+        || conversation.metadata["is_subagent"] == true
+        || conversation.metadata["session_uri"].as_str()
+            .is_some_and(|id| id.starts_with("ahp-chat://subagent/"))
+}
+
 pub async fn list_conversations(
     pool: &PgPool,
     user_id: i64,
@@ -839,7 +847,9 @@ pub async fn list_conversations(
         .await?
     };
 
-    Ok(rows.iter().map(map_conversation_row).collect())
+    Ok(rows.iter().map(map_conversation_row)
+        .filter(|conversation| include_archived || !subagent_conversation(conversation))
+        .collect())
 }
 
 pub async fn list_conversations_for_bot(
@@ -883,7 +893,9 @@ pub async fn list_conversations_for_bot(
         .await?
     };
 
-    Ok(rows.iter().map(map_conversation_row).collect())
+    Ok(rows.iter().map(map_conversation_row)
+        .filter(|conversation| include_archived || !subagent_conversation(conversation))
+        .collect())
 }
 
 pub async fn get_conversation(
@@ -931,12 +943,12 @@ pub async fn get_conversation_by_external_session(
         INNER JOIN bot_tokens b ON b.id = c.bot_token_id
         WHERE c.bot_token_id = $1 AND $2 <> '' AND (
             c.external_session_id = $2
-            OR c.external_session_id LIKE '%' || $2 || '%'
-            OR $2 LIKE '%' || c.external_session_id || '%'
+            OR c.external_session_id IN ('ahp-session:/' || $2, 'ahp-chat:/' || $2)
+            OR $2 IN ('ahp-session:/' || c.external_session_id, 'ahp-chat:/' || c.external_session_id)
             OR c.metadata->>'default_chat_uri' = $2
             OR c.metadata->>'session_uri' = $2
         )
-        ORDER BY c.id DESC
+        ORDER BY (c.external_session_id = $2) DESC, c.id DESC
         LIMIT 1
         "#,
     )
@@ -1062,7 +1074,13 @@ pub async fn update_conversation(
     let next_title = title
         .map(|s| s.to_string())
         .or_else(|| current.title.clone());
-    let next_status = status.unwrap_or(&current.status).to_string();
+    let next_status = if subagent_conversation(&current)
+        || metadata_patch.as_ref().is_some_and(|patch| patch["is_subagent"] == true)
+    {
+        "archived"
+    } else {
+        status.unwrap_or(&current.status)
+    }.to_string();
 
     let mut next_meta = current.metadata.clone();
     if matches!(
@@ -1088,7 +1106,11 @@ pub async fn update_conversation(
     sqlx::query(
         r#"
         UPDATE conversations
-        SET title = $1, status = $2, metadata = $3, updated_at = $4
+        SET title = $1,
+            status = CASE WHEN metadata->>'explicitly_archived' = 'true' THEN 'archived' ELSE $2 END,
+            metadata = $3 || CASE WHEN metadata->>'explicitly_archived' = 'true'
+                THEN '{"explicitly_archived": true}'::jsonb ELSE '{}'::jsonb END,
+            updated_at = $4
         WHERE id = $5
         "#,
     )
@@ -1116,6 +1138,37 @@ pub async fn archive_conversation(
         obj.insert("explicitly_archived".to_string(), json!(true));
     }
     update_conversation(pool, conversation_id, None, Some("archived"), Some(patch)).await
+}
+
+pub async fn archive_completed_bot_session(
+    pool: &PgPool,
+    bot_token_id: i64,
+    external_session_id: &str,
+) -> Result<Option<ConversationRecord>, sqlx::Error> {
+    let Some(conv) = get_conversation_by_external_session(pool, bot_token_id, external_session_id).await? else {
+        return Ok(None);
+    };
+    let id = sqlx::query_scalar::<_, i64>(
+        r#"
+        UPDATE conversations
+        SET status = 'archived',
+            metadata = metadata || '{"explicitly_archived": true}'::jsonb,
+            updated_at = $1
+        WHERE id = $2 AND bot_token_id = $3
+          AND (status IN ('completed', 'done', 'archived')
+               OR (status = 'idle' AND metadata->>'last_turn_complete' = 'true'))
+        RETURNING id
+        "#,
+    )
+    .bind(now_naive())
+    .bind(conv.id)
+    .bind(bot_token_id)
+    .fetch_optional(pool)
+    .await?;
+    match id {
+        Some(id) => get_conversation(pool, id, None, Some(bot_token_id)).await,
+        None => Ok(None),
+    }
 }
 
 pub async fn resolve_bot_conversation(
@@ -1180,6 +1233,61 @@ pub async fn resolve_bot_conversation(
     }
 
     Ok(None)
+}
+
+#[cfg(test)]
+mod admin_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires AIMS_TEST_DATABASE_URL pointing to an isolated test database"]
+    async fn archive_is_scoped_completion_guarded_and_persistent() {
+        let pool = PgPool::connect(&std::env::var("AIMS_TEST_DATABASE_URL").unwrap()).await.unwrap();
+        init_db(&pool).await.unwrap();
+        let user_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO users (email) VALUES ($1::citext) RETURNING id",
+        )
+        .bind(format!("{}@example.test", uuid::Uuid::new_v4()))
+        .fetch_one(&pool).await.unwrap();
+        let (bot, _) = create_bot_token(&pool, user_id, "Admin test", None, None).await.unwrap();
+        let (other, _) = create_bot_token(&pool, user_id, "Other bot", None, None).await.unwrap();
+        let uri = "ahp-chat://default/session-one";
+        let done = create_conversation(&pool, user_id, bot.id, "Done", Some(uri), Some("idle"),
+            json!({"last_turn_complete": true})).await.unwrap();
+        let running = create_conversation(&pool, user_id, bot.id, "Running",
+            Some("ahp-chat://default/session-two"), Some("running"), json!({"last_turn_complete": true})).await.unwrap();
+        let idle = create_conversation(&pool, user_id, bot.id, "Idle",
+            Some("idle"), Some("idle"), json!({})).await.unwrap();
+
+        assert!(archive_completed_bot_session(&pool, other.id, uri).await.unwrap().is_none());
+        assert!(archive_completed_bot_session(&pool, bot.id, running.external_session_id.as_deref().unwrap()).await.unwrap().is_none());
+        assert!(archive_completed_bot_session(&pool, bot.id, idle.external_session_id.as_deref().unwrap()).await.unwrap().is_none());
+        assert!(get_conversation_by_external_session(&pool, bot.id, "default").await.unwrap().is_none());
+        let archived = archive_completed_bot_session(&pool, bot.id, uri).await.unwrap().unwrap();
+        assert_eq!(archived.id, done.id);
+        assert_eq!(archived.status, "archived");
+        let synced = update_conversation(&pool, done.id, None, Some("running"),
+            Some(json!({"last_turn_complete": false}))).await.unwrap().unwrap();
+        assert_eq!(synced.status, "archived");
+        assert_eq!(synced.metadata["explicitly_archived"], true);
+        assert_eq!(get_conversation(&pool, running.id, None, None).await.unwrap().unwrap().status, "running");
+        let worker = create_conversation(&pool, user_id, bot.id, "Worker",
+            Some("ahp-chat://subagent/session-one/worker"), Some("running"), json!({})).await.unwrap();
+        let tool_worker = create_conversation(&pool, user_id, bot.id, "Tool worker",
+            Some("tool-worker"), Some("running"), json!({"is_subagent": true})).await.unwrap();
+        for listed in [
+            list_conversations(&pool, user_id, false).await.unwrap(),
+            list_conversations_for_bot(&pool, bot.id, false).await.unwrap(),
+        ] {
+            assert!(!listed.iter().any(|session| session.id == worker.id || session.id == tool_worker.id));
+            assert!(listed.iter().any(|session| session.id == running.id));
+        }
+        assert!(list_conversations_for_bot(&pool, bot.id, true).await.unwrap()
+            .iter().any(|session| session.id == worker.id));
+        let synced_worker = update_conversation(&pool, worker.id, None, Some("running"), None).await.unwrap().unwrap();
+        assert_eq!(synced_worker.status, "archived");
+        pool.close().await;
+    }
 }
 
 // --- Messages ---

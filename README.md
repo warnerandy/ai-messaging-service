@@ -128,3 +128,28 @@ cargo run -p aims-proxy -- \
   --token <BOT_TOKEN> \
   --workdir /path/to/your/workspace
 ```
+
+### Local Proxy Administration
+
+The proxy serves a local dashboard at **http://127.0.0.1:4035**. It shows
+connection health, session resources, completion evidence, and search/filter
+controls. Select resources to resync their history into AIMS, or review and
+confirm a batch of up to 100 completed resources to archive.
+
+Archiving affects **AIMS only**, not VS Code, worktrees, or files. An idle
+resource is not eligible unless its latest turn explicitly completed and no
+turn is active. A completed turn is not proof that the overall task is finished;
+review the selection before confirming. Archives are acknowledged by AIMS and
+preserved through later proxy syncs and restarts.
+
+Deploy the updated `aims-server` to enable dashboard archiving; older servers
+still support viewing and resync, but the archive action stays disabled.
+The dashboard binds only to IPv4 loopback, rejects foreign hosts and
+cross-origin writes, and never exposes proxy credentials to the browser.
+
+The dashboard identifies subagents from the AHP `ahp-chat://subagent/` resource
+namespace or an explicit tool-spawned chat origin, never from their titles.
+They remain visible under the dashboard's **Subagents** filter with their real
+local status, but are synced as archived/hidden resources in AIMS. Their live
+events and messages cannot reopen standalone AIMS rows. VS Code execution is
+unchanged, and user-created forks and side chats remain ordinary sessions.
