@@ -65,6 +65,79 @@ describe("useWorkspaceData", () => {
 		mockChannel.on.mockReset()
 	})
 
+	it("exposes creation failures without replacing the selected conversation", async () => {
+		localStorage.setItem("messaging.user.token", "token-1")
+		listBots.mockResolvedValue({
+			bot_tokens: [{ id: 1, name: "Atlas", bot_type: "ahp", is_connected: true }],
+		})
+		listBotModels.mockResolvedValue({ models: [] })
+		listConversations.mockResolvedValue({
+			conversations: [{ id: 10, bot_token_id: 1, title: "Existing session" }],
+		})
+		pingApp.mockResolvedValue({})
+		createConversation.mockRejectedValue(new Error("The local AHP proxy is offline."))
+		const loggedError = vi.spyOn(console, "error").mockImplementation(() => {})
+		const { result } = renderHook(() => useWorkspaceData())
+		await waitFor(() => expect(result.current.selectedConversationId).toBe(10))
+
+		await act(async () => {
+			await result.current.handleCreateConversation({ projectName: "morpheus-ui" })
+		})
+		expect(result.current.createConversationError).toBe("The local AHP proxy is offline.")
+		expect(result.current.selectedConversationId).toBe(10)
+		expect(result.current.isCreatingConversation).toBe(false)
+		loggedError.mockRestore()
+	})
+
+	it("does not overwrite host readiness when the pending REST response arrives later", async () => {
+		localStorage.setItem("messaging.user.token", "token-1")
+		listBots.mockResolvedValue({
+			bot_tokens: [{ id: 1, name: "Atlas", bot_type: "ahp", is_connected: true }],
+		})
+		listBotModels.mockResolvedValue({ models: [] })
+		listConversations.mockResolvedValue({
+			conversations: [{ id: 10, bot_token_id: 1, title: "Existing session" }],
+		})
+		pingApp.mockResolvedValue({})
+		let resolveCreation
+		createConversation.mockReturnValue(
+			new Promise((resolve) => {
+				resolveCreation = resolve
+			}),
+		)
+		const { result } = renderHook(() => useWorkspaceData())
+		await waitFor(() => expect(result.current.selectedConversationId).toBe(10))
+		let creation
+		act(() => {
+			creation = result.current.handleCreateConversation()
+		})
+		const common = { id: 11, bot_token_id: 1, updated_at: "2026-11-05T21:00:00Z" }
+		act(() =>
+			result.current.handleSessionsUpdated([
+				{
+					...common,
+					external_session_id: "host-chat",
+					status: "idle",
+					metadata: { creation_status: "ready" },
+				},
+			]),
+		)
+		await act(async () => {
+			resolveCreation({
+				...common,
+				external_session_id: "parent",
+				status: "creating",
+				metadata: { creation_status: "pending" },
+			})
+			await creation
+		})
+		expect(result.current.conversations.find((c) => c.id === 11)).toMatchObject({
+			external_session_id: "host-chat",
+			status: "idle",
+			metadata: { creation_status: "ready" },
+		})
+	})
+
 	it("creates the first conversation using the selected bot name", async () => {
 		localStorage.setItem("messaging.user.token", "token-1")
 		listBots.mockResolvedValue({

@@ -11,7 +11,7 @@ use ahp::hosts::HostId;
 use ahp::{Client, ClientConfig, MultiHostStateMirror, SubscriptionEvent};
 use ahp_types::actions::StateAction;
 use ahp_types::commands::{
-    CreateChatParams, CreateSessionParams, DispatchActionParams, ListSessionsParams,
+    CreateSessionParams, DispatchActionParams, ListSessionsParams,
     ListSessionsResult,
 };
 use ahp_types::state::{
@@ -533,6 +533,18 @@ fn spawn_resource_listener(
                         let mut m = mirror.lock().await;
                         m.apply_envelope(&host_id, &envelope);
                     }
+                    if envelope.channel.starts_with("ahp-session:") {
+                        let entries = mirror.lock().await.sessions().iter()
+                            .find(|(key, _)| key.uri == envelope.channel)
+                            .map(|(_, session)| session_chat_entries(&envelope.channel, session));
+                        if let Some(entries) = entries {
+                            let _ = outbound_tx.send(json!({
+                                "topic": "bot:proxy",
+                                "event": "sync_sessions",
+                                "payload": { "sessions": entries },
+                            }));
+                        }
+                    }
 
                     // If a new chat was added to a session, subscribe to the chat channel
                     if let StateAction::SessionChatAdded(ref chat_added) = envelope.action {
@@ -548,7 +560,11 @@ fn spawn_resource_listener(
                                         .iter()
                                         .any(|c| c.resource == chat_added.summary.resource)
                                 })
-                                .map(|s| chat_summary_to_sync_entry(&chat_added.summary, s))
+                                .map(|s| {
+                                    let mut entry = chat_summary_to_sync_entry(&chat_added.summary, s);
+                                    set_chat_identity(&mut entry, &envelope.channel, s.default_chat.as_deref() == Some(chat_added.summary.resource.as_str()));
+                                    entry
+                                })
                         };
                         if let Some(entry) = enriched {
                             let _ = outbound_tx.send(json!({
@@ -631,9 +647,12 @@ fn publish_session_summaries(
     outbound: &mpsc::UnboundedSender<Value>,
 ) {
     let entries: Vec<Value> = sessions.iter().flat_map(|session| {
-        let mut entries = vec![session_summary_to_sync_entry(session)];
-        for chat in session.chats.iter().flatten().filter(|_| !session_status_is_archived(session.status)) {
-            entries.push(build_sync_entry(
+        let mut entries = Vec::new();
+        if session.chats.as_ref().is_none_or(|chats| chats.is_empty()) && session.default_chat.is_none() {
+            entries.push(session_summary_to_sync_entry(session));
+        }
+        for chat in session.chats.iter().flatten() {
+            let mut entry = build_sync_entry(
                 &chat.resource,
                 if chat.title.trim().is_empty() { &session.title } else { &chat.title },
                 chat.status.unwrap_or(session.status),
@@ -641,7 +660,22 @@ fn publish_session_summaries(
                 session.working_directories.as_ref(),
                 session.meta.as_ref(),
                 None,
-            ));
+            );
+            set_chat_identity(&mut entry, &session.resource, session.default_chat.as_deref() == Some(chat.resource.as_str()));
+            entries.push(entry);
+        }
+        if let Some(default) = &session.default_chat {
+            if !session.chats.iter().flatten().any(|chat| &chat.resource == default) {
+                let mut entry = session_summary_to_sync_entry(session);
+                entry["session_id"] = json!(extract_session_id_from_uri(default).unwrap_or_else(|| default.clone()));
+                set_chat_identity(&mut entry, &session.resource, true);
+                entries.push(entry);
+            }
+        }
+        if session_status_is_archived(session.status) {
+            for entry in &mut entries {
+                entry["status"] = json!("archived");
+            }
         }
         entries
     }).collect();
@@ -893,6 +927,36 @@ fn chat_summary_to_sync_entry(chat: &ChatSummary, session: &SessionState) -> Val
     )
 }
 
+/// A session is a container, not an additional conversation. Only the explicit
+/// default chat owns its session alias; catalog order and titles are unrelated.
+fn set_chat_identity(entry: &mut Value, session_uri: &str, is_default: bool) {
+    entry["metadata"]["parent_session_uri"] = json!(session_uri);
+    entry["metadata"]["session_uri"] = if is_default { json!(session_uri) } else { Value::Null };
+}
+
+fn session_chat_entries(uri: &str, session: &SessionState) -> Vec<Value> {
+    if session.chats.is_empty() && session.default_chat.is_none() {
+        return vec![session_state_to_sync_entry(uri, session)];
+    }
+    let mut entries: Vec<Value> = session.chats.iter().map(|chat| {
+        let mut entry = chat_summary_to_sync_entry(chat, session);
+        set_chat_identity(&mut entry, uri, session.default_chat.as_deref() == Some(chat.resource.as_str()));
+        if session_status_is_archived(session.status) {
+            entry["status"] = json!("archived");
+        }
+        entry
+    }).collect();
+    if let Some(default) = &session.default_chat {
+        if !session.chats.iter().any(|chat| &chat.resource == default) {
+            let mut entry = session_state_to_sync_entry(uri, session);
+            entry["session_id"] = json!(extract_session_id_from_uri(default).unwrap_or_else(|| default.clone()));
+            set_chat_identity(&mut entry, uri, true);
+            entries.push(entry);
+        }
+    }
+    entries
+}
+
 /// Build a `sync_sessions` entry from a chat snapshot alone. Used when the
 /// parent session can't be resolved (e.g. an orphaned running chat that is not
 /// present in `listSessions`); project details are then derived from the chat's
@@ -1016,20 +1080,80 @@ fn session_summary_matches(summary: &SessionSummary, needle: &str) -> bool {
     if needle.is_empty() {
         return false;
     }
-    if summary.resource.contains(needle) {
+    if resource_matches(&summary.resource, needle) {
         return true;
     }
     if summary
         .default_chat
         .as_deref()
-        .is_some_and(|d| d.contains(needle))
+        .is_some_and(|d| resource_matches(d, needle))
     {
         return true;
     }
     summary
         .chats
         .as_ref()
-        .is_some_and(|cs| cs.iter().any(|c| c.resource.contains(needle)))
+        .is_some_and(|cs| cs.iter().any(|c| resource_matches(&c.resource, needle)))
+}
+
+fn resource_matches(uri: &str, id: &str) -> bool {
+    uri == id || extract_session_id_from_uri(uri).as_deref() == Some(id)
+}
+
+fn session_dispatch(dispatch: &DispatchActionParams) -> bool {
+    serde_json::to_value(&dispatch.action).ok()
+        .and_then(|action| action["type"].as_str().map(|kind| kind.starts_with("session/")))
+        .unwrap_or(false)
+}
+
+fn mirrored_dispatch_channel(
+    mirror: &MultiHostStateMirror,
+    dispatch: &DispatchActionParams,
+    target: &str,
+) -> Option<String> {
+    let fallback = target.strip_prefix("ahp-chat:/").and_then(|id| id.strip_suffix("/main"));
+    let matches = |uri: &str| resource_matches(uri, target)
+        || fallback.is_some_and(|id| resource_matches(uri, id));
+    if !session_dispatch(dispatch) {
+        if let Some(key) = mirror.chats().keys().find(|key| matches(&key.uri)) {
+            return Some(key.uri.clone());
+        }
+    }
+    for (key, session) in mirror.sessions() {
+        let chat = session.chats.iter().find(|chat| matches(&chat.resource));
+        if matches(&key.uri) || chat.is_some()
+            || session.default_chat.as_deref().is_some_and(matches)
+        {
+            return if session_dispatch(dispatch) {
+                Some(key.uri.clone())
+            } else {
+                chat.map(|chat| chat.resource.clone()).or_else(|| session.default_chat.clone())
+            };
+        }
+    }
+    None
+}
+
+fn route_dispatch(
+    dispatch: &mut DispatchActionParams,
+    target: &str,
+    sessions: &[SessionSummary],
+) {
+    let fallback = target.strip_prefix("ahp-chat:/").and_then(|id| id.strip_suffix("/main"));
+    let Some(session) = sessions.iter().find(|session| session_summary_matches(session, target))
+        .or_else(|| fallback.and_then(|id| sessions.iter().find(|session| session_summary_matches(session, id))))
+    else {
+        return;
+    };
+    if session_dispatch(dispatch) {
+        dispatch.channel = session.resource.clone();
+    } else if let Some(chat) = session.chats.iter().flatten()
+        .find(|chat| resource_matches(&chat.resource, target) || fallback.is_some_and(|id| resource_matches(&chat.resource, id)))
+    {
+        dispatch.channel = chat.resource.clone();
+    } else if let Some(chat) = session.default_chat.as_ref() {
+        dispatch.channel = chat.clone();
+    }
 }
 
 /// Re-fetch a chat's current snapshot and re-emit its history upstream, without
@@ -1073,8 +1197,8 @@ async fn resync_chat_messages(
     }
 }
 
-/// Force a full resync of a session: re-emit the session entry plus an enriched
-/// entry for every chat (so each chat conversation gets project/branch details),
+/// Force a full resync of a session: re-emit enriched entries for its chats
+/// (without publishing the parent container as a second conversation),
 /// then reload chat history for the chat(s) matching `target` (or all chats when
 /// `target` is `None` or matches only the session itself). Bypasses the live
 /// subscription dedup so the manual sync button actually reloads content.
@@ -1099,13 +1223,7 @@ async fn force_resync_session(
         return;
     };
 
-    let mut entries = vec![session_state_to_sync_entry(session_uri, session_state)];
-    for (index, chat) in session_state.chats.iter().enumerate() {
-        if index != 0 && !session_needs_live_subscription(chat.status) {
-            continue;
-        }
-        entries.push(chat_summary_to_sync_entry(chat, session_state));
-    }
+    let entries = session_chat_entries(session_uri, session_state);
     let _ = outbound_tx.send(json!({
         "topic": "bot:proxy",
         "event": "sync_sessions",
@@ -1120,7 +1238,7 @@ async fn force_resync_session(
         Some(t) => session_state
             .chats
             .iter()
-            .filter(|c| c.resource.contains(t))
+            .filter(|c| resource_matches(&c.resource, t))
             .map(|c| c.resource.as_str())
             .collect(),
         None => Vec::new(),
@@ -1222,28 +1340,21 @@ fn ensure_resource_subscribed<'a>(
                             "topic": "bot:proxy",
                             "event": "sync_sessions",
                             "payload": {
-                                "sessions": [session_state_to_sync_entry(uri, session_state)],
+                                "sessions": session_chat_entries(uri, session_state),
                             }
                         }));
                         return;
                     }
-                    // Forward this session's details plus an enriched entry for each
-                    // of its chats in one batch. aims surfaces each chat as its own
-                    // conversation, but project/branch/working-directory details only
-                    // live on the session, so without the per-chat entries those
-                    // conversations show up as bare "Session <id>" rows. Subscribing
-                    // to a chat alone only streams its messages.
-                    let mut entries = vec![session_state_to_sync_entry(uri, session_state)];
-                    for chat in &session_state.chats {
-                        entries.push(chat_summary_to_sync_entry(chat, session_state));
-                    }
+                    // Enrich each chat with the container's project details,
+                    // without creating an additional parent conversation.
+                    let entries = session_chat_entries(uri, session_state);
                     let _ = outbound_tx.send(json!({
                         "topic": "bot:proxy",
                         "event": "sync_sessions",
                         "payload": { "sessions": entries },
                     }));
                     for (index, chat) in session_state.chats.iter().enumerate() {
-                        if index != 0 && !session_needs_live_subscription(chat.status) {
+                        if index != 0 && session_state.default_chat.as_deref() != Some(chat.resource.as_str()) && !session_needs_live_subscription(chat.status) {
                             continue;
                         }
                         ensure_resource_subscribed(
@@ -1338,6 +1449,123 @@ fn ensure_resource_subscribed<'a>(
     })
 }
 
+async fn subscribe_created_resource(
+    ahp_client: &Arc<Client>,
+    mirror: &Arc<Mutex<MultiHostStateMirror>>,
+    subscribed_uris: &Arc<Mutex<HashSet<String>>>,
+    outbound_tx: &mpsc::UnboundedSender<Value>,
+    uri: &str,
+) -> Result<SnapshotState, String> {
+    // A SessionAdded listener may already be subscribing. Fetch a confirmed
+    // snapshot rather than treating its in-flight dedup marker as readiness.
+    let (result, _subscription) = ahp_client
+        .subscribe(uri.to_string())
+        .await
+        .map_err(|error| format!("Could not subscribe to the new host resource {uri}: {error}"))?;
+    let snapshot = result
+        .snapshot
+        .ok_or_else(|| format!("The local host returned no snapshot for {uri}"))?;
+    mirror
+        .lock()
+        .await
+        .apply_snapshot(&HostId::new("local"), &snapshot);
+    if subscribed_uris.lock().await.insert(uri.to_string()) {
+        spawn_resource_listener(
+            Arc::clone(ahp_client),
+            Arc::clone(mirror),
+            Arc::clone(subscribed_uris),
+            uri.to_string(),
+            outbound_tx.clone(),
+        );
+    }
+    Ok(snapshot.state)
+}
+
+async fn create_host_session(
+    ahp_client: &Arc<Client>,
+    mirror: &Arc<Mutex<MultiHostStateMirror>>,
+    subscribed_uris: &Arc<Mutex<HashSet<String>>>,
+    outbound_tx: &mpsc::UnboundedSender<Value>,
+    config: &ProxyConfig,
+    payload: &Value,
+) -> Result<(), String> {
+    let mut params: CreateSessionParams =
+        serde_json::from_value(payload["ahp_create_session"].clone())
+            .map_err(|error| format!("Invalid session creation request: {error}"))?;
+    if params.provider.is_none() {
+        let role = payload["metadata"]["agent_type"].as_str();
+        params.provider = mirror
+            .lock()
+            .await
+            .root_states()
+            .values()
+            .flat_map(|root| &root.agents)
+            .find(|agent| Some(agent.provider.as_str()) == role)
+            .map(|agent| agent.provider.clone());
+    }
+    if params.working_directories.is_none() {
+        params.working_directories = config
+            .default_working_directory
+            .as_ref()
+            .map(|directory| vec![directory.clone()]);
+    }
+    if let Some(directories) = &mut params.working_directories {
+        for directory in directories {
+            if !directory.starts_with("file:") {
+                *directory = url::Url::from_directory_path(&*directory)
+                    .map_err(|_| {
+                        format!(
+                            "Working directory must be an absolute path or file URI: {directory}"
+                        )
+                    })?
+                    .to_string();
+            }
+        }
+    }
+    let session_uri = params.channel.clone();
+    ahp_client
+        .request::<_, Value>("createSession", params)
+        .await
+        .map_err(|error| format!("The local host rejected session creation: {error}"))?;
+    let session = subscribe_created_resource(
+        ahp_client,
+        mirror,
+        subscribed_uris,
+        outbound_tx,
+        &session_uri,
+    )
+    .await?;
+    let SnapshotState::Session(session) = session else {
+        return Err("The host did not return a session snapshot for the new session.".to_string());
+    };
+    let default_chat = session.default_chat.as_deref()
+        .ok_or_else(|| "The host did not publish the new session's default chat. Check the local host and create a new session.".to_string())?;
+    outbound_tx
+        .send(json!({
+            "topic": "bot:proxy", "event": "sync_sessions",
+            "payload": {"sessions": session_chat_entries(&session_uri, &session)},
+        }))
+        .map_err(|error| format!("Could not publish the new host session: {error}"))?;
+    let chat = subscribe_created_resource(
+        ahp_client,
+        mirror,
+        subscribed_uris,
+        outbound_tx,
+        default_chat,
+    )
+    .await?;
+    let SnapshotState::Chat(chat) = chat else {
+        return Err("The host did not return a chat snapshot for the default chat.".to_string());
+    };
+    outbound_tx
+        .send(json!({
+            "topic": "bot:proxy", "event": "sync_sessions",
+            "payload": {"sessions": [chat_state_to_sync_entry(default_chat, &chat)]},
+        }))
+        .map_err(|error| format!("Could not publish the new host chat: {error}"))?;
+    Ok(())
+}
+
 async fn handle_upstream_command(
     ahp_client: &Arc<Client>,
     mirror: &Arc<Mutex<MultiHostStateMirror>>,
@@ -1347,55 +1575,53 @@ async fn handle_upstream_command(
     event: &str,
     payload: &Value,
 ) {
+    let mut payload = payload.clone();
+    let dispatch_key = if event == "ahp_dispatch" { None } else { Some("ahp_dispatch") };
+    let dispatch_value = dispatch_key.map_or(&payload, |key| &payload[key]);
+    if let Ok(mut dispatch) = serde_json::from_value::<DispatchActionParams>(dispatch_value.clone()) {
+        let target = payload["external_session_id"].as_str()
+            .or_else(|| payload["session_id"].as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| dispatch.channel.clone());
+        let channel = mirrored_dispatch_channel(&*mirror.lock().await, &dispatch, &target);
+        if let Some(channel) = channel {
+            dispatch.channel = channel;
+        } else {
+            let sessions = list_all_sessions(ahp_client).await;
+            route_dispatch(&mut dispatch, &target, &sessions);
+        }
+        if let Some(key) = dispatch_key {
+            payload[key] = serde_json::to_value(dispatch).unwrap();
+        } else {
+            payload = serde_json::to_value(dispatch).unwrap();
+        }
+    }
+    let payload = &payload;
     match event {
         "create_session" => {
-            if let Some(cs_val) = payload.get("ahp_create_session") {
-                if let Ok(mut cs_params) =
-                    serde_json::from_value::<CreateSessionParams>(cs_val.clone())
-                {
-                    if cs_params.working_directories.is_none() {
-                        cs_params.working_directories = config
-                            .default_working_directory
-                            .as_ref()
-                            .map(|wd| vec![wd.clone()]);
-                    }
-                    let session_uri = cs_params.channel.clone();
-                    if let Err(e) = ahp_client
-                        .request::<_, Value>("createSession", cs_params)
-                        .await
-                    {
-                        warn!("AHP createSession returned: {}", e);
-                    }
-                    ensure_resource_subscribed(
-                        ahp_client,
-                        mirror,
-                        subscribed_uris,
-                        &session_uri,
-                        outbound_tx,
-                        true,
-                    )
-                    .await;
+            let result = create_host_session(
+                ahp_client, mirror, subscribed_uris, outbound_tx, config, payload,
+            ).await;
+            let (status, metadata) = match result {
+                Ok(()) => ("idle", json!({
+                    "creation_status": "ready", "creation_error": null,
+                })),
+                Err(error) => {
+                    error!("Host session creation failed: {error}");
+                    ("error", json!({
+                        "creation_status": "failed", "creation_error": error,
+                    }))
                 }
-            }
-            if let Some(cc_val) = payload.get("ahp_create_chat") {
-                if let Ok(cc_params) = serde_json::from_value::<CreateChatParams>(cc_val.clone()) {
-                    let chat_uri = cc_params.chat.clone();
-                    if let Err(e) = ahp_client
-                        .request::<_, Value>("createChat", cc_params)
-                        .await
-                    {
-                        warn!("AHP createChat returned: {}", e);
-                    }
-                    ensure_resource_subscribed(
-                        ahp_client,
-                        mirror,
-                        subscribed_uris,
-                        &chat_uri,
-                        outbound_tx,
-                        true,
-                    )
-                    .await;
+            };
+            if let Err(error) = outbound_tx.send(json!({
+                "topic": "bot:proxy",
+                "event": "session_status",
+                "payload": {
+                    "external_session_id": payload["external_session_id"],
+                    "status": status, "metadata": metadata,
                 }
+            })) {
+                error!("Failed to report session creation result: {error}");
             }
         }
         "user_message" => {
@@ -1560,6 +1786,126 @@ mod tests {
     use super::*;
     use ahp_types::state::{AgentInfo, SessionModelInfo};
 
+    fn identity_fixture() -> Value {
+        json!({
+            "provider": "copilotcli", "title": "Same title", "status": 8,
+            "resource": "ahp-session:/parent",
+            "createdAt": "2026-11-05T03:00:00Z",
+            "modifiedAt": "2026-11-05T04:00:00Z",
+            "lifecycle": "ready", "activeClients": [],
+            "defaultChat": "ahp-chat:/default-chat",
+            "chats": [{
+                "resource": "ahp-chat:/default-chat", "title": "Same title",
+                "status": 8, "modifiedAt": "2026-11-05T04:00:00Z"
+            }]
+        })
+    }
+
+    fn published_entries(fixture: &Value) -> Vec<Value> {
+        let summary = serde_json::from_value(fixture.clone()).unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        publish_session_summaries(&[summary], &tx);
+        rx.try_recv().unwrap()["payload"]["sessions"].as_array().unwrap().clone()
+    }
+
+    #[test]
+    fn parent_and_default_chat_publish_one_conversation_on_every_sync_path() {
+        let fixture = identity_fixture();
+        let state: SessionState = serde_json::from_value(fixture.clone()).unwrap();
+        let entries = session_chat_entries("ahp-session:/parent", &state);
+        for entries in [entries, published_entries(&fixture)] {
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0]["session_id"], "default-chat");
+            assert_eq!(entries[0]["metadata"]["session_uri"], "ahp-session:/parent");
+            assert_eq!(entries[0]["status"], "running");
+        }
+        let mut archived = fixture.clone();
+        archived["status"] = json!(64);
+        assert_eq!(published_entries(&archived)[0]["status"], "archived");
+        let state = serde_json::from_value(archived).unwrap();
+        assert_eq!(session_chat_entries("ahp-session:/parent", &state)[0]["status"], "archived");
+    }
+
+    #[test]
+    fn distinct_same_title_chats_survive_and_default_is_not_catalog_order() {
+        let mut fixture = identity_fixture();
+        fixture["chats"].as_array_mut().unwrap().insert(0, json!({
+            "resource": "ahp-chat:/other-chat", "title": "Same title",
+            "status": 0, "modifiedAt": "2026-11-05T04:00:00Z"
+        }));
+        let state: SessionState = serde_json::from_value(fixture.clone()).unwrap();
+        for entries in [
+            session_chat_entries("ahp-session:/parent", &state),
+            published_entries(&fixture),
+        ] {
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0]["session_id"], "other-chat");
+            assert!(entries[0]["metadata"]["session_uri"].is_null());
+            assert_eq!(entries[1]["metadata"]["session_uri"], "ahp-session:/parent");
+        }
+        fixture["defaultChat"] = json!("ahp-chat:/other-chat");
+        let entries = published_entries(&fixture);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["metadata"]["session_uri"], "ahp-session:/parent");
+        assert!(entries[1]["metadata"]["session_uri"].is_null());
+        fixture["defaultChat"] = Value::Null;
+        assert!(published_entries(&fixture).iter()
+            .all(|entry| entry["metadata"]["session_uri"].is_null()));
+    }
+
+    #[test]
+    fn default_chat_without_catalog_still_uses_chat_identity() {
+        let mut fixture = identity_fixture();
+        fixture["chats"] = json!([]);
+        let state = serde_json::from_value(fixture.clone()).unwrap();
+        for entries in [
+            session_chat_entries("ahp-session:/parent", &state),
+            published_entries(&fixture),
+        ] {
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0]["session_id"], "default-chat");
+        }
+        let summary = serde_json::from_value(fixture).unwrap();
+        assert!(session_summary_matches(&summary, "default-chat"));
+        assert!(!session_summary_matches(&summary, "default"));
+        assert!(!session_summary_matches(&summary, "pare"));
+    }
+
+    #[test]
+    fn commands_route_to_default_or_selected_chat_and_config_to_parent() {
+        let mut fixture = identity_fixture();
+        fixture["chats"].as_array_mut().unwrap().insert(0, json!({
+            "resource": "ahp-chat:/other-chat", "title": "Same title",
+            "status": 0, "modifiedAt": "2026-11-05T04:00:00Z"
+        }));
+        let summary: SessionSummary = serde_json::from_value(fixture.clone()).unwrap();
+        let state: SessionState = serde_json::from_value(fixture).unwrap();
+        let mut mirror = MultiHostStateMirror::new();
+        mirror.apply_snapshot(&HostId::new("local"), &ahp_types::state::Snapshot {
+            resource: summary.resource.clone(), state: SnapshotState::Session(Box::new(state)), from_seq: 0,
+        });
+        for (target, expected) in [
+            ("parent", "ahp-chat:/default-chat"),
+            ("default-chat", "ahp-chat:/default-chat"),
+            ("ahp-chat:/other-chat", "ahp-chat:/other-chat"),
+            ("ahp-chat:/other-chat/main", "ahp-chat:/other-chat"),
+        ] {
+            let mut dispatch: DispatchActionParams = serde_json::from_value(json!({
+                "channel": "ahp-chat:/parent/main", "clientSeq": 1,
+                "action": {"type": "chat/turnCancelled", "turnId": "turn"}
+            })).unwrap();
+            assert_eq!(mirrored_dispatch_channel(&mirror, &dispatch, target).as_deref(), Some(expected));
+            route_dispatch(&mut dispatch, target, std::slice::from_ref(&summary));
+            assert_eq!(dispatch.channel, expected);
+            dispatch.action = serde_json::from_value(json!({
+                "type": "session/configChanged", "config": {}
+            })).unwrap();
+            assert_eq!(mirrored_dispatch_channel(&mirror, &dispatch, target).as_deref(), Some("ahp-session:/parent"));
+            route_dispatch(&mut dispatch, target, std::slice::from_ref(&summary));
+            assert_eq!(dispatch.channel, "ahp-session:/parent");
+        }
+    }
+
     #[test]
     fn lightweight_sync_includes_idle_status_without_loading_history() {
         let summaries: Vec<SessionSummary> = [0, 8, 24, 64].into_iter().map(|status| {
@@ -1613,6 +1959,324 @@ mod tests {
         for uri in ["ahp-chat://default/session-one", "ahp-chat://default/session-two", "ahp-chat://subagent/session-one/worker"] {
             assert_eq!(extract_session_id_from_uri(uri).as_deref(), Some(uri));
         }
+    }
+
+    #[tokio::test]
+    async fn session_creation_uses_host_default_chat_and_reports_rejections() {
+        for (fail_stage, subscription_in_flight) in [
+            (None, false),
+            (None, true),
+            (Some("createSession"), false),
+            (Some("subscribe"), false),
+        ] {
+            let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}", local.local_addr().unwrap());
+            let (requests_tx, mut requests_rx) = mpsc::unbounded_channel();
+            let host = tokio::spawn(async move {
+                let (stream, _) = local.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(Ok(WsMessage::Text(text))) = socket.next().await {
+                    let request: Value = serde_json::from_str(&text).unwrap();
+                    requests_tx.send(request.clone()).unwrap();
+                    let method = request["method"].as_str().unwrap();
+                    if Some(method) == fail_stage {
+                        socket
+                            .send(WsMessage::Text(
+                                json!({
+                                    "jsonrpc": "2.0", "id": request["id"],
+                                    "error": { "code": -32603, "message": "Host unavailable" }
+                                })
+                                .to_string()
+                                .into(),
+                            ))
+                            .await
+                            .unwrap();
+                        continue;
+                    }
+                    let result = match method {
+                        "createSession" => {
+                            assert_eq!(request["params"]["channel"], "ahp-session:/new-session");
+                            assert_eq!(
+                                request["params"]["workingDirectories"][0],
+                                "file:///workspace/morpheus-ui/"
+                            );
+                            assert!(request["params"].get("provider").is_none());
+                            json!({})
+                        }
+                        "subscribe" => {
+                            let uri = request["params"]["channel"].as_str().unwrap();
+                            let state = match uri {
+                                "ahp-session:/new-session" => {
+                                    let mut fixture = identity_fixture();
+                                    fixture["resource"] = json!(uri);
+                                    fixture["defaultChat"] = json!("ahp-chat:/host-default");
+                                    fixture["chats"] = json!([]);
+                                    fixture["status"] = json!(0);
+                                    SnapshotState::Session(Box::new(
+                                        serde_json::from_value(fixture).unwrap(),
+                                    ))
+                                }
+                                "ahp-chat:/host-default" => SnapshotState::Chat(Box::new(
+                                    serde_json::from_value(json!({
+                                        "resource": uri, "title": "New session", "status": 0,
+                                        "modifiedAt": "2026-11-05T04:00:00Z", "turns": [],
+                                    }))
+                                    .unwrap(),
+                                )),
+                                _ => panic!("Unexpected subscription: {uri}"),
+                            };
+                            json!({"snapshot": ahp_types::state::Snapshot {
+                                resource: uri.to_string(), state, from_seq: 0,
+                            }})
+                        }
+                        "dispatchAction" => {
+                            assert_eq!(request["params"]["channel"], "ahp-chat:/host-default");
+                            continue;
+                        }
+                        _ => panic!("Unexpected host command: {method}"),
+                    };
+                    socket
+                        .send(WsMessage::Text(
+                            json!({
+                                "jsonrpc": "2.0", "id": request["id"], "result": result,
+                            })
+                            .to_string()
+                            .into(),
+                        ))
+                        .await
+                        .unwrap();
+                }
+            });
+            let client = Arc::new(
+                Client::connect(
+                    ahp_ws::WebSocketTransport::connect(&url).await.unwrap(),
+                    ClientConfig::default(),
+                )
+                .await
+                .unwrap(),
+            );
+            let mirror = Arc::new(Mutex::new(MultiHostStateMirror::new()));
+            let subscribed = Arc::new(Mutex::new(HashSet::new()));
+            if subscription_in_flight {
+                subscribed.lock().await.extend([
+                    "ahp-session:/new-session".to_string(),
+                    "ahp-chat:/host-default".to_string(),
+                ]);
+            }
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let config = ProxyConfig {
+                local_ahp_url: Some(url),
+                local_ahp_socket: None,
+                local_ahp_token: None,
+                upstream_ws_url: String::new(),
+                bot_token: String::new(),
+                default_working_directory: Some("/workspace/morpheus-ui".into()),
+            };
+            let payload = json!({
+                "conversation_id": 1, "external_session_id": "new-session",
+                "metadata": {"agent_type": "workspace"},
+                "ahp_create_session": {"channel": "ahp-session:/new-session"},
+                "ahp_create_chat": {
+                    "channel": "ahp-session:/new-session", "chat": "ahp-chat:/new-session/main",
+                },
+            });
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                handle_upstream_command(
+                    &client,
+                    &mirror,
+                    &subscribed,
+                    &tx,
+                    &config,
+                    "create_session",
+                    &payload,
+                ),
+            )
+            .await
+            .expect("Creation result must not hang");
+            let mut frames = Vec::new();
+            while let Ok(frame) = rx.try_recv() {
+                frames.push(frame);
+            }
+            let status = frames
+                .iter()
+                .find(|frame| frame["event"] == "session_status")
+                .unwrap();
+            assert_eq!(status["payload"]["external_session_id"], "new-session");
+            if fail_stage.is_some() {
+                assert_eq!(status["payload"]["status"], "error");
+                assert_eq!(status["payload"]["metadata"]["creation_status"], "failed");
+                assert!(!status["payload"]["metadata"]["creation_error"]
+                    .as_str()
+                    .unwrap()
+                    .is_empty());
+                if fail_stage == Some("createSession") {
+                    assert!(subscribed.lock().await.is_empty());
+                    assert_eq!(frames.len(), 1);
+                }
+            } else {
+                assert_eq!(status["payload"]["metadata"]["creation_status"], "ready");
+                assert!(frames
+                    .iter()
+                    .any(|frame| frame["payload"]["sessions"][0]["session_id"] == "host-default"));
+                handle_upstream_command(
+                    &client,
+                    &mirror,
+                    &subscribed,
+                    &tx,
+                    &config,
+                    "user_message",
+                    &json!({
+                        "id": 2, "conversation_id": 1, "external_session_id": "new-session",
+                        "ahp_dispatch": {
+                            "channel": "ahp-chat:/new-session/main", "clientSeq": 1,
+                            "action": {
+                                "type": "chat/turnStarted", "turnId": "turn-2",
+                                "startedAt": "2026-11-05T04:00:00Z",
+                                "message": {"text": "Inspect the project", "origin": {"kind": "user"}},
+                            },
+                        },
+                    }),
+                )
+                .await;
+                loop {
+                    let request =
+                        tokio::time::timeout(std::time::Duration::from_secs(2), requests_rx.recv())
+                            .await
+                            .unwrap()
+                            .unwrap();
+                    if request["method"] == "dispatchAction" {
+                        assert_eq!(request["params"]["channel"], "ahp-chat:/host-default");
+                        break;
+                    }
+                }
+            }
+            client.shutdown().await;
+            tokio::time::timeout(std::time::Duration::from_secs(2), host)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn wire_sync_messages_notifications_commands_and_resync_share_chat_identity() {
+        let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = ProxyConfig {
+            local_ahp_url: Some(format!("ws://{}", local.local_addr().unwrap())),
+            local_ahp_socket: None, local_ahp_token: None,
+            upstream_ws_url: format!("ws://{}/", upstream.local_addr().unwrap()),
+            bot_token: "test-token".into(), default_working_directory: None,
+        };
+        let fixture = identity_fixture();
+        let session: SessionState = serde_json::from_value(fixture.clone()).unwrap();
+        let chat: ChatState = serde_json::from_value(json!({
+            "resource": "ahp-chat:/default-chat", "title": "Same title", "status": 8,
+            "modifiedAt": "2026-11-05T04:00:00Z",
+            "turns": [{
+                "id": "turn", "state": "complete",
+                "message": {"text": "Historical prompt", "origin": {"kind": "user"}},
+                "responseParts": [{"kind": "markdown", "id": "reply", "content": "Historical reply"}]
+            }]
+        })).unwrap();
+        let host = async move {
+            let (stream, _) = local.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(WsMessage::Text(text))) = socket.next().await {
+                let request: Value = serde_json::from_str(&text).unwrap();
+                let result = match request["method"].as_str() {
+                    Some("initialize") => json!({
+                        "protocolVersion": ahp_types::PROTOCOL_VERSION, "serverSeq": 0, "snapshots": []
+                    }),
+                    Some("listSessions") => json!({"items": [fixture]}),
+                    Some("subscribe") => {
+                        let uri = request["params"]["channel"].as_str().unwrap();
+                        let state = match uri {
+                            "ahp-session:/parent" => Some(SnapshotState::Session(Box::new(session.clone()))),
+                            "ahp-chat:/default-chat" => Some(SnapshotState::Chat(Box::new(chat.clone()))),
+                            _ => None,
+                        };
+                        match state {
+                            Some(state) => json!({"snapshot": ahp_types::state::Snapshot {
+                                resource: uri.to_string(), state, from_seq: 0,
+                            }}),
+                            None => json!({}),
+                        }
+                    }
+                    Some("dispatchAction") => {
+                        assert_eq!(request["params"]["channel"], "ahp-chat:/default-chat");
+                        socket.send(WsMessage::Text(json!({
+                            "jsonrpc": "2.0", "method": "action", "params": {
+                                "channel": "ahp-chat:/default-chat", "serverSeq": 1,
+                                "action": request["params"]["action"]
+                            }
+                        }).to_string().into())).await.unwrap();
+                        continue;
+                    }
+                    _ => continue,
+                };
+                socket.send(WsMessage::Text(json!({
+                    "jsonrpc": "2.0", "id": request["id"], "result": result,
+                }).to_string().into())).await.unwrap();
+            }
+        };
+        let server = async move {
+            let (stream, _) = upstream.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let join = socket.next().await.unwrap().unwrap();
+            let join: Value = serde_json::from_str(join.to_text().unwrap()).unwrap();
+            assert_eq!(join["event"], "phx_join");
+            socket.send(WsMessage::Text(json!({
+                "topic": "bot:proxy", "event": "phx_reply", "ref": "1",
+                "payload": {"status": "ok", "response": {}}
+            }).to_string().into())).await.unwrap();
+            let mut histories = 0;
+            let mut notification_received = false;
+            while let Some(Ok(WsMessage::Text(text))) = socket.next().await {
+                let frame: Value = serde_json::from_str(&text).unwrap();
+                match frame["event"].as_str() {
+                    Some("sync_sessions" | "reconcile_sessions") => {
+                        let entries = frame["payload"]["sessions"].as_array().unwrap();
+                        assert_eq!(entries.len(), 1);
+                        assert_eq!(entries[0]["session_id"], "default-chat");
+                    }
+                    Some("sync_messages") => {
+                        assert_eq!(frame["payload"]["external_session_id"], "ahp-chat:/default-chat");
+                        assert_eq!(frame["payload"]["messages"].as_array().unwrap().len(), 2);
+                        histories += 1;
+                        if histories == 1 {
+                            socket.send(WsMessage::Text(json!({
+                                "topic": "bot:proxy", "event": "steer", "payload": {
+                                    "session_id": "parent", "ahp_dispatch": {
+                                        "channel": "ahp-chat:/parent/main", "clientSeq": 1,
+                                        "action": {"type": "chat/turnCancelled", "turnId": "turn"}
+                                    }
+                                }
+                            }).to_string().into())).await.unwrap();
+                        }
+                    }
+                    Some("ahp_envelope") => {
+                        assert_eq!(frame["payload"]["channel"], "ahp-chat:/default-chat");
+                        notification_received = true;
+                        socket.send(WsMessage::Text(json!({
+                            "topic": "bot:proxy", "event": "request_session_sync",
+                            "payload": {"external_session_id": "default-chat"}
+                        }).to_string().into())).await.unwrap();
+                    }
+                    _ => {}
+                }
+                if histories == 2 && notification_received {
+                    socket.close(None).await.unwrap();
+                    return;
+                }
+            }
+            panic!("proxy disconnected before completing the identity round trip");
+        };
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(run_proxy(config), host, server)
+        }).await.expect("identity synchronization must complete without blocking");
+        assert!(outcome.0.is_err(), "upstream disconnect should end this proxy run");
     }
 
     #[tokio::test]

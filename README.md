@@ -4,9 +4,45 @@ A mobile-first AI messaging & **Agent Host Protocol (AHP)** web application writ
 
 The AHP bot integration acts as a bidirectional proxy (`aims-proxy`) for a local AHP server on its host machine, delivering full **VS Code Agents Window** parity in a mobile-first web UI — including creating new sessions with workspace directory, git branch, isolated git worktree, execution mode (`Interactive`, `Plan`, `Autopilot`), and agent role selection, plus instant mobile clipboard image paste and on-the-fly photo attachments.
 
+### Session and chat identity
+
+AHP sessions are containers: each chat is one AIMS conversation, not an additional
+conversation alongside its parent session. The host's explicit `defaultChat`
+designates the session alias; neither matching titles nor catalog order determine
+identity. Separate chats (including same-title chats) keep their own history and
+status. Commands address the selected chat, while configuration changes address
+its parent session. Snapshots, live events, and manual resync use the same chat IDs.
+
+New AHP sessions receive a unique, persisted host ID. AIMS displays creation as
+pending until the proxy creates the host session and subscribes to its default
+chat; it does not create an additional chat. The selected project directory is
+passed to the local host as a file URI. Agent roles are configuration, not host
+provider IDs, unless they match a provider advertised by the host.
+Creating a session does not start agent work: send a prompt after it is ready.
+Offline proxies and host creation failures are shown explicitly rather than
+appearing as successful idle sessions. Failed or pending sessions cannot accept
+prompts. Deploy both server/frontend and proxy for this behavior. Old sessions
+created without a host ID cannot be dispatched safely; create a new session and
+resubmit the prompt (old history is retained and never replayed automatically).
+
+On synchronization, an existing parent-only placeholder is rekeyed to its default
+chat. If both rows already exist, reconciliation transactionally moves all parent
+messages into the chat, retaining message IDs and metadata; the old parent row
+becomes an archived redirect excluded from conversation lists. No history is
+deleted. This is scoped to the connected bot and requires an explicit default-chat
+relationship. Changing `defaultChat` does not merge separate chats. Update both
+server and proxy; no database reset is needed.
+
 ---
 
 ## Architecture Overview
+
+The sidebar lists main chats only, including in search and project counts.
+Sessions identified as subagents by parent/child relationships, nested flags, or
+subagent identifiers are excluded from that list, not deleted. Retained child
+sessions remain accessible through their parent's Subagents panel.
+Selecting Git Worktree configures the next prompt; it does not immediately create
+a worktree. The UI shows the selection without claiming the worktree is active.
 
 ```
 ┌───────────────────────────────────────────────────────────┐

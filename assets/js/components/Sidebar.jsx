@@ -516,8 +516,11 @@ export default function Sidebar({
 
 	const selectedBot = (bots || []).find((b) => b.id === selectedBotId)
 	const isAhp = selectedBot?.bot_type === "ahp"
+	const mainConversations = (conversations || []).filter(
+		(c) => c && !isSessionNested(c, conversations),
+	)
 
-	const hiddenCount = (conversations || []).filter((c) => {
+	const hiddenCount = mainConversations.filter((c) => {
 		if (!c || c.status === "archived") return false
 		if (isSessionDone(c)) return true
 		if (!isSessionActive(c) && isSessionOlderThanDays(c, 5)) return true
@@ -529,7 +532,7 @@ export default function Sidebar({
 
 	const activeConversations = hasSearch
 		? sortConversations(
-				(conversations || []).filter((c) => {
+				mainConversations.filter((c) => {
 					if (!c || c.status === "archived") return false
 					const t = (c.title || "").toLowerCase()
 					const ft = formatSessionTitle(c.title).toLowerCase()
@@ -539,7 +542,7 @@ export default function Sidebar({
 			)
 		: orderSessionsHierarchically(
 				sortConversations(
-					(conversations || []).filter((c) => {
+					mainConversations.filter((c) => {
 						if (!c || c.status === "archived") return false
 
 						// Always keep current selected conversation visible so user doesn't lose context

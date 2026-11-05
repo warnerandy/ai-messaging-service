@@ -86,9 +86,14 @@ function mergeSessionsIntoList(prevList, incomingSessions) {
 		const existing = items[index]
 		if (existing?.status === "archived") return
 
-		const itemIsNewer = incoming
-			? timestamp(item) >= timestamp(existing) || !timestamp(item)
-			: timestamp(item) > timestamp(existing)
+		const staleCreation =
+			item.metadata?.creation_status === "pending" &&
+			["ready", "failed"].includes(existing.metadata?.creation_status)
+		const itemIsNewer =
+			!staleCreation &&
+			(incoming
+				? timestamp(item) >= timestamp(existing) || !timestamp(item)
+				: timestamp(item) > timestamp(existing))
 		const newer = itemIsNewer ? item : existing
 		const older = itemIsNewer ? existing : item
 		const mergedKeys = [
@@ -149,6 +154,7 @@ export function useWorkspaceData() {
 	const [models, setModels] = useState([])
 	const [loading, setLoading] = useState(false)
 	const [isCreatingConversation, setIsCreatingConversation] = useState(false)
+	const [createConversationError, setCreateConversationError] = useState(null)
 	const isCreatingConvRef = useRef(false)
 	const [appConnection, setAppConnection] = useState("checking")
 	const botsRef = useRef(bots)
@@ -259,6 +265,7 @@ export function useWorkspaceData() {
 	const selectBot = useCallback(
 		async (botId, botName = null, preferredConvId = null) => {
 			setSelectedBotId(botId)
+			setCreateConversationError(null)
 			if (botId) {
 				localStorage.setItem(SELECTED_BOT_STORAGE_KEY, String(botId))
 			} else {
@@ -285,10 +292,11 @@ export function useWorkspaceData() {
 			try {
 				const bot = botName || botsRef.current.find((entry) => entry.id === botId)?.name
 				const created = await createConversation(token, botId, bot)
-				setConversations([created])
+				setConversations((prev) => mergeSessionsIntoList(prev, [created]))
 				selectConversation(created.id)
-			} catch {
-				// ignore
+			} catch (err) {
+				console.error("Create initial conversation failed:", err)
+				setCreateConversationError(err.message || "Could not create the session.")
 			}
 		},
 		[loadConversations, loadModels, selectConversation, token],
@@ -300,6 +308,7 @@ export function useWorkspaceData() {
 			if (isCreatingConvRef.current) return
 			isCreatingConvRef.current = true
 			setIsCreatingConversation(true)
+			setCreateConversationError(null)
 
 			const opts =
 				customOpts &&
@@ -320,21 +329,12 @@ export function useWorkspaceData() {
 					metadata,
 					external_session_id: externalSessionId,
 				})
-				setConversations((prev) => {
-					const isMatch = (c) =>
-						(created.id != null && c.id != null && String(c.id) === String(created.id)) ||
-						(created.external_session_id &&
-							c.external_session_id &&
-							String(c.external_session_id) === String(created.external_session_id))
-					if (prev.some(isMatch)) {
-						return prev.map((c) => (isMatch(c) ? { ...c, ...created } : c))
-					}
-					return [created, ...prev]
-				})
+				setConversations((prev) => mergeSessionsIntoList(prev, [created]))
 				selectConversation(created.id)
 				return created
 			} catch (err) {
 				console.error("Create conversation failed:", err)
+				setCreateConversationError(err.message || "Could not create the session.")
 			} finally {
 				isCreatingConvRef.current = false
 				setIsCreatingConversation(false)
@@ -688,6 +688,7 @@ export function useWorkspaceData() {
 		selectBot,
 		selectConversation,
 		isCreatingConversation,
+		createConversationError,
 		handleCreateConversation,
 		handleRefreshModels,
 		handleBotStatusChange,

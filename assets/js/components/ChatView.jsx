@@ -166,6 +166,7 @@ export default function ChatView({
 	onArchiveConversation,
 	onSelectConversation,
 	onToggleSidebar,
+	createConversationError,
 }) {
 	const [messages, setMessages] = useState([])
 	const [inputValue, setInputValue] = useState("")
@@ -390,6 +391,10 @@ export default function ChatView({
 		...(activeConv?.metadata || {}),
 		...(sessionMetadata || {}),
 	}
+	const sessionCreationBlocked =
+		bot?.bot_type === "ahp" &&
+		(effectiveMetadata.creation_status === "pending" ||
+			effectiveMetadata.creation_status === "failed")
 
 	const hasActiveWork = Boolean(
 		isLiveRunning &&
@@ -553,7 +558,7 @@ export default function ChatView({
 
 	const isNewSession = useMemo(() => {
 		if (!selectedConversationId) return true
-		if (activeConv?.external_session_id) return false
+		if (activeConv?.external_session_id && !effectiveMetadata.creation_status) return false
 		if (hasUserPrompts || (Array.isArray(messages) && messages.length > 0)) return false
 		if (
 			isAgentBusy ||
@@ -590,6 +595,7 @@ export default function ChatView({
 		pendingQuestion,
 		effectiveMetadata?.tool_calls,
 		effectiveMetadata?.thinking,
+		effectiveMetadata.creation_status,
 		isArchived,
 	])
 
@@ -1912,7 +1918,7 @@ export default function ChatView({
 	}
 
 	async function sendMessage(body, opts = {}) {
-		if (!body || !selectedConversationId) return
+		if (!body || !selectedConversationId || sessionCreationBlocked) return
 
 		const model = selectedModel || models[0]?.name || null
 		const contextSize = selectedContextSize ? Number(selectedContextSize) : null
@@ -1922,7 +1928,10 @@ export default function ChatView({
 			hasUserPromptsRef.current ||
 			(Array.isArray(messages) && messages.some((m) => m && !m.pending && m.role === "user")) ||
 			Boolean(activeConv?.last_message_at)
-		const isExistingSession = Boolean(activeConv?.external_session_id) || hasUserPrompts || isSteer
+		const isExistingSession =
+			Boolean(activeConv?.external_session_id && !effectiveMetadata.creation_status) ||
+			hasUserPrompts ||
+			isSteer
 		const isNewSession = !isExistingSession
 
 		const metadata = {
@@ -2010,7 +2019,10 @@ export default function ChatView({
 			hasUserPromptsRef.current ||
 			(Array.isArray(messages) && messages.some((m) => m && !m.pending && m.role === "user")) ||
 			Boolean(activeConv?.last_message_at)
-		const isExistingSession = Boolean(activeConv?.external_session_id) || hasUserPrompts || is_steer
+		const isExistingSession =
+			Boolean(activeConv?.external_session_id && !effectiveMetadata.creation_status) ||
+			hasUserPrompts ||
+			is_steer
 		const isNewSession = !isExistingSession
 
 		const primary = currentAttachments[0]
@@ -2450,6 +2462,25 @@ export default function ChatView({
 	return (
 		<AssistantRuntimeProvider runtime={threadRuntime}>
 			<main className="chat-main aui-chat-main">
+				{(createConversationError || effectiveMetadata.creation_error) && (
+					<div
+						id="session-creation-error"
+						role="alert"
+						className="border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-300"
+					>
+						<strong>Session creation failed. </strong>
+						{createConversationError || effectiveMetadata.creation_error}
+					</div>
+				)}
+				{effectiveMetadata.creation_status === "pending" && (
+					<div
+						id="session-creation-pending"
+						role="status"
+						className="px-4 py-3 text-sm text-muted-foreground"
+					>
+						Creating the session on your local host...
+					</div>
+				)}
 				{alarmBanner && (
 					<div
 						className="session-alarm-toast"
@@ -2956,7 +2987,7 @@ export default function ChatView({
 										agentTypes={agentTypes}
 										agentType={selectedAgentType}
 										onAgentTypeChange={handleAgentTypeChange}
-										disabled={sending || uploading}
+										disabled={sending || uploading || sessionCreationBlocked}
 									/>
 								)}
 								{!isLoadingMessages &&
@@ -3048,7 +3079,7 @@ export default function ChatView({
 								onChange={setInputValue}
 								onSubmit={handleSend}
 								onSteerSubmit={handleSteerSend}
-								disabled={sending || uploading}
+								disabled={sending || uploading || sessionCreationBlocked}
 								uploading={uploading}
 								effectiveStatus={effectiveStatus}
 								isAgentBusy={isAgentBusy}

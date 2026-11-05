@@ -357,9 +357,14 @@ export function isSessionNested(conv, allConversations = []) {
 	if (
 		conv.nested === true ||
 		conv.is_nested === true ||
+		conv.is_subagent === true ||
 		meta.nested === true ||
 		meta.is_nested === true ||
-		meta.isNested === true
+		meta.isNested === true ||
+		meta.is_subagent === true ||
+		[conv.external_session_id, meta.session_id, meta.session_uri].some(
+			(id) => typeof id === "string" && id.startsWith("ahp-chat://subagent/"),
+		)
 	) {
 		return true
 	}

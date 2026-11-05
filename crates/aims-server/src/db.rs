@@ -848,7 +848,8 @@ pub async fn list_conversations(
     };
 
     Ok(rows.iter().map(map_conversation_row)
-        .filter(|conversation| include_archived || !subagent_conversation(conversation))
+        .filter(|conversation| conversation.metadata.get("canonical_conversation_id").is_none()
+            && (include_archived || !subagent_conversation(conversation)))
         .collect())
 }
 
@@ -894,7 +895,8 @@ pub async fn list_conversations_for_bot(
     };
 
     Ok(rows.iter().map(map_conversation_row)
-        .filter(|conversation| include_archived || !subagent_conversation(conversation))
+        .filter(|conversation| conversation.metadata.get("canonical_conversation_id").is_none()
+            && (include_archived || !subagent_conversation(conversation)))
         .collect())
 }
 
@@ -913,7 +915,12 @@ pub async fn get_conversation(
                (SELECT MAX(m.inserted_at) FROM messages m WHERE m.conversation_id = c.id AND m.role = 'user') AS last_user_input_time
         FROM conversations c
         INNER JOIN bot_tokens b ON b.id = c.bot_token_id
-        WHERE c.id = $1
+        WHERE c.id = COALESCE((
+            SELECT (legacy.metadata->>'canonical_conversation_id')::bigint
+            FROM conversations legacy
+            WHERE legacy.id = $1 AND legacy.bot_token_id = c.bot_token_id
+              AND jsonb_typeof(legacy.metadata->'canonical_conversation_id') = 'number'
+        ), $1)
           AND ($2::bigint IS NULL OR c.user_id = $2)
           AND ($3::bigint IS NULL OR c.bot_token_id = $3)
         "#,
@@ -941,12 +948,14 @@ pub async fn get_conversation_by_external_session(
                (SELECT MAX(m.inserted_at) FROM messages m WHERE m.conversation_id = c.id AND m.role = 'user') AS last_user_input_time
         FROM conversations c
         INNER JOIN bot_tokens b ON b.id = c.bot_token_id
-        WHERE c.bot_token_id = $1 AND $2 <> '' AND (
+        WHERE c.bot_token_id = $1 AND $2 <> ''
+          AND NOT (c.metadata ? 'canonical_conversation_id') AND (
             c.external_session_id = $2
             OR c.external_session_id IN ('ahp-session:/' || $2, 'ahp-chat:/' || $2)
             OR $2 IN ('ahp-session:/' || c.external_session_id, 'ahp-chat:/' || c.external_session_id)
             OR c.metadata->>'default_chat_uri' = $2
             OR c.metadata->>'session_uri' = $2
+            OR c.metadata->>'session_uri' = 'ahp-session:/' || $2
         )
         ORDER BY (c.external_session_id = $2) DESC, c.id DESC
         LIMIT 1
@@ -958,6 +967,80 @@ pub async fn get_conversation_by_external_session(
     .await?;
 
     Ok(row.as_ref().map(map_conversation_row))
+}
+
+/// Reconcile only a host-declared session/default-chat relationship. Keep legacy
+/// rows as archived redirects and move, rather than delete/deduplicate, history.
+pub async fn reconcile_default_chat_identity(
+    pool: &PgPool,
+    bot_token_id: i64,
+    chat_id: &str,
+    session_uri: &str,
+) -> Result<(), sqlx::Error> {
+    let Some(session_id) = session_uri.strip_prefix("ahp-session:/") else {
+        return Ok(());
+    };
+    let session_id = session_id.trim_matches('/');
+    let normalized_chat_id = crate::ahp_mirror::extract_session_id_from_uri(chat_id)
+        .unwrap_or_else(|| chat_id.to_string());
+    let chat_id = normalized_chat_id.as_str();
+    if chat_id == session_id || chat_id == session_uri {
+        return Ok(());
+    }
+    let chat_uri = if chat_id.starts_with("ahp-chat:") {
+        chat_id.to_string()
+    } else {
+        format!("ahp-chat:/{chat_id}")
+    };
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(bot_token_id).execute(&mut *tx).await?;
+    let legacy: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM conversations WHERE bot_token_id = $1
+         AND external_session_id IN ($2, $3)
+         AND NOT (metadata ? 'canonical_conversation_id') ORDER BY id LIMIT 1 FOR UPDATE",
+    ).bind(bot_token_id).bind(session_id).bind(session_uri)
+        .fetch_optional(&mut *tx).await?;
+    let canonical: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM conversations WHERE bot_token_id = $1
+         AND external_session_id IN ($2, $3)
+         AND NOT (metadata ? 'canonical_conversation_id') ORDER BY id LIMIT 1 FOR UPDATE",
+    ).bind(bot_token_id).bind(chat_id).bind(&chat_uri)
+        .fetch_optional(&mut *tx).await?;
+    let target = match (legacy, canonical) {
+        (Some(old), Some(target)) if old != target => {
+            sqlx::query("UPDATE messages SET conversation_id = $1 WHERE conversation_id = $2")
+                .bind(target).bind(old).execute(&mut *tx).await?;
+            sqlx::query(
+                "UPDATE conversations SET metadata = metadata ||
+                 (SELECT metadata - 'session_uri' FROM conversations WHERE id = $2)
+                 WHERE id = $1",
+            ).bind(target).bind(old).execute(&mut *tx).await?;
+            sqlx::query(
+                "UPDATE conversations SET status = 'archived',
+                 metadata = metadata || jsonb_build_object('canonical_conversation_id', $1::bigint)
+                 WHERE id = $2",
+            ).bind(target).bind(old).execute(&mut *tx).await?;
+            Some(target)
+        }
+        (Some(old), None) => {
+            sqlx::query("UPDATE conversations SET external_session_id = $1 WHERE id = $2")
+                .bind(chat_id).bind(old).execute(&mut *tx).await?;
+            Some(old)
+        }
+        (_, canonical) => canonical,
+    };
+    if let Some(target) = target {
+        sqlx::query(
+            "UPDATE conversations SET metadata = metadata - 'session_uri'
+             WHERE bot_token_id = $1 AND metadata->>'session_uri' = $2",
+        ).bind(bot_token_id).bind(session_uri).execute(&mut *tx).await?;
+        sqlx::query(
+            "UPDATE conversations SET metadata = metadata || jsonb_build_object('session_uri', $1::text)
+             WHERE id = $2",
+        ).bind(session_uri).bind(target).execute(&mut *tx).await?;
+    }
+    tx.commit().await
 }
 
 pub async fn reconcile_conversation(
@@ -1008,11 +1091,15 @@ pub async fn create_conversation(
         .await?;
     }
 
+    let bot = get_bot_token(pool, bot_token_id, None).await?;
     let ext_id = external_session_id
         .filter(|s| !s.trim().is_empty())
-        .map(|s| s.to_string());
-
-    let bot = get_bot_token(pool, bot_token_id, None).await?;
+        .map(str::to_string)
+        .or_else(|| {
+            bot.as_ref()
+                .filter(|bot| bot.bot_type == "ahp")
+                .map(|_| uuid::Uuid::new_v4().to_string())
+        });
     let mut merged_meta = json!({});
     if let Some(ref b) = bot {
         if let Some(b_obj) = b.metadata.as_object() {
@@ -1090,7 +1177,8 @@ pub async fn update_conversation(
     let next_title = title
         .map(|s| s.to_string())
         .or_else(|| current.title.clone());
-    let next_status = if subagent_conversation(&current)
+    let next_status = if current.metadata.get("canonical_conversation_id").is_some()
+        || subagent_conversation(&current)
         || metadata_patch.as_ref().is_some_and(|patch| patch["is_subagent"] == true)
     {
         "archived"
@@ -1134,7 +1222,7 @@ pub async fn update_conversation(
     .bind(&next_status)
     .bind(&next_meta)
     .bind(now)
-    .bind(conversation_id)
+    .bind(current.id)
     .execute(pool)
     .await?;
 
@@ -1254,6 +1342,61 @@ pub async fn resolve_bot_conversation(
 #[cfg(test)]
 mod admin_tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires AIMS_TEST_DATABASE_URL pointing to an isolated test database"]
+    async fn default_chat_reconciliation_preserves_history_and_distinct_chats() {
+        let pool = PgPool::connect(&std::env::var("AIMS_TEST_DATABASE_URL").unwrap()).await.unwrap();
+        init_db(&pool).await.unwrap();
+        let user_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO users (email) VALUES ($1::citext) RETURNING id",
+        ).bind(format!("{}@example.test", uuid::Uuid::new_v4()))
+            .fetch_one(&pool).await.unwrap();
+        let (bot, _) = create_bot_token(&pool, user_id, "Identity test", None, None).await.unwrap();
+        let (other_bot, _) = create_bot_token(&pool, user_id, "Other identity test", None, None).await.unwrap();
+        let parent = create_conversation(&pool, user_id, bot.id, "Same title",
+            Some("parent"), Some("idle"), json!({})).await.unwrap();
+        let chat = create_conversation(&pool, user_id, bot.id, "Same title",
+            Some("chat"), Some("running"), json!({})).await.unwrap();
+        let sibling = create_conversation(&pool, user_id, bot.id, "Same title",
+            Some("sibling"), Some("idle"), json!({})).await.unwrap();
+        let foreign = create_conversation(&pool, user_id, other_bot.id, "Same title",
+            Some("parent"), Some("idle"), json!({})).await.unwrap();
+        let old_message = create_message(&pool, parent.id, "user", "text", Some("Old prompt"),
+            json!({"turn_id": "old-turn"}), None, None, false).await.unwrap();
+        let new_message = create_message(&pool, chat.id, "bot", "text", Some("New reply"),
+            json!({"turn_id": "new-turn"}), None, None, false).await.unwrap();
+        for _ in 0..2 {
+            reconcile_default_chat_identity(&pool, bot.id, "chat", "ahp-session:/parent").await.unwrap();
+        }
+        for alias in ["parent", "ahp-session:/parent", "chat", "ahp-chat:/chat"] {
+            assert_eq!(get_conversation_by_external_session(&pool, bot.id, alias)
+                .await.unwrap().unwrap().id, chat.id);
+        }
+        assert_eq!(get_conversation(&pool, parent.id, Some(user_id), None)
+            .await.unwrap().unwrap().id, chat.id);
+        let messages = list_messages(&pool, chat.id, None, None).await.unwrap();
+        assert_eq!(messages.len(), 2);
+        assert!(messages.iter().any(|message| message.id == old_message.id));
+        assert!(messages.iter().any(|message| message.id == new_message.id));
+        let listed = list_conversations_for_bot(&pool, bot.id, true).await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().any(|conversation| conversation.id == sibling.id));
+        assert_eq!(get_conversation_by_external_session(&pool, other_bot.id, "parent")
+            .await.unwrap().unwrap().id, foreign.id);
+        // Changing the routing designation never merges two real chat histories.
+        reconcile_default_chat_identity(&pool, bot.id, "sibling", "ahp-session:/parent").await.unwrap();
+        assert_eq!(list_messages(&pool, chat.id, None, None).await.unwrap().len(), 2);
+        assert!(list_messages(&pool, sibling.id, None, None).await.unwrap().is_empty());
+        assert_eq!(get_conversation_by_external_session(&pool, bot.id, "parent")
+            .await.unwrap().unwrap().id, sibling.id);
+        let placeholder = create_conversation(&pool, user_id, bot.id, "Placeholder",
+            Some("second-parent"), Some("idle"), json!({})).await.unwrap();
+        reconcile_default_chat_identity(&pool, bot.id, "second-chat", "ahp-session:/second-parent").await.unwrap();
+        assert_eq!(get_conversation_by_external_session(&pool, bot.id, "second-chat")
+            .await.unwrap().unwrap().id, placeholder.id);
+        pool.close().await;
+    }
 
     #[tokio::test]
     #[ignore = "requires AIMS_TEST_DATABASE_URL pointing to an isolated test database"]

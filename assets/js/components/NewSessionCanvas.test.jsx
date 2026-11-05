@@ -41,7 +41,7 @@ describe("NewSessionCanvas", () => {
 		expect(onWorktreeChange).toHaveBeenCalledWith(true)
 	})
 
-	it("renders worktree active state when useWorktree is true", () => {
+	it("shows worktree selection without claiming a worktree has been created", () => {
 		render(
 			<NewSessionCanvas
 				bot={defaultBot}
@@ -53,7 +53,11 @@ describe("NewSessionCanvas", () => {
 
 		const worktreeCard = screen.getByTestId("canvas-opt-worktree")
 		expect(worktreeCard).toHaveClass("canvas-target-card--active")
-		expect(screen.getByText(/Worktree Active/)).toBeInTheDocument()
+		expect(worktreeCard).toHaveAttribute("aria-pressed", "true")
+		expect(screen.getByTestId("canvas-opt-direct-branch")).toHaveAttribute("aria-pressed", "false")
+		expect(worktreeCard).toHaveTextContent("Selected")
+		expect(worktreeCard).toHaveTextContent("Requested when you send your first prompt.")
+		expect(screen.queryByText(/Worktree Active|Make Worktree/)).not.toBeInTheDocument()
 	})
 
 	it("displays available branches and allows selecting a branch", async () => {

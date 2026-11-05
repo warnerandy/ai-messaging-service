@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use crate::{
     ahp_mirror::{
-        build_ahp_cancel_turn_dispatch, build_ahp_create_chat_params,
+        build_ahp_cancel_turn_dispatch,
         build_ahp_create_session_params, build_ahp_input_completed_dispatch,
         build_ahp_remove_pending_message_dispatch, build_ahp_session_config_dispatch,
         build_ahp_user_turn_dispatch, translate_state_action, BotAhpMirror,
@@ -200,6 +200,7 @@ async fn handle_user_socket(
     let mut hub_rx = state.hub.subscribe();
     let mut joined_topics: HashMap<String, (WireFormat, Option<Value>)> = HashMap::new();
     let mut topic_bots: HashMap<String, i64> = HashMap::new();
+    let mut topic_aliases: HashMap<String, String> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -230,6 +231,8 @@ async fn handle_user_socket(
 
                 if frame.event == "phx_leave" {
                     joined_topics.remove(&frame.topic);
+                    topic_aliases.remove(&frame.topic);
+                    topic_bots.remove(&frame.topic);
                     let reply = encode_frame(
                         &frame.format,
                         frame.join_ref,
@@ -249,6 +252,7 @@ async fn handle_user_socket(
                                 let bot = db::get_bot_token(&state.db, conv.bot_token_id, None).await.ok().flatten();
                                 joined_topics.insert(frame.topic.clone(), (frame.format.clone(), frame.join_ref.clone()));
                                 topic_bots.insert(frame.topic.clone(), conv.bot_token_id);
+                                topic_aliases.insert(frame.topic.clone(), format!("conversation:{}", conv.id));
 
                                 // Request AHP session sync from bot proxy
                                 state.hub.broadcast(
@@ -350,17 +354,37 @@ async fn handle_user_socket(
                 }
             }
             Ok(hub_ev) = hub_rx.recv() => {
-                if let Some((fmt, join_ref)) = joined_topics.get(&hub_ev.topic) {
-                    let text = encode_frame(
-                        fmt,
-                        join_ref.clone(),
-                        None,
-                        &hub_ev.topic,
-                        &hub_ev.event,
-                        hub_ev.payload,
-                    );
-                    if ws_tx.send(WsMessage::Text(text.into())).await.is_err() {
-                        break;
+                if hub_ev.event == "bot_sessions_updated" {
+                    if let Some(bot_id) = hub_ev.topic.strip_prefix("bot_sessions:")
+                        .and_then(|id| id.parse::<i64>().ok())
+                    {
+                        for (topic, _) in topic_bots.iter().filter(|(_, id)| **id == bot_id) {
+                            if let Some(id) = topic.strip_prefix("conversation:")
+                                .and_then(|id| id.parse::<i64>().ok())
+                            {
+                                if let Ok(Some(conv)) = db::get_conversation(&state.db, id, Some(user.id), Some(bot_id)).await {
+                                    topic_aliases.insert(topic.clone(), format!("conversation:{}", conv.id));
+                                }
+                            }
+                        }
+                    }
+                }
+                let recipients: Vec<_> = joined_topics.iter().filter(|(topic, _)| {
+                    *topic == &hub_ev.topic || topic_aliases.get(*topic) == Some(&hub_ev.topic)
+                }).collect();
+                if !recipients.is_empty() {
+                    for (topic, (fmt, join_ref)) in recipients {
+                        let text = encode_frame(
+                            fmt,
+                            join_ref.clone(),
+                            None,
+                            topic,
+                            &hub_ev.event,
+                            hub_ev.payload.clone(),
+                        );
+                        if ws_tx.send(WsMessage::Text(text.into())).await.is_err() {
+                            return;
+                        }
                     }
                 } else if hub_ev.topic == format!("bot_status:{}", user.id) {
                     // Forward user-wide bot status changes to any joined conversation or bot_sessions topic
@@ -394,6 +418,7 @@ async fn handle_conversation_client_event(
         .await
         .ok()
         .flatten();
+    let conv_id = conv.as_ref().map_or(conv_id, |conversation| conversation.id);
     let ext_id = conv
         .as_ref()
         .and_then(|c| c.external_session_id.clone())
@@ -1344,6 +1369,14 @@ async fn handle_bot_channel_event(
                             }
                         }
                     }
+                    if let Some(parent) = meta["session_uri"].as_str() {
+                        if let Err(error) = db::reconcile_default_chat_identity(
+                            &state.db, bot.id, sid, parent,
+                        ).await {
+                            tracing::warn!("Default chat identity reconciliation failed: {error}");
+                            continue;
+                        }
+                    }
 
                     if existing_only {
                         let _ = db::reconcile_conversation(
@@ -1371,6 +1404,13 @@ async fn handle_bot_channel_event(
                             meta,
                         )
                         .await;
+                        if let Some(parent) = s["metadata"]["session_uri"].as_str() {
+                            if let Err(error) = db::reconcile_default_chat_identity(
+                                &state.db, bot.id, sid, parent,
+                            ).await {
+                                tracing::warn!("New default chat alias reconciliation failed: {error}");
+                            }
+                        }
                     }
                 }
 
@@ -1530,7 +1570,7 @@ pub fn broadcast_bot_status(state: &Arc<AppState>, bot: &db::BotTokenRecord) {
     );
 }
 
-/// Broadcast a newly created session and its AHP `CreateSessionParams` / `CreateChatParams` to the connected AHP proxy.
+/// Ask the proxy to create a host session, which owns its default chat.
 pub async fn notify_bot_session_created(state: &Arc<AppState>, conv: &db::ConversationRecord) {
     state.hub.broadcast(
         format!("bot_sessions:{}", conv.bot_token_id),
@@ -1543,8 +1583,6 @@ pub async fn notify_bot_session_created(state: &Arc<AppState>, conv: &db::Conver
         .as_deref()
         .unwrap_or("default-session");
     let create_session = build_ahp_create_session_params(ext_id, &conv.metadata);
-    let create_chat =
-        build_ahp_create_chat_params(ext_id, conv.title.as_deref(), &conv.metadata);
 
     state.hub.broadcast(
         format!("bot:{}", conv.bot_token_id),
@@ -1557,7 +1595,6 @@ pub async fn notify_bot_session_created(state: &Arc<AppState>, conv: &db::Conver
             "status": conv.status,
             "metadata": conv.metadata,
             "ahp_create_session": create_session,
-            "ahp_create_chat": create_chat,
         }),
     );
 }

@@ -454,6 +454,13 @@ async fn create_conversation_handler(
         ));
     };
 
+    if bot.bot_type == "ahp" && !bot.is_connected {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "The local AHP proxy is offline. Connect it before creating a session." })),
+        ));
+    }
+
     let title = payload
         .get("title")
         .and_then(|v| v.as_str())
@@ -465,6 +472,19 @@ async fn create_conversation_handler(
         .get("metadata")
         .cloned()
         .unwrap_or_else(|| json!({}));
+    if !meta.is_object() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "metadata must be an object" })),
+        ));
+    }
+    let status = if bot.bot_type == "ahp" {
+        meta["creation_status"] = json!("pending");
+        meta["creation_error"] = Value::Null;
+        Some("creating")
+    } else {
+        status
+    };
     if let Some(parent_id) = payload
         .get("parent_session_id")
         .or_else(|| payload.get("parentSessionId"))
@@ -644,6 +664,17 @@ async fn create_user_message_handler(
             Json(json!({ "error": "Not found" })),
         ));
     };
+
+    if conv.bot_type.as_deref() == Some("ahp")
+        && (conv.external_session_id.is_none()
+            || matches!(conv.metadata["creation_status"].as_str(), Some("pending" | "failed")))
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": conv.metadata["creation_error"].as_str()
+                .unwrap_or("The host session is not ready. Wait for creation to finish, or create a new session if creation failed.") })),
+        ));
+    }
 
     let mut metadata = payload
         .get("metadata")
@@ -1177,5 +1208,205 @@ async fn index_handler(State(state): State<Arc<AppState>>) -> Response {
             format!("Failed to read index.html: {}", e),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ws::PubSubHub;
+
+    #[tokio::test]
+    #[ignore = "requires AIMS_TEST_DATABASE_URL pointing to an isolated test database"]
+    async fn new_ahp_sessions_have_unique_ids_and_only_ready_sessions_accept_prompts() {
+        let pool = sqlx::PgPool::connect(&std::env::var("AIMS_TEST_DATABASE_URL").unwrap())
+            .await
+            .unwrap();
+        db::init_db(&pool).await.unwrap();
+        let user_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO users (email) VALUES ($1::citext) RETURNING id",
+        )
+        .bind(format!("{}@example.test", uuid::Uuid::new_v4()))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let token = db::create_user_session(&pool, user_id).await.unwrap();
+        let (bot, _) = db::create_bot_token(&pool, user_id, "Local host", Some("ahp"), None)
+            .await
+            .unwrap();
+        let state = Arc::new(AppState {
+            db: pool.clone(),
+            hub: PubSubHub::new(),
+            static_dir: PathBuf::new(),
+            secret_key_base: "test-secret".into(),
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+        let mut events = state.hub.subscribe();
+        let request = json!({
+            "bot_token_id": bot.id, "title": "morpheus-ui Session",
+            "metadata": {"working_directory": "/workspace/morpheus-ui"},
+        });
+        let error = create_conversation_handler(
+            State(state.clone()),
+            headers.clone(),
+            Json(request.clone()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            events.try_recv().is_err(),
+            "Offline creation must not queue phantom sessions"
+        );
+        db::update_bot_status(&pool, bot.id, Some(true), None, None)
+            .await
+            .unwrap();
+
+        let mut sessions = Vec::new();
+        for _ in 0..2 {
+            let (status, Json(session)) = create_conversation_handler(
+                State(state.clone()),
+                headers.clone(),
+                Json(request.clone()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(status, StatusCode::CREATED);
+            assert_eq!(session["status"], "creating");
+            let external = session["external_session_id"].as_str().unwrap();
+            assert!(uuid::Uuid::parse_str(external).is_ok());
+            assert_eq!(session["metadata"]["creation_status"], "pending");
+            assert_eq!(events.try_recv().unwrap().event, "conversation_created");
+            let command = events.try_recv().unwrap();
+            assert_eq!(command.event, "create_session");
+            assert_eq!(
+                command.payload["ahp_create_session"]["channel"],
+                format!("ahp-session:/{external}")
+            );
+            assert!(command.payload.get("ahp_create_chat").is_none());
+            let error = create_user_message_handler(
+                State(state.clone()),
+                headers.clone(),
+                Path(session["id"].as_i64().unwrap()),
+                Json(json!({"body": "Inspect the project"})),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.0, StatusCode::CONFLICT);
+            sessions.push(session);
+        }
+        assert_ne!(
+            sessions[0]["external_session_id"],
+            sessions[1]["external_session_id"]
+        );
+        let first = &sessions[0];
+        let id = first["id"].as_i64().unwrap();
+        let external = first["external_session_id"].as_str().unwrap();
+        db::reconcile_default_chat_identity(
+            &pool,
+            bot.id,
+            "host-default",
+            &format!("ahp-session:/{external}"),
+        )
+        .await
+        .unwrap();
+        let resolved =
+            db::resolve_bot_conversation(&pool, &bot, &json!({"external_session_id": external}))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(resolved.id, id);
+        assert_eq!(
+            resolved.external_session_id.as_deref(),
+            Some("host-default")
+        );
+        db::update_conversation(
+            &pool,
+            id,
+            None,
+            Some("idle"),
+            Some(json!({
+                "creation_status": "ready", "creation_error": null,
+            })),
+        )
+        .await
+        .unwrap();
+        let (status, _) = create_user_message_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(id),
+            Json(json!({"body": "Inspect the project"})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(events.try_recv().unwrap().event, "new_message");
+        assert_eq!(events.try_recv().unwrap().event, "session_message_created");
+        let dispatch = events.try_recv().unwrap();
+        assert_eq!(dispatch.event, "user_message");
+        assert_eq!(dispatch.payload["external_session_id"], "host-default");
+
+        db::update_conversation(
+            &pool,
+            id,
+            None,
+            Some("error"),
+            Some(json!({
+                "creation_status": "failed", "creation_error": "Host rejected creation",
+            })),
+        )
+        .await
+        .unwrap();
+        let error = create_user_message_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(id),
+            Json(json!({"body": "Do work"})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.0, StatusCode::CONFLICT);
+        assert_eq!(error.1 .0["error"], "Host rejected creation");
+
+        let existing = db::create_conversation(
+            &pool,
+            user_id,
+            bot.id,
+            "Synced host chat",
+            Some("existing-chat"),
+            None,
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            existing.external_session_id.as_deref(),
+            Some("existing-chat")
+        );
+        let (chat_bot, _) = db::create_bot_token(&pool, user_id, "Chat", Some("chat"), None)
+            .await
+            .unwrap();
+        let ordinary = db::create_conversation(
+            &pool,
+            user_id,
+            chat_bot.id,
+            "Ordinary chat",
+            None,
+            None,
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert!(ordinary.external_session_id.is_none());
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
     }
 }

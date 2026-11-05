@@ -6196,17 +6196,19 @@ body {
 
 /* Drawer Tabs */
 .subagents-drawer__tabs {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(8rem, 100%), 1fr));
   gap: 0.4rem;
   padding: 0.65rem 1.25rem;
   background: rgba(15, 23, 42, 0.75);
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  overflow-x: auto;
 }
 
 .subagents-tab {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  min-width: 0;
   gap: 0.35rem;
   padding: 0.3rem 0.75rem;
   border-radius: 8px;
@@ -6217,7 +6219,8 @@ body {
   color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.15s ease;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .subagents-tab:hover {

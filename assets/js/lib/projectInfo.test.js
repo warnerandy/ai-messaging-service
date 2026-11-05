@@ -233,6 +233,17 @@ test("isSessionNested accurately identifies nested sessions", () => {
 	assert.equal(isSessionNested({ metadata: { nested: true } }), true)
 	assert.equal(isSessionNested({ metadata: { is_nested: true } }), true)
 	assert.equal(isSessionNested({ metadata: { parent_session_id: "p-456" } }), true)
+	assert.equal(isSessionNested({ is_subagent: true }), true)
+	assert.equal(isSessionNested({ metadata: { is_subagent: true } }), true)
+	for (const conv of [
+		{ external_session_id: "ahp-chat://subagent/main/worker" },
+		{ metadata: { session_id: "ahp-chat://subagent/main/worker" } },
+		{ metadata: { session_uri: "ahp-chat://subagent/main/worker" } },
+	]) {
+		assert.equal(isSessionNested(conv), true)
+	}
+	assert.equal(isSessionNested({ title: "Review pass" }), false)
+	assert.equal(isSessionNested({ metadata: { is_subagent: false } }), false)
 
 	// Reverse check via parent's child_session_ids
 	const childConv = { id: 10, external_session_id: "child-session-1" }

@@ -151,6 +151,7 @@ export default function NewSessionCanvas({
 							className={`canvas-target-card aui-target-card ${!useWorktree ? "canvas-target-card--active aui-target-card--active" : ""}`}
 							onClick={() => !disabled && onWorktreeChange && onWorktreeChange(false)}
 							disabled={disabled}
+							aria-pressed={!useWorktree}
 							data-testid="canvas-opt-direct-branch"
 						>
 							<div className="flex items-center justify-between mb-1">
@@ -179,6 +180,7 @@ export default function NewSessionCanvas({
 								}
 							}}
 							disabled={disabled || !worktreeSupported}
+							aria-pressed={useWorktree}
 							data-testid="canvas-opt-worktree"
 						>
 							<div className="flex items-center justify-between mb-1">
@@ -189,15 +191,12 @@ export default function NewSessionCanvas({
 								<span
 									className={`canvas-check-badge ${useWorktree ? "canvas-check-badge--worktree" : ""}`}
 								>
-									{!worktreeSupported
-										? "Not Supported"
-										: useWorktree
-											? "✓ Worktree Active"
-											: "Make Worktree"}
+									{!worktreeSupported ? "Not Supported" : useWorktree ? "✓ Selected" : "Select"}
 								</span>
 							</div>
 							<p className="canvas-target-card-desc text-xs text-muted-foreground m-0">
-								Isolated worktree against <strong className="text-foreground">{baseBranch}</strong>.
+								Isolated worktree against <strong className="text-foreground">{baseBranch}</strong>.{" "}
+								Requested when you send your first prompt.
 							</p>
 						</button>
 					</div>

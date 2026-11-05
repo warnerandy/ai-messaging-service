@@ -305,4 +305,38 @@ describe("SubagentsPanel", () => {
 		expect(screen.queryByTestId("subagent-card-sess-sub-2")).not.toBeInTheDocument()
 		expect(screen.queryByTestId("subagents-section")).not.toBeInTheDocument()
 	})
+
+	it.each([false, true])("keeps every navigation section available (docked: %s)", (isDocked) => {
+		render(
+			<SubagentsPanel
+				bot={ahpBot}
+				activeConv={parentConv}
+				conversations={[parentConv, runningSubagentConv, idleSubagentConv]}
+				sessionMetadata={{
+					processes: [{ id: "nav-process", name: "Run tests", status: "running" }],
+					changeset: { files: ["assets/css/app.css"] },
+					plan: ["Review navigation"],
+				}}
+				isOpen={true}
+				isDocked={isDocked}
+			/>,
+		)
+
+		expect(screen.getAllByRole("tab")).toHaveLength(5)
+		for (const section of [
+			"running-subagents",
+			"processes",
+			"changeset",
+			"plan",
+			"all-subagents",
+		]) {
+			const tab = screen.getByTestId(`tab-${section}`)
+			fireEvent.click(tab)
+			expect(tab).toHaveAttribute("aria-selected", "true")
+			expect(
+				screen.getAllByRole("tab").filter((item) => item.getAttribute("aria-selected") === "true"),
+			).toHaveLength(1)
+		}
+		expect(screen.getByTestId("subagent-card-sess-sub-2")).toBeInTheDocument()
+	})
 })

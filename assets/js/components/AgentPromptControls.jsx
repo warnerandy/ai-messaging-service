@@ -505,7 +505,9 @@ export default function AgentPromptControls({
 									<div className="agent-toggle-meta">
 										<span className="agent-toggle-title">Git Worktree</span>
 										<span className="agent-toggle-desc">
-											Isolated worktree to protect working tree
+											{isWorktreeLocked
+												? "Isolated worktree to protect working tree"
+												: "Requested when you send your first prompt"}
 										</span>
 									</div>
 									{useWorktree && <span className="agent-toggle-check">✓</span>}

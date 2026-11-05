@@ -1292,7 +1292,49 @@ describe("Sidebar", () => {
 	})
 
 	describe("Nested sessions in sidebar", () => {
-		it("renders nested indicator icon and '↳ Nested' pill for nested sub-sessions", () => {
+		it.each([false, true])(
+			"excludes subagents from search and counts with project grouping %s",
+			async (grouped) => {
+				localStorage.setItem("messaging.group_by_project", String(grouped))
+				const user = userEvent.setup()
+				const sessions = [
+					{
+						id: 1,
+						title: "Review pass",
+						external_session_id: "main",
+						metadata: { project: { name: "Example" }, child_session_ids: ["reverse-child"] },
+					},
+					{ id: 2, title: "Review child", metadata: { parent_session_id: "main" } },
+					{ id: 3, title: "Review worker", metadata: { is_subagent: true } },
+					{ id: 4, title: "Review URI child", external_session_id: "ahp-chat://subagent/main/4" },
+					{ id: 5, title: "Review reverse child", external_session_id: "reverse-child" },
+					{ id: 6, title: "Review done child", status: "done", parent_session_id: "main" },
+				]
+				render(
+					<Sidebar
+						bots={[{ id: 1, name: "AHP Agent", bot_type: "ahp" }]}
+						selectedBotId={1}
+						conversations={sessions}
+						isOpen
+					/>,
+				)
+
+				expect(document.querySelectorAll(".conv-item")).toHaveLength(1)
+				expect(screen.getByText("Review pass")).toBeInTheDocument()
+				expect(screen.queryByLabelText("Show hidden & completed chats")).not.toBeInTheDocument()
+				if (grouped) {
+					expect(screen.getByLabelText("Project: Example, 1 items")).toBeInTheDocument()
+				}
+
+				await user.type(screen.getByPlaceholderText("Search sessions..."), "Review")
+				expect(document.querySelectorAll(".conv-item")).toHaveLength(1)
+				await user.clear(screen.getByPlaceholderText("Search sessions..."))
+				await user.type(screen.getByPlaceholderText("Search sessions..."), "worker")
+				expect(document.querySelectorAll(".conv-item")).toHaveLength(0)
+			},
+		)
+
+		it("shows only main sessions even when a nested session is selected", () => {
 			const sessions = [
 				{
 					id: 101,
@@ -1316,7 +1358,7 @@ describe("Sidebar", () => {
 					bots={[{ id: "ahp-1", name: "AHP Agent", bot_type: "ahp" }]}
 					selectedBotId="ahp-1"
 					conversations={sessions}
-					selectedConversationId={null}
+					selectedConversationId={102}
 					onSelectBot={vi.fn()}
 					onSelectConversation={vi.fn()}
 					onCreateConversation={vi.fn()}
@@ -1329,26 +1371,8 @@ describe("Sidebar", () => {
 				/>,
 			)
 
-			// Sub-task should show the Nested pill
-			const nestedPill = screen.getByTestId("nested-pill")
-			expect(nestedPill).toBeInTheDocument()
-			expect(nestedPill).toHaveTextContent("↳ Nested")
-			expect(nestedPill).toHaveAttribute("title", expect.stringContaining("Main Orchestrator Task"))
-
-			// Sub-task should show the nested branch icon
-			const nestedIcon = screen.getByTestId("nested-icon")
-			expect(nestedIcon).toBeInTheDocument()
-
-			// Check container and button classes and attributes
-			const childButton = screen.getByText("Sub-task: Compiling Code").closest(".conv-item")
-			expect(childButton).toHaveClass("conv-item--nested")
-			expect(childButton).toHaveAttribute("data-nested", "true")
-			expect(childButton).toHaveAttribute("data-parent-id", "parent-main")
-
-			const childWrapper = childButton.closest(".conv-item-wrapper")
-			expect(childWrapper).toHaveClass("conv-item-wrapper--nested")
-
-			// Parent should NOT have nested class or pill
+			expect(screen.queryByText("Sub-task: Compiling Code")).not.toBeInTheDocument()
+			expect(screen.queryByTestId("nested-pill")).not.toBeInTheDocument()
 			const parentButton = screen.getByText("Main Orchestrator Task").closest(".conv-item")
 			expect(parentButton).not.toHaveClass("conv-item--nested")
 			expect(parentButton).not.toHaveAttribute("data-nested")

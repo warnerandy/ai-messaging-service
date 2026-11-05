@@ -35,6 +35,7 @@ function App() {
 		selectBot,
 		selectConversation,
 		isCreatingConversation,
+		createConversationError,
 		handleCreateConversation,
 		handleRefreshModels,
 		handleBotStatusChange,
@@ -89,6 +90,7 @@ function App() {
 						appConnection={appConnection}
 					/>
 					<ChatView
+						createConversationError={createConversationError}
 						token={token}
 						bot={selectedBot}
 						conversations={conversations}

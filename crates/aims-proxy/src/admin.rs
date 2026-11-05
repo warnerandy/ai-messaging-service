@@ -27,6 +27,8 @@ pub(crate) struct Dashboard {
     pub last_update: Option<String>,
     pub error: Option<String>,
     pub sessions: BTreeMap<String, AdminSession>,
+    #[serde(skip)]
+    aliases: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -75,10 +77,23 @@ impl AdminState {
         ) {
             if let Some(sessions) = payload["sessions"].as_array() {
                 for session in sessions {
-                    let Some(id) = session["session_id"].as_str() else {
+                    let Some(raw_id) = session["session_id"].as_str() else {
                         continue;
                     };
+                    let id = data.aliases.get(raw_id).cloned().unwrap_or_else(|| raw_id.to_string());
+                    let id = id.as_str();
                     let status = session["status"].as_str().unwrap_or("idle");
+                    if session["metadata"].get("session_uri").is_some() {
+                        data.aliases.retain(|_, target| target != id);
+                    }
+                    if let Some(parent) = session["metadata"]["session_uri"].as_str() {
+                        if let Some(parent_id) = crate::extract_session_id_from_uri(parent) {
+                            if parent_id != id {
+                                data.sessions.remove(&parent_id);
+                                data.aliases.insert(parent_id, id.to_string());
+                            }
+                        }
+                    }
                     let completed = matches!(status, "completed" | "done")
                         || (status == "idle" && session["metadata"]["last_turn_complete"] == true);
                     let previous = data.sessions.get(id);
@@ -103,6 +118,7 @@ impl AdminState {
             let channel = payload["channel"].as_str().unwrap_or("");
             let id =
                 crate::extract_session_id_from_uri(channel).unwrap_or_else(|| channel.to_string());
+            let id = data.aliases.get(&id).cloned().unwrap_or(id);
             let action = payload["action"]["type"].as_str().unwrap_or("");
             if let Some(session) = data.sessions.get_mut(&id) {
                 if session.status != "archived" {
@@ -304,6 +320,36 @@ mod tests {
             commands,
             origin: "http://127.0.0.1:4035".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn default_chat_replaces_parent_and_receives_live_status() {
+        let state = state();
+        state.observe(&json!({"event": "sync_sessions", "payload": {"sessions": [
+            {"session_id": "parent", "title": "Same title", "status": "idle"}
+        ]}})).await;
+        state.observe(&json!({"event": "sync_sessions", "payload": {"sessions": [
+            {"session_id": "chat", "title": "Same title", "status": "running",
+             "metadata": {"session_uri": "ahp-session:/parent"}},
+            {"session_id": "other", "title": "Same title", "status": "idle",
+             "metadata": {"session_uri": null}}
+        ]}})).await;
+        // A bare chat snapshot must not erase the session alias.
+        state.observe(&json!({"event": "sync_sessions", "payload": {"sessions": [
+            {"session_id": "chat", "status": "running"}
+        ]}})).await;
+        state.observe(&json!({"event": "ahp_envelope", "payload": {
+            "channel": "ahp-chat:/chat", "action": {"type": "chat/turnComplete"}
+        }})).await;
+        assert!(state.eligible(&["chat".into()]).await);
+        state.observe(&json!({"event": "sync_sessions", "payload": {"sessions": [
+            {"session_id": "parent", "status": "running"}
+        ]}})).await;
+        let data = state.data.read().await;
+        assert_eq!(data.sessions.len(), 2);
+        assert!(!data.sessions.contains_key("parent"));
+        assert_eq!(data.sessions["chat"].status, "running");
+        assert!(data.sessions.contains_key("other"));
     }
 
     #[tokio::test]

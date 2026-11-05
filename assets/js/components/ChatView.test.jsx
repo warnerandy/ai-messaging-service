@@ -51,6 +51,71 @@ vi.mock("../thinkingTimer.mjs", () => ({
 }))
 
 describe("ChatView", () => {
+	it.each([
+		["pending", null],
+		["failed", "The local host rejected session creation: provider unavailable"],
+	])("shows host creation %s and prevents sending to an uncreated session", (status, error) => {
+		render(
+			<ChatView
+				token={null}
+				bot={{ name: "CodeBot", bot_type: "ahp", is_connected: true }}
+				conversations={[
+					{
+						id: 1,
+						status: status === "pending" ? "creating" : "error",
+						metadata: { creation_status: status, creation_error: error },
+					},
+				]}
+				selectedConversationId={1}
+				models={[]}
+			/>,
+		)
+		fireEvent.change(screen.getByPlaceholderText("What do you want to know?"), {
+			target: { value: "Inspect this project" },
+		})
+		expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled()
+		if (error) {
+			expect(screen.getByRole("alert")).toHaveTextContent(error)
+		} else {
+			expect(document.getElementById("session-creation-pending")).toHaveTextContent(
+				"Creating the session on your local host",
+			)
+		}
+	})
+
+	it("shows REST session creation failures", () => {
+		render(
+			<ChatView
+				token={null}
+				bot={{ name: "CodeBot" }}
+				conversations={[]}
+				models={[]}
+				createConversationError="The local AHP proxy is offline."
+			/>,
+		)
+		expect(screen.getByRole("alert")).toHaveTextContent("The local AHP proxy is offline.")
+	})
+
+	it("keeps the first-prompt setup visible for newly created sessions with a host ID", () => {
+		render(
+			<ChatView
+				token={null}
+				bot={{ name: "CodeBot", bot_type: "ahp", is_connected: true }}
+				conversations={[
+					{
+						id: 1,
+						external_session_id: "host-chat",
+						status: "idle",
+						metadata: { creation_status: "ready" },
+					},
+				]}
+				selectedConversationId={1}
+				models={[]}
+			/>,
+		)
+		expect(screen.getByTestId("new-session-canvas")).toBeInTheDocument()
+	})
+
 	it("renders the chat shell without a selected conversation", async () => {
 		const user = userEvent.setup()
 		const onToggleSidebar = vi.fn()

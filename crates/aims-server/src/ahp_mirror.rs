@@ -173,7 +173,7 @@ pub fn session_status_to_ui_status(status: SessionStatus) -> &'static str {
 ///
 /// Supports all VS Code Agents Window session creation options:
 /// - `working_directory` / workspace folder -> `working_directories`
-/// - `provider` / `agent_type` (agent role/participant)
+/// - `provider` selects the host agent; `agent_type` remains agent configuration
 /// - `model` / `agent_mode` / `use_worktree` / `base_branch` in `config` & `meta`
 pub fn build_ahp_create_session_params(
     external_session_id: &str,
@@ -207,8 +207,6 @@ pub fn build_ahp_create_session_params(
 
     let provider = metadata
         .get("provider")
-        .or_else(|| metadata.get("agent_type"))
-        .or_else(|| metadata.get("agentType"))
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
@@ -305,10 +303,7 @@ pub fn build_ahp_user_turn_dispatch(
     metadata: &Value,
     client_seq: u64,
 ) -> DispatchActionParams {
-    let chat_uri = format!(
-        "ahp-chat:/{}/main",
-        external_session_id.trim_start_matches("ahp-session:/")
-    );
+    let chat_uri = chat_dispatch_uri(external_session_id);
 
     let attachments = extract_ahp_attachments(metadata);
     let is_steer = metadata
@@ -511,10 +506,7 @@ pub fn build_ahp_cancel_turn_dispatch(
     turn_id: &str,
     client_seq: u64,
 ) -> DispatchActionParams {
-    let chat_uri = format!(
-        "ahp-chat:/{}/main",
-        external_session_id.trim_start_matches("ahp-session:/")
-    );
+    let chat_uri = chat_dispatch_uri(external_session_id);
     DispatchActionParams {
         channel: chat_uri,
         action: StateAction::ChatTurnCancelled(ChatTurnCancelledAction {
@@ -535,10 +527,7 @@ pub fn build_ahp_input_completed_dispatch(
     answer_payload: &Value,
     client_seq: u64,
 ) -> DispatchActionParams {
-    let chat_uri = format!(
-        "ahp-chat:/{}/main",
-        external_session_id.trim_start_matches("ahp-session:/")
-    );
+    let chat_uri = chat_dispatch_uri(external_session_id);
     let mut answers = HashMap::new();
     let answer_text = answer_payload
         .get("answer")
@@ -614,10 +603,7 @@ pub fn build_ahp_remove_pending_message_dispatch(
     message_id: &str,
     client_seq: u64,
 ) -> DispatchActionParams {
-    let chat_uri = format!(
-        "ahp-chat:/{}/main",
-        external_session_id.trim_start_matches("ahp-session:/")
-    );
+    let chat_uri = chat_dispatch_uri(external_session_id);
     DispatchActionParams {
         channel: chat_uri,
         action: StateAction::ChatPendingMessageRemoved(ChatPendingMessageRemovedAction {
@@ -625,6 +611,16 @@ pub fn build_ahp_remove_pending_message_dispatch(
             id: message_id.to_string(),
         }),
         client_seq: client_seq as i64,
+    }
+}
+
+fn chat_dispatch_uri(id: &str) -> String {
+    if id.starts_with("ahp-chat:") {
+        id.to_string()
+    } else {
+        // Legacy sessions created by AIMS use this chat name. The proxy resolves
+        // host-provided session/chat IDs through the authoritative chat catalog.
+        format!("ahp-chat:/{}/main", id.trim_start_matches("ahp-session:/"))
     }
 }
 
@@ -903,6 +899,22 @@ mod tests {
     use ahp_types::state::{AgentInfo, SessionModelInfo};
 
     #[test]
+    fn chat_commands_and_envelopes_preserve_real_chat_identity() {
+        for uri in ["ahp-chat:/chat-uuid", "ahp-chat://default/session-uuid"] {
+            for dispatch in [
+                build_ahp_user_turn_dispatch(uri, "turn", "hello", None, &json!({}), 1),
+                build_ahp_cancel_turn_dispatch(uri, "turn", 2),
+                build_ahp_input_completed_dispatch(uri, "turn", "part", "request", &json!({}), 3),
+                build_ahp_remove_pending_message_dispatch(uri, "message", 4),
+            ] {
+                assert_eq!(dispatch.channel, uri);
+                let translated = translate_state_action(uri, &dispatch.action);
+                assert_eq!(translated.external_session_id, extract_session_id_from_uri(uri));
+            }
+        }
+    }
+
+    #[test]
     fn compound_chat_resources_are_not_collapsed_to_their_kind() {
         for uri in ["ahp-chat://default/session-one", "ahp-chat://default/session-two", "ahp-chat://subagent/session-one/worker"] {
             assert_eq!(extract_session_id_from_uri(uri).as_deref(), Some(uri));
@@ -952,6 +964,30 @@ mod tests {
     }
 
     #[test]
+    fn session_roles_do_not_become_host_provider_ids() {
+        for role in ["workspace", "coder", "architect"] {
+            let params = build_ahp_create_session_params(
+                "new-session",
+                &json!({
+                    "agent_type": role,
+                }),
+            );
+            assert_eq!(params.provider, None);
+            assert_eq!(
+                params.config.unwrap()["agent_type"],
+                AnyValue::from(json!(role))
+            );
+        }
+        let params = build_ahp_create_session_params(
+            "new-session",
+            &json!({
+                "agent_type": "coder", "provider": "copilotcli",
+            }),
+        );
+        assert_eq!(params.provider.as_deref(), Some("copilotcli"));
+    }
+
+    #[test]
     fn test_build_create_session_and_user_turn_with_mobile_pasted_image() {
         let meta = json!({
             "working_directory": "/workspace/my-app",
@@ -976,7 +1012,7 @@ mod tests {
             session_params.working_directories.as_ref().map(|v| v[0].as_str()),
             Some("/workspace/my-app")
         );
-        assert_eq!(session_params.provider.as_deref(), Some("coder"));
+        assert_eq!(session_params.provider, None);
 
         let dispatch = build_ahp_user_turn_dispatch(
             "sess-123",
