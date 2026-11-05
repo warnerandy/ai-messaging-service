@@ -592,7 +592,7 @@ fn spawn_resource_listener(
                     }));
                 }
                 SubscriptionEvent::SessionAdded(notif) => {
-                    publish_session_summaries(std::slice::from_ref(&notif.summary), &outbound_tx);
+                    publish_live_session_summary(&notif.summary, &outbound_tx);
                     if session_needs_live_subscription(notif.summary.status) {
                         ensure_resource_subscribed(
                             &ahp_client,
@@ -603,6 +603,26 @@ fn spawn_resource_listener(
                             true,
                         )
                         .await;
+                    }
+                }
+                SubscriptionEvent::SessionSummaryChanged(notif) => {
+                    // Summary notifications are partial and may concern sessions
+                    // we never subscribed to. Resolve their authoritative catalog
+                    // entry without importing history or guessing missing fields.
+                    let sessions = list_all_sessions(&ahp_client).await;
+                    if let Some(summary) = sessions.iter().find(|s| s.resource == notif.session) {
+                        publish_live_session_summary(summary, &outbound_tx);
+                        if session_needs_live_subscription(summary.status) {
+                            ensure_resource_subscribed(
+                                &ahp_client,
+                                &mirror,
+                                &subscribed_uris,
+                                &summary.resource,
+                                &outbound_tx,
+                                true,
+                            )
+                            .await;
+                        }
                     }
                 }
                 _ => {}
@@ -646,6 +666,21 @@ fn publish_session_summaries(
     sessions: &[SessionSummary],
     outbound: &mpsc::UnboundedSender<Value>,
 ) {
+    publish_session_catalog(sessions, outbound, "reconcile_sessions");
+}
+
+fn publish_live_session_summary(
+    session: &SessionSummary,
+    outbound: &mpsc::UnboundedSender<Value>,
+) {
+    publish_session_catalog(std::slice::from_ref(session), outbound, "sync_sessions");
+}
+
+fn publish_session_catalog(
+    sessions: &[SessionSummary],
+    outbound: &mpsc::UnboundedSender<Value>,
+    event: &str,
+) {
     let entries: Vec<Value> = sessions.iter().flat_map(|session| {
         let mut entries = Vec::new();
         if session.chats.as_ref().is_none_or(|chats| chats.is_empty()) && session.default_chat.is_none() {
@@ -682,7 +717,7 @@ fn publish_session_summaries(
     for batch in entries.chunks(50) {
         let _ = outbound.send(json!({
             "topic": "bot:proxy",
-            "event": "reconcile_sessions",
+            "event": event,
             "payload": { "sessions": batch },
         }));
     }
@@ -1932,6 +1967,100 @@ mod tests {
         assert_eq!(active, [8, 24]);
         assert!(!session_needs_live_subscription(72));
         assert!(!session_needs_live_subscription(2));
+    }
+
+    #[tokio::test]
+    async fn root_notifications_publish_new_idle_sessions_and_status_changes_immediately() {
+        let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = ProxyConfig {
+            local_ahp_url: Some(format!("ws://{}", local.local_addr().unwrap())),
+            local_ahp_socket: None, local_ahp_token: None,
+            upstream_ws_url: format!("ws://{}/", upstream.local_addr().unwrap()),
+            bot_token: "test-token".into(), default_working_directory: None,
+        };
+        let host = async move {
+            let (stream, _) = local.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut announced = false;
+            let mut completed = false;
+            let mut fixture = identity_fixture();
+            fixture["status"] = json!(0);
+            fixture["chats"][0]["status"] = json!(0);
+            while let Some(Ok(WsMessage::Text(text))) = socket.next().await {
+                let request: Value = serde_json::from_str(&text).unwrap();
+                let first_list = request["method"] == "listSessions" && !announced;
+                let result = match request["method"].as_str() {
+                    Some("initialize") => json!({
+                        "protocolVersion": ahp_types::PROTOCOL_VERSION, "serverSeq": 0, "snapshots": []
+                    }),
+                    Some("subscribe") => json!({}),
+                    Some("listSessions") if first_list => json!({"items": []}),
+                    Some("listSessions") => json!({"items": [fixture]}),
+                    _ => continue,
+                };
+                socket.send(WsMessage::Text(json!({
+                    "jsonrpc": "2.0", "id": request["id"], "result": result,
+                }).to_string().into())).await.unwrap();
+                if first_list {
+                    announced = true;
+                    socket.send(WsMessage::Text(json!({
+                        "jsonrpc": "2.0", "method": "root/sessionAdded",
+                        "params": {"channel": ahp_types::ROOT_RESOURCE_URI, "summary": fixture},
+                    }).to_string().into())).await.unwrap();
+                    fixture["status"] = json!(8);
+                    fixture["chats"][0]["status"] = json!(8);
+                    socket.send(WsMessage::Text(json!({
+                        "jsonrpc": "2.0", "method": "root/sessionSummaryChanged",
+                        "params": {
+                            "channel": ahp_types::ROOT_RESOURCE_URI,
+                            "session": "ahp-session:/parent",
+                            "changes": {"status": 8, "chats": fixture["chats"]},
+                        },
+                    }).to_string().into())).await.unwrap();
+                } else if request["method"] == "listSessions" && !completed {
+                    completed = true;
+                    fixture["status"] = json!(0);
+                    fixture["chats"][0]["status"] = json!(0);
+                    socket.send(WsMessage::Text(json!({
+                        "jsonrpc": "2.0", "method": "root/sessionSummaryChanged",
+                        "params": {
+                            "channel": ahp_types::ROOT_RESOURCE_URI,
+                            "session": "ahp-session:/parent",
+                            "changes": {"status": 0, "chats": fixture["chats"]},
+                        },
+                    }).to_string().into())).await.unwrap();
+                }
+            }
+        };
+        let server = async move {
+            let (stream, _) = upstream.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            socket.next().await.unwrap().unwrap();
+            socket.send(WsMessage::Text(json!({
+                "topic": "bot:proxy", "event": "phx_reply", "ref": "1",
+                "payload": {"status": "ok", "response": {}}
+            }).to_string().into())).await.unwrap();
+            let mut statuses = Vec::new();
+            while let Some(Ok(WsMessage::Text(text))) = socket.next().await {
+                let frame: Value = serde_json::from_str(&text).unwrap();
+                if frame["event"] == "sync_sessions" {
+                    let entry = &frame["payload"]["sessions"][0];
+                    assert_eq!(entry["session_id"], "default-chat");
+                    statuses.push(entry["status"].as_str().unwrap().to_string());
+                    if statuses.len() == 3 {
+                        assert_eq!(statuses, ["idle", "running", "idle"]);
+                        socket.close(None).await.unwrap();
+                        return;
+                    }
+                }
+            }
+            panic!("root notification updates never reached AIMS");
+        };
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(run_proxy(config), host, server)
+        }).await.expect("live updates must arrive before periodic reconciliation");
+        assert!(outcome.0.is_err());
     }
 
     #[test]

@@ -167,6 +167,12 @@ cargo run -p aims-proxy -- \
 
 ### Local Proxy Administration
 
+Root `sessionAdded` and `sessionSummaryChanged` notifications publish session
+catalog updates immediately, including newly created idle sessions. Summary
+changes resolve the latest catalog entry without loading chat history, and
+sessions becoming active are subscribed for streaming events. The 60-second
+reconciliation remains a recovery mechanism for missed notifications.
+
 Startup and periodic status reconciliation do not import unopened history:
 `reconcile_sessions` only updates existing AIMS records. Active resources and
 explicitly opened/resynced sessions use the normal import path. Deploy both
