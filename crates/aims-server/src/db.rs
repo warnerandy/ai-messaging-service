@@ -960,6 +960,22 @@ pub async fn get_conversation_by_external_session(
     Ok(row.as_ref().map(map_conversation_row))
 }
 
+pub async fn reconcile_conversation(
+    pool: &PgPool,
+    bot_token_id: i64,
+    external_session_id: &str,
+    title: &str,
+    status: &str,
+    metadata: Value,
+) -> Result<Option<ConversationRecord>, sqlx::Error> {
+    let Some(existing) =
+        get_conversation_by_external_session(pool, bot_token_id, external_session_id).await?
+    else {
+        return Ok(None);
+    };
+    update_conversation(pool, existing.id, Some(title), Some(status), Some(metadata)).await
+}
+
 pub async fn create_conversation(
     pool: &PgPool,
     user_id: i64,
@@ -1251,6 +1267,19 @@ mod admin_tests {
         .fetch_one(&pool).await.unwrap();
         let (bot, _) = create_bot_token(&pool, user_id, "Admin test", None, None).await.unwrap();
         let (other, _) = create_bot_token(&pool, user_id, "Other bot", None, None).await.unwrap();
+        assert!(reconcile_conversation(
+            &pool, bot.id, "unopened-history", "Old session", "idle", json!({}),
+        ).await.unwrap().is_none());
+        assert!(get_conversation_by_external_session(&pool, bot.id, "unopened-history")
+            .await.unwrap().is_none());
+        let stale = create_conversation(
+            &pool, user_id, bot.id, "Stale", Some("stale-status"), Some("running"), json!({}),
+        ).await.unwrap();
+        let refreshed = reconcile_conversation(
+            &pool, bot.id, "stale-status", "Stale", "idle", json!({}),
+        ).await.unwrap().unwrap();
+        assert_eq!(refreshed.id, stale.id);
+        assert_eq!(refreshed.status, "idle");
         let uri = "ahp-chat://default/session-one";
         let done = create_conversation(&pool, user_id, bot.id, "Done", Some(uri), Some("idle"),
             json!({"last_turn_complete": true})).await.unwrap();

@@ -214,16 +214,25 @@ pub async fn run_proxy_with_admin(
     info!("Connecting upstream to aims-server...");
     let (upstream_ws, _) = tokio_tungstenite::connect_async(&full_upstream_url).await?;
     let (mut up_tx, mut up_rx) = upstream_ws.split();
+    let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel();
+    let upstream_reader = tokio::spawn(async move {
+        while let Some(message) = up_rx.next().await {
+            if incoming_tx.send(message).is_err() {
+                break;
+            }
+        }
+    });
 
     let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<Value>();
 
     // Join bot channel and publish initial capabilities + models
-    let _ = outbound_tx.send(json!({
+    up_tx.send(WsMessage::Text(json!({
         "topic": "bot:proxy",
         "event": "phx_join",
         "payload": {},
         "ref": "1"
-    }));
+    }).to_string().into())).await?;
+    let mut upstream_joined = false;
     let _ = outbound_tx.send(json!({
         "topic": "bot:proxy",
         "event": "capabilities_sync",
@@ -267,33 +276,18 @@ pub async fn run_proxy_with_admin(
                 "Discovered {} existing AHP sessions on startup",
                 sessions.len()
             );
-            let mut archived_entries = Vec::new();
-            for item in sessions {
-                if session_status_is_archived(item.status) {
-                    // Don't import archived chats, but update existing rows.
-                    archived_entries.push(session_summary_to_sync_entry(&item));
-                    continue;
-                }
-                ensure_resource_subscribed(
-                    &ahp_client,
-                    &mirror,
-                    &subscribed_uris,
-                    &item.resource,
-                    &outbound_tx,
-                    true,
-                )
-                .await;
-            }
-            if !archived_entries.is_empty() {
-                info!(
-                    "Marking {} archived AHP sessions as archived upstream",
-                    archived_entries.len()
-                );
-                let _ = outbound_tx.send(json!({
-                    "topic": "bot:proxy",
-                    "event": "sync_sessions",
-                    "payload": { "sessions": archived_entries },
-                }));
+            publish_session_summaries(&sessions, &outbound_tx);
+            for item in sessions.iter().filter(|item| session_needs_live_subscription(item.status)) {
+                let client = Arc::clone(&ahp_client);
+                let mirror = Arc::clone(&mirror);
+                let subscribed = Arc::clone(&subscribed_uris);
+                let outbound = outbound_tx.clone();
+                let uri = item.resource.clone();
+                tokio::spawn(async move {
+                    ensure_resource_subscribed(
+                        &client, &mirror, &subscribed, &uri, &outbound, true,
+                    ).await;
+                });
             }
         }
     };
@@ -301,6 +295,33 @@ pub async fn run_proxy_with_admin(
     let mut discovery_complete = false;
     let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(25));
     heartbeat.tick().await;
+    let reconciliation = {
+        let client = Arc::clone(&ahp_client);
+        let mirror = Arc::clone(&mirror);
+        let subscribed = Arc::clone(&subscribed_uris);
+        let outbound = outbound_tx.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let sessions = list_all_sessions(&client).await;
+                publish_session_summaries(&sessions, &outbound);
+                for item in sessions.iter().filter(|item| session_needs_live_subscription(item.status)) {
+                    let client = Arc::clone(&client);
+                    let mirror = Arc::clone(&mirror);
+                    let subscribed = Arc::clone(&subscribed);
+                    let outbound = outbound.clone();
+                    let uri = item.resource.clone();
+                    tokio::spawn(async move {
+                        ensure_resource_subscribed(
+                            &client, &mirror, &subscribed, &uri, &outbound, true,
+                        ).await;
+                    });
+                }
+            }
+        })
+    };
     let mut pending_archives = std::collections::HashMap::<
         String,
         tokio::sync::oneshot::Sender<Result<Value, String>>,
@@ -362,14 +383,14 @@ pub async fn run_proxy_with_admin(
                     break format!("Upstream heartbeat failed: {error}");
                 }
             }
-            Some(frame_val) = outbound_rx.recv() => {
+            Some(frame_val) = outbound_rx.recv(), if upstream_joined => {
                 if let Some(admin) = &admin {
                     admin.observe(&frame_val).await;
                 }
                 let Some(mut frame_val) = visibility::for_aims(frame_val, &mut hidden_subagents) else {
                     continue;
                 };
-                if frame_val["event"] == "sync_sessions" {
+                if matches!(frame_val["event"].as_str(), Some("sync_sessions" | "reconcile_sessions")) {
                     let ids: Vec<String> = frame_val["payload"]["sessions"].as_array().into_iter()
                         .flatten().filter(|entry| visibility::subagent_entry(entry))
                         .filter_map(|entry| entry["session_id"].as_str().map(str::to_string)).collect();
@@ -384,7 +405,7 @@ pub async fn run_proxy_with_admin(
                     break format!("Upstream send failed: {error}");
                 }
             }
-            ws_msg = up_rx.next() => {
+            ws_msg = incoming_rx.recv() => {
                 let ws_msg = match ws_msg {
                     Some(Ok(message)) => message,
                     Some(Err(error)) => break format!("Upstream receive failed: {error}"),
@@ -447,6 +468,7 @@ pub async fn run_proxy_with_admin(
                     if payload.get("status").and_then(Value::as_str) != Some("ok") {
                         break "AIMS rejected the bot channel join".to_string();
                     }
+                    upstream_joined = true;
                     if let Some(admin) = &admin {
                         let mut data = admin.data.write().await;
                         data.connected = true;
@@ -472,20 +494,23 @@ pub async fn run_proxy_with_admin(
                     info!("Joined AIMS bot channel");
                 }
 
-                handle_upstream_command(
-                    &ahp_client,
-                    &mirror,
-                    &subscribed_uris,
-                    &outbound_tx,
-                    &config,
-                    event,
-                    &payload,
-                )
-                .await;
+                let client = Arc::clone(&ahp_client);
+                let mirror = Arc::clone(&mirror);
+                let subscribed = Arc::clone(&subscribed_uris);
+                let outbound = outbound_tx.clone();
+                let config = config.clone();
+                let event = event.to_string();
+                tokio::spawn(async move {
+                    handle_upstream_command(
+                        &client, &mirror, &subscribed, &outbound, &config, &event, &payload,
+                    ).await;
+                });
             }
         }
     };
 
+    reconciliation.abort();
+    upstream_reader.abort();
     ahp_client.shutdown().await;
     Err(disconnect_reason.into())
 }
@@ -551,15 +576,18 @@ fn spawn_resource_listener(
                     }));
                 }
                 SubscriptionEvent::SessionAdded(notif) => {
-                    ensure_resource_subscribed(
-                        &ahp_client,
-                        &mirror,
-                        &subscribed_uris,
-                        &notif.summary.resource,
-                        &outbound_tx,
-                        true,
-                    )
-                    .await;
+                    publish_session_summaries(std::slice::from_ref(&notif.summary), &outbound_tx);
+                    if session_needs_live_subscription(notif.summary.status) {
+                        ensure_resource_subscribed(
+                            &ahp_client,
+                            &mirror,
+                            &subscribed_uris,
+                            &notif.summary.resource,
+                            &outbound_tx,
+                            true,
+                        )
+                        .await;
+                    }
                 }
                 _ => {}
             }
@@ -592,6 +620,38 @@ const SESSION_STATUS_ARCHIVED: u32 = 64;
 /// intentionally not surfaced in aims, so we skip subscribing/syncing them.
 fn session_status_is_archived(status: u32) -> bool {
     status & SESSION_STATUS_ARCHIVED == SESSION_STATUS_ARCHIVED
+}
+
+fn session_needs_live_subscription(status: u32) -> bool {
+    matches!(ahp_session_status_to_ui(status), "running" | "waiting_for_input")
+}
+
+fn publish_session_summaries(
+    sessions: &[SessionSummary],
+    outbound: &mpsc::UnboundedSender<Value>,
+) {
+    let entries: Vec<Value> = sessions.iter().flat_map(|session| {
+        let mut entries = vec![session_summary_to_sync_entry(session)];
+        for chat in session.chats.iter().flatten().filter(|_| !session_status_is_archived(session.status)) {
+            entries.push(build_sync_entry(
+                &chat.resource,
+                if chat.title.trim().is_empty() { &session.title } else { &chat.title },
+                chat.status.unwrap_or(session.status),
+                session.project.as_ref(),
+                session.working_directories.as_ref(),
+                session.meta.as_ref(),
+                None,
+            ));
+        }
+        entries
+    }).collect();
+    for batch in entries.chunks(50) {
+        let _ = outbound.send(json!({
+            "topic": "bot:proxy",
+            "event": "reconcile_sessions",
+            "payload": { "sessions": batch },
+        }));
+    }
 }
 
 /// Map an AHP `SessionStatus` bitset to the UI status string used by `aims-server`.
@@ -1040,7 +1100,10 @@ async fn force_resync_session(
     };
 
     let mut entries = vec![session_state_to_sync_entry(session_uri, session_state)];
-    for chat in &session_state.chats {
+    for (index, chat) in session_state.chats.iter().enumerate() {
+        if index != 0 && !session_needs_live_subscription(chat.status) {
+            continue;
+        }
         entries.push(chat_summary_to_sync_entry(chat, session_state));
     }
     let _ = outbound_tx.send(json!({
@@ -1179,7 +1242,10 @@ fn ensure_resource_subscribed<'a>(
                         "event": "sync_sessions",
                         "payload": { "sessions": entries },
                     }));
-                    for chat in &session_state.chats {
+                    for (index, chat) in session_state.chats.iter().enumerate() {
+                        if index != 0 && !session_needs_live_subscription(chat.status) {
+                            continue;
+                        }
                         ensure_resource_subscribed(
                             ahp_client,
                             mirror,
@@ -1415,6 +1481,17 @@ async fn handle_upstream_command(
             let needle = extract_session_id_from_uri(ext_id).unwrap_or_else(|| ext_id.to_string());
             let sessions = list_all_sessions(ahp_client).await;
             if let Some(parent) = sessions.iter().find(|s| session_summary_matches(s, &needle)) {
+                for chat in parent.chats.iter().flatten().filter(|chat| {
+                    extract_session_id_from_uri(&chat.resource).as_deref() == Some(needle.as_str())
+                        || chat.resource == needle
+                }) {
+                    ensure_resource_subscribed(
+                        ahp_client, mirror, subscribed_uris, &chat.resource, outbound_tx, true,
+                    ).await;
+                }
+                ensure_resource_subscribed(
+                    ahp_client, mirror, subscribed_uris, &parent.resource, outbound_tx, true,
+                ).await;
                 force_resync_session(
                     ahp_client,
                     mirror,
@@ -1482,6 +1559,34 @@ pub fn extract_root_capabilities(root: &RootState) -> Value {
 mod tests {
     use super::*;
     use ahp_types::state::{AgentInfo, SessionModelInfo};
+
+    #[test]
+    fn lightweight_sync_includes_idle_status_without_loading_history() {
+        let summaries: Vec<SessionSummary> = [0, 8, 24, 64].into_iter().map(|status| {
+            serde_json::from_value(json!({
+                "provider": "copilotcli",
+                "title": "Session",
+                "status": status,
+                "resource": format!("ahp-session:/session-{status}"),
+                "createdAt": "2026-11-05T03:00:00Z",
+                "modifiedAt": "2026-11-05T04:00:00Z"
+            })).unwrap()
+        }).collect();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        publish_session_summaries(&summaries, &tx);
+        let frame = rx.try_recv().unwrap();
+        assert_eq!(frame["event"], "reconcile_sessions");
+        let entries = frame["payload"]["sessions"].as_array().unwrap();
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0]["status"], "idle");
+        assert_eq!(entries[3]["status"], "archived");
+        assert!(rx.try_recv().is_err());
+        let active: Vec<u32> = summaries.iter()
+            .filter(|s| session_needs_live_subscription(s.status)).map(|s| s.status).collect();
+        assert_eq!(active, [8, 24]);
+        assert!(!session_needs_live_subscription(72));
+        assert!(!session_needs_live_subscription(2));
+    }
 
     #[test]
     fn tool_spawned_chats_are_subagents_but_user_forks_are_not() {

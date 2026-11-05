@@ -1294,7 +1294,8 @@ async fn handle_bot_channel_event(
                 }
             }
         }
-        "sync_sessions" | "sessions_list" => {
+        "sync_sessions" | "sessions_list" | "reconcile_sessions" => {
+            let existing_only = frame.event == "reconcile_sessions";
             if let Some(sessions_arr) = frame.payload.get("sessions").and_then(|v| v.as_array()) {
                 let mut synced_ids = HashSet::new();
                 for s in sessions_arr {
@@ -1344,7 +1345,11 @@ async fn handle_bot_channel_event(
                         }
                     }
 
-                    if let Ok(Some(existing)) =
+                    if existing_only {
+                        let _ = db::reconcile_conversation(
+                            &state.db, bot.id, sid, title, status, meta,
+                        ).await;
+                    } else if let Ok(Some(existing)) =
                         db::get_conversation_by_external_session(&state.db, bot.id, sid).await
                     {
                         let _ = db::update_conversation(

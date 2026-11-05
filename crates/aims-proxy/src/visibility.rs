@@ -17,7 +17,7 @@ pub(crate) fn subagent_entry(entry: &Value) -> bool {
 /// Archived sync entries also hide rows on older AIMS servers.
 pub(crate) fn for_aims(mut frame: Value, hidden: &mut HashSet<String>) -> Option<Value> {
     match frame["event"].as_str() {
-        Some("sync_sessions") => {
+        Some("sync_sessions" | "reconcile_sessions") => {
             if let Some(entries) = frame["payload"]["sessions"].as_array_mut() {
                 for entry in entries {
                     if subagent_entry(entry)

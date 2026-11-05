@@ -131,6 +131,12 @@ cargo run -p aims-proxy -- \
 
 ### Local Proxy Administration
 
+Startup and periodic status reconciliation do not import unopened history:
+`reconcile_sessions` only updates existing AIMS records. Active resources and
+explicitly opened/resynced sessions use the normal import path. Deploy both
+the proxy and server to enable update-only reconciliation; older servers
+ignore reconciliation frames rather than creating historical rows.
+
 The proxy serves a local dashboard at **http://127.0.0.1:4035**. It shows
 connection health, session resources, completion evidence, and search/filter
 controls. Select resources to resync their history into AIMS, or review and

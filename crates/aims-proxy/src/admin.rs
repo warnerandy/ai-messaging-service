@@ -69,7 +69,10 @@ impl AdminState {
     pub async fn observe(&self, frame: &Value) {
         let payload = &frame["payload"];
         let mut data = self.data.write().await;
-        if frame["event"] == "sync_sessions" {
+        if matches!(
+            frame["event"].as_str(),
+            Some("sync_sessions" | "reconcile_sessions")
+        ) {
             if let Some(sessions) = payload["sessions"].as_array() {
                 for session in sessions {
                     let Some(id) = session["session_id"].as_str() else {
