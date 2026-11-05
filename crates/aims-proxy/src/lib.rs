@@ -22,10 +22,73 @@ use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{error, info, warn};
 
+pub mod discovery;
+
+/// Transport adapter for any stream implementing `AsyncRead + AsyncWrite + Unpin + Send + 'static`
+/// (such as `tokio::net::UnixStream` on macOS/Linux).
+pub struct GenericWsTransport<S> {
+    inner: tokio_tungstenite::WebSocketStream<S>,
+}
+
+impl<S> GenericWsTransport<S> {
+    pub fn new(inner: tokio_tungstenite::WebSocketStream<S>) -> Self {
+        Self { inner }
+    }
+}
+
+impl<S> ahp::Transport for GenericWsTransport<S>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    async fn send(&mut self, msg: ahp::TransportMessage) -> Result<(), ahp::TransportError> {
+        let frame = match msg {
+            ahp::TransportMessage::Parsed(m) => {
+                let s = serde_json::to_string(&m)
+                    .map_err(|e| ahp::TransportError::Protocol(e.to_string()))?;
+                WsMessage::Text(s.into())
+            }
+            ahp::TransportMessage::Text(s) => WsMessage::Text(s.into()),
+            ahp::TransportMessage::Binary(b) => WsMessage::Binary(b.into()),
+        };
+        self.inner
+            .send(frame)
+            .await
+            .map_err(|e| ahp::TransportError::Io(e.to_string()))
+    }
+
+    async fn recv(&mut self) -> Result<Option<ahp::TransportMessage>, ahp::TransportError> {
+        loop {
+            match self.inner.next().await {
+                None => return Ok(None),
+                Some(Err(e)) => return Err(ahp::TransportError::Io(e.to_string())),
+                Some(Ok(WsMessage::Text(s))) => {
+                    return Ok(Some(ahp::TransportMessage::Text(s.to_string())))
+                }
+                Some(Ok(WsMessage::Binary(b))) => {
+                    return Ok(Some(ahp::TransportMessage::Binary(b.into())))
+                }
+                Some(Ok(WsMessage::Close(_))) => return Ok(None),
+                Some(Ok(_)) => continue,
+            }
+        }
+    }
+
+    async fn close(&mut self) -> Result<(), ahp::TransportError> {
+        self.inner
+            .close(None)
+            .await
+            .map_err(|e| ahp::TransportError::Io(e.to_string()))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
-    /// Local AHP server WebSocket URL (e.g., `ws://127.0.0.1:12345`)
-    pub local_ahp_url: String,
+    /// Local AHP server WebSocket URL (e.g., `ws://127.0.0.1:4034/ahp/v1`)
+    pub local_ahp_url: Option<String>,
+    /// Local AHP Unix domain socket path (macOS / Linux)
+    pub local_ahp_socket: Option<std::path::PathBuf>,
+    /// Secret authentication token to append as `?tkn=<token>`
+    pub local_ahp_token: Option<String>,
     /// Upstream `aims-server` WebSocket URL (e.g., `ws://127.0.0.1:4000/bot/websocket`)
     pub upstream_ws_url: String,
     /// Bot authentication token generated in the Web UI
@@ -36,11 +99,40 @@ pub struct ProxyConfig {
 
 /// Run a single proxy session bridging a local `ahp::Client` and the upstream `aims-server` WebSocket.
 pub async fn run_proxy(config: ProxyConfig) -> Result<(), Box<dyn std::error::Error>> {
-    info!(
-        "Connecting to local AHP server at {}...",
-        config.local_ahp_url
-    );
-    let ahp_transport = ahp_ws::WebSocketTransport::connect(&config.local_ahp_url).await?;
+    let ahp_transport: ahp::transport::BoxedTransport = if let Some(ref socket_path) = config.local_ahp_socket {
+        #[cfg(unix)]
+        {
+            info!("Connecting to local AHP Unix socket at {}...", socket_path.display());
+            let stream = tokio::net::UnixStream::connect(socket_path).await
+                .map_err(|e| format!("Failed to connect to Unix socket '{}': {}", socket_path.display(), e))?;
+            let handshake_url = if let Some(ref tkn) = config.local_ahp_token {
+                format!("ws://localhost/?tkn={}", tkn)
+            } else {
+                "ws://localhost/".to_string()
+            };
+            let (ws_stream, response) = tokio_tungstenite::client_async(handshake_url, stream).await
+                .map_err(|e| format!("WebSocket handshake over Unix socket failed: {}", e))?;
+            info!("WebSocket handshake established over Unix socket (status={})", response.status());
+            ahp::transport::BoxedTransport::new(GenericWsTransport::new(ws_stream))
+        }
+        #[cfg(not(unix))]
+        {
+            return Err("Unix domain sockets are only supported on Unix-like operating systems (macOS, Linux)".into());
+        }
+    } else {
+        let base_url = config.local_ahp_url.as_deref().unwrap_or("ws://127.0.0.1:4034/ahp/v1");
+        let mut url = base_url.to_string();
+        if let Some(ref tkn) = config.local_ahp_token {
+            if !url.contains("tkn=") {
+                let sep = if url.contains('?') { "&" } else { "?" };
+                url = format!("{}{}tkn={}", url, sep, tkn);
+            }
+        }
+        info!("Connecting to local AHP server at {}...", url);
+        let ws_transport = ahp_ws::WebSocketTransport::connect(&url).await?;
+        ahp::transport::BoxedTransport::new(ws_transport)
+    };
+
     let ahp_client = Arc::new(Client::connect(ahp_transport, ClientConfig::default()).await?);
 
     let init = ahp_client
