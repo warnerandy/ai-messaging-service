@@ -1442,6 +1442,15 @@ async fn handle_bot_channel_event(
                     .get("metadata")
                     .cloned()
                     .unwrap_or_else(|| frame.payload.clone());
+                if let Some(ext) = frame.payload.get("external_session_id").and_then(|v| v.as_str()) {
+                    if conv.external_session_id.is_none() && !ext.is_empty() {
+                        let _ = sqlx::query("UPDATE conversations SET external_session_id = $1 WHERE id = $2")
+                            .bind(ext)
+                            .bind(conv.id)
+                            .execute(&state.db)
+                            .await;
+                    }
+                }
                 if let Ok(Some(updated)) =
                     db::update_conversation(&state.db, conv.id, None, Some(status), Some(meta))
                         .await
@@ -1486,6 +1495,7 @@ async fn handle_bot_channel_event(
                         "session_status_changed",
                         json!({
                             "conversation_id": conv.id,
+                            "external_session_id": updated.external_session_id,
                             "status": updated.status,
                             "metadata": updated.metadata,
                         }),
@@ -1495,6 +1505,7 @@ async fn handle_bot_channel_event(
                         "session_status_changed",
                         json!({
                             "conversation_id": conv.id,
+                            "external_session_id": updated.external_session_id,
                             "status": updated.status,
                             "metadata": updated.metadata,
                         }),

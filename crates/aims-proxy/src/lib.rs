@@ -1523,7 +1523,7 @@ async fn create_host_session(
     outbound_tx: &mpsc::UnboundedSender<Value>,
     config: &ProxyConfig,
     payload: &Value,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let mut params: CreateSessionParams =
         serde_json::from_value(payload["ahp_create_session"].clone())
             .map_err(|error| format!("Invalid session creation request: {error}"))?;
@@ -1598,7 +1598,7 @@ async fn create_host_session(
             "payload": {"sessions": [chat_state_to_sync_entry(default_chat, &chat)]},
         }))
         .map_err(|error| format!("Could not publish the new host chat: {error}"))?;
-    Ok(())
+    Ok(default_chat.to_string())
 }
 
 async fn handle_upstream_command(
@@ -1637,13 +1637,20 @@ async fn handle_upstream_command(
             let result = create_host_session(
                 ahp_client, mirror, subscribed_uris, outbound_tx, config, payload,
             ).await;
-            let (status, metadata) = match result {
-                Ok(()) => ("idle", json!({
-                    "creation_status": "ready", "creation_error": null,
-                })),
+            let (status, external_session_id, metadata) = match result {
+                Ok(default_chat) => {
+                    let ext_id = payload["external_session_id"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .unwrap_or(default_chat);
+                    ("idle", Some(ext_id), json!({
+                        "creation_status": "ready", "creation_error": null,
+                    }))
+                }
                 Err(error) => {
                     error!("Host session creation failed: {error}");
-                    ("error", json!({
+                    ("error", payload["external_session_id"].as_str().map(str::to_string), json!({
                         "creation_status": "failed", "creation_error": error,
                     }))
                 }
@@ -1652,7 +1659,8 @@ async fn handle_upstream_command(
                 "topic": "bot:proxy",
                 "event": "session_status",
                 "payload": {
-                    "external_session_id": payload["external_session_id"],
+                    "conversation_id": payload.get("conversation_id"),
+                    "external_session_id": external_session_id,
                     "status": status, "metadata": metadata,
                 }
             })) {

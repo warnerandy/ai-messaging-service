@@ -1182,6 +1182,10 @@ export default function ChatView({
 					setSessionStatus(newStatus)
 					const meta = payload.metadata || {}
 					if (payload.metadata) {
+						setSessionMetadata((prev) => ({
+							...prev,
+							...payload.metadata,
+						}))
 						applyIncomingSessionConfig(payload.metadata)
 					}
 					if (meta.prompt_queue) setPromptQueue(meta.prompt_queue)
@@ -2987,7 +2991,7 @@ export default function ChatView({
 										agentTypes={agentTypes}
 										agentType={selectedAgentType}
 										onAgentTypeChange={handleAgentTypeChange}
-										disabled={sending || uploading || sessionCreationBlocked}
+										disabled={sending || uploading}
 									/>
 								)}
 								{!isLoadingMessages &&
@@ -3079,7 +3083,8 @@ export default function ChatView({
 								onChange={setInputValue}
 								onSubmit={handleSend}
 								onSteerSubmit={handleSteerSend}
-								disabled={sending || uploading || sessionCreationBlocked}
+								disabled={sending || uploading}
+								sessionCreationBlocked={sessionCreationBlocked}
 								uploading={uploading}
 								effectiveStatus={effectiveStatus}
 								isAgentBusy={isAgentBusy}

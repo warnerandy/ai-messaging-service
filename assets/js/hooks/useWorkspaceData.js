@@ -505,6 +505,7 @@ export function useWorkspaceData() {
 							return {
 								...c,
 								status: payload.status ?? c.status,
+								external_session_id: payload.external_session_id ?? c.external_session_id,
 								metadata: payload.metadata
 									? { ...(c.metadata || {}), ...payload.metadata }
 									: c.metadata,

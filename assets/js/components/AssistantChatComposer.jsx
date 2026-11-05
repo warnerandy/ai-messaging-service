@@ -62,6 +62,7 @@ export default function AssistantChatComposer({
 	onSubmit,
 	onSteerSubmit,
 	disabled = false,
+	sessionCreationBlocked = false,
 	uploading = false,
 	effectiveStatus = "idle",
 	isAgentBusy = false,
@@ -159,11 +160,12 @@ export default function AssistantChatComposer({
 	const handleFormSubmit = useCallback(
 		(e) => {
 			if (e) e.preventDefault()
+			if (sessionCreationBlocked) return
 			if (onSubmit) {
 				onSubmit(e)
 			}
 		},
-		[onSubmit],
+		[onSubmit, sessionCreationBlocked],
 	)
 
 	const handleKeyDown = useCallback(
@@ -303,7 +305,7 @@ export default function AssistantChatComposer({
 		return "Pitch your idea"
 	}, [effectiveStatus, isAgentBusy, agentMode, isNewSession])
 
-	const isSubmitDisabled = disabled || uploading || (!value.trim() && attachments.length === 0)
+	const isSubmitDisabled = disabled || uploading || sessionCreationBlocked || (!value.trim() && attachments.length === 0)
 
 	function renderAgentIcon(id) {
 		switch (id) {
@@ -979,9 +981,11 @@ export default function AssistantChatComposer({
 										: "Send message"
 								}
 								title={
-									effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy
-										? "Steer agent with message (Enter)"
-										: "Send message (Enter)"
+									sessionCreationBlocked
+										? "Creating session on local host..."
+										: effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy
+											? "Steer agent with message (Enter)"
+											: "Send message (Enter)"
 								}
 							>
 								{uploading ? (
