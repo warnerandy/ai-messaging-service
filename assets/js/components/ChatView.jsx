@@ -2558,9 +2558,23 @@ export default function ChatView({
 								</svg>
 							</button>
 							<div className="chat-title-group">
-								<h2 className="chat-title" title={bot?.name || "Botamus Prime"}>
-									{bot?.name || "Botamus Prime"}
+								<h2
+									className="chat-title"
+									title={
+										activeConv?.title
+											? formatSessionTitle(activeConv.title)
+											: bot?.name || "Botamus Prime"
+									}
+								>
+									{activeConv?.title
+										? formatSessionTitle(activeConv.title)
+										: bot?.name || "Botamus Prime"}
 								</h2>
+								{activeConv && bot?.name && (
+									<span className="chat-bot-tag" title={`Agent: ${bot.name}`}>
+										{bot.name}
+									</span>
+								)}
 								{bot?.bot_type === "ahp" && effectiveStatus && effectiveStatus !== "idle" && (
 									<span
 										className={`session-status-badge session-status-badge--${effectiveStatus}`}
@@ -2822,7 +2836,7 @@ export default function ChatView({
 										projectInfo.name ||
 										"Click to view project details"
 									}
-									aria-label={`Project: ${projectInfo.name}. Click to view details.`}
+									aria-label={`Project: ${projectInfo.name || projectInfo.branch || "Workspace"}. Click to view details.`}
 								>
 									<svg
 										className="chat-project-icon"
@@ -2837,29 +2851,32 @@ export default function ChatView({
 									>
 										<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
 									</svg>
-									<span className="chat-project-name">{projectInfo.name}</span>
-									{projectInfo.branch && (
-										<span
-											className="chat-project-branch-chip"
-											title={`Git branch: ${projectInfo.branch}`}
-										>
-											<svg
-												width="10"
-												height="10"
-												viewBox="0 0 24 24"
-												fill="none"
-												stroke="currentColor"
-												strokeWidth="2.2"
-												strokeLinecap="round"
-												strokeLinejoin="round"
-											>
-												<line x1="6" y1="3" x2="6" y2="15" />
-												<circle cx="18" cy="6" r="3" />
-												<circle cx="6" cy="18" r="3" />
-												<path d="M18 9a9 9 0 0 1-9 9" />
-											</svg>
-											<span>{projectInfo.branch}</span>
-										</span>
+									<span className="chat-project-name">
+										{projectInfo.name || projectInfo.branch || "Project"}
+									</span>
+									{projectInfo.branch && projectInfo.name && projectInfo.branch !== projectInfo.name && (
+										<>
+											<span className="chat-project-sep" aria-hidden="true">/</span>
+											<span className="chat-project-branch">
+												<svg
+													width="10"
+													height="10"
+													viewBox="0 0 24 24"
+													fill="none"
+													stroke="currentColor"
+													strokeWidth="2.2"
+													strokeLinecap="round"
+													strokeLinejoin="round"
+													className="chat-project-branch-icon"
+												>
+													<line x1="6" y1="3" x2="6" y2="15" />
+													<circle cx="18" cy="6" r="3" />
+													<circle cx="6" cy="18" r="3" />
+													<path d="M18 9a9 9 0 0 1-9 9" />
+												</svg>
+												<span>{projectInfo.branch}</span>
+											</span>
+										</>
 									)}
 									<svg
 										className="chat-project-chevron"
@@ -2912,11 +2929,8 @@ export default function ChatView({
 									</svg>
 								</button>
 							) : null}
-							{activeConv && (
-								<span className="chat-subtitle" title={activeConv.title || "Session"}>
-									{formatSessionTitle(activeConv.title)}
-									{isArchived && <span className="chat-subtitle-archived-tag">(Archived)</span>}
-								</span>
+							{isArchived && (
+								<span className="chat-subtitle-archived-tag">(Archived)</span>
 							)}
 						</div>
 					)}
