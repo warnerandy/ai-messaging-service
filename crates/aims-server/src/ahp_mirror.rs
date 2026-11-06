@@ -330,7 +330,10 @@ pub fn build_ahp_user_turn_dispatch(
 
     let model_selection = model
         .or_else(|| metadata.get("model").and_then(|v| v.as_str()))
-        .filter(|s| !s.is_empty())
+        .filter(|s| {
+            let s_lower = s.to_lowercase();
+            !s.is_empty() && s_lower != "auto" && s_lower != "default"
+        })
         .map(|m| ModelSelection {
             id: m.to_string(),
             config: None,
@@ -340,7 +343,17 @@ pub fn build_ahp_user_turn_dispatch(
         .get("agent_type")
         .or_else(|| metadata.get("agentType"))
         .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
+        .filter(|s| {
+            let s_lower = s.to_lowercase();
+            !s.is_empty()
+                && s_lower != "copilotcli"
+                && s_lower != "claude"
+                && s_lower != "codex"
+                && s_lower != "default"
+                && s_lower != "workspace"
+                && s_lower != "agent"
+                && s_lower != "interactive"
+        })
         .map(|id| AgentSelection {
             uri: if id.contains(':') {
                 id.to_string()
@@ -618,9 +631,15 @@ fn chat_dispatch_uri(id: &str) -> String {
     if id.starts_with("ahp-chat:") {
         id.to_string()
     } else {
-        // Legacy sessions created by AIMS use this chat name. The proxy resolves
-        // host-provided session/chat IDs through the authoritative chat catalog.
-        format!("ahp-chat:/{}/main", id.trim_start_matches("ahp-session:/"))
+        let clean = id.trim_start_matches("ahp-session:/");
+        let clean = clean.strip_suffix("/main").unwrap_or(clean);
+        if uuid::Uuid::parse_str(clean).is_ok() {
+            format!("ahp-chat:/{}", clean)
+        } else {
+            // Legacy sessions created by AIMS use this chat name. The proxy resolves
+            // host-provided session/chat IDs through the authoritative chat catalog.
+            format!("ahp-chat:/{}/main", clean)
+        }
     }
 }
 

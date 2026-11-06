@@ -1149,9 +1149,17 @@ fn mirrored_dispatch_channel(
     dispatch: &DispatchActionParams,
     target: &str,
 ) -> Option<String> {
+    let clean_target = target
+        .strip_prefix("ahp-chat:/")
+        .or_else(|| target.strip_prefix("ahp-session:/"))
+        .unwrap_or(target);
+    let clean_target = clean_target.strip_suffix("/main").unwrap_or(clean_target);
     let fallback = target.strip_prefix("ahp-chat:/").and_then(|id| id.strip_suffix("/main"));
-    let matches = |uri: &str| resource_matches(uri, target)
-        || fallback.is_some_and(|id| resource_matches(uri, id));
+    let matches = |uri: &str| {
+        resource_matches(uri, target)
+            || resource_matches(uri, clean_target)
+            || fallback.is_some_and(|id| resource_matches(uri, id))
+    };
     if !session_dispatch(dispatch) {
         if let Some(key) = mirror.chats().keys().find(|key| matches(&key.uri)) {
             return Some(key.uri.clone());
@@ -1165,7 +1173,9 @@ fn mirrored_dispatch_channel(
             return if session_dispatch(dispatch) {
                 Some(key.uri.clone())
             } else {
-                chat.map(|chat| chat.resource.clone()).or_else(|| session.default_chat.clone())
+                chat.map(|chat| chat.resource.clone())
+                    .or_else(|| session.default_chat.clone())
+                    .or_else(|| session.chats.first().map(|c| c.resource.clone()))
             };
         }
     }
@@ -1177,20 +1187,35 @@ fn route_dispatch(
     target: &str,
     sessions: &[SessionSummary],
 ) {
+    let clean_target = target
+        .strip_prefix("ahp-chat:/")
+        .or_else(|| target.strip_prefix("ahp-session:/"))
+        .unwrap_or(target);
+    let clean_target = clean_target.strip_suffix("/main").unwrap_or(clean_target);
     let fallback = target.strip_prefix("ahp-chat:/").and_then(|id| id.strip_suffix("/main"));
-    let Some(session) = sessions.iter().find(|session| session_summary_matches(session, target))
-        .or_else(|| fallback.and_then(|id| sessions.iter().find(|session| session_summary_matches(session, id))))
+    let Some(session) = sessions.iter().find(|session| {
+        session_summary_matches(session, target)
+            || session_summary_matches(session, clean_target)
+            || fallback.is_some_and(|id| session_summary_matches(session, id))
+    })
     else {
+        if let Some(clean) = dispatch.channel.strip_suffix("/main") {
+            dispatch.channel = clean.to_string();
+        }
         return;
     };
     if session_dispatch(dispatch) {
         dispatch.channel = session.resource.clone();
     } else if let Some(chat) = session.chats.iter().flatten()
-        .find(|chat| resource_matches(&chat.resource, target) || fallback.is_some_and(|id| resource_matches(&chat.resource, id)))
+        .find(|chat| resource_matches(&chat.resource, target) || resource_matches(&chat.resource, clean_target) || fallback.is_some_and(|id| resource_matches(&chat.resource, id)))
     {
         dispatch.channel = chat.resource.clone();
     } else if let Some(chat) = session.default_chat.as_ref() {
         dispatch.channel = chat.clone();
+    } else if let Some(chat) = session.chats.as_ref().and_then(|cs| cs.first()) {
+        dispatch.channel = chat.resource.clone();
+    } else if let Some(clean) = dispatch.channel.strip_suffix("/main") {
+        dispatch.channel = clean.to_string();
     }
 }
 
@@ -1621,12 +1646,11 @@ async fn create_host_session(
     let SnapshotState::Session(session) = session else {
         return Err("The host did not return a session snapshot for the new session.".to_string());
     };
-    let default_chat = session.default_chat.as_deref()
-        .ok_or_else(|| {
-            let msg = "The host did not publish the new session's default chat. Check the local host and create a new session.".to_string();
-            error!("[AUDIT:CREATE_SESSION][ERROR] {}", msg);
-            msg
-        })?;
+    let default_chat = session
+        .default_chat
+        .as_deref()
+        .or_else(|| session.chats.first().map(|c| c.resource.as_str()))
+        .unwrap_or(&session_uri);
     info!("[AUDIT:CREATE_SESSION][SUCCESS] Host session '{}' created. Default chat assigned: '{}'", session_uri, default_chat);
     if let Some(adm) = admin {
         adm.log_audit(
@@ -1679,8 +1703,12 @@ async fn handle_upstream_command(
     let dispatch_key = if event == "ahp_dispatch" { None } else { Some("ahp_dispatch") };
     let dispatch_value = dispatch_key.map_or(&payload, |key| &payload[key]);
     if let Ok(mut dispatch) = serde_json::from_value::<DispatchActionParams>(dispatch_value.clone()) {
-        let target = payload["external_session_id"].as_str()
-            .or_else(|| payload["session_id"].as_str())
+        let target = payload.get("default_chat_uri")
+            .or_else(|| payload.get("metadata").and_then(|m| m.get("default_chat_uri")))
+            .or_else(|| payload.get("metadata").and_then(|m| m.get("chat_uri")))
+            .or_else(|| payload.get("external_session_id"))
+            .or_else(|| payload.get("session_id"))
+            .and_then(Value::as_str)
             .map(str::to_string)
             .unwrap_or_else(|| dispatch.channel.clone());
         let channel = mirrored_dispatch_channel(&*mirror.lock().await, &dispatch, &target);
@@ -1689,6 +1717,9 @@ async fn handle_upstream_command(
         } else {
             let sessions = list_all_sessions(ahp_client).await;
             route_dispatch(&mut dispatch, &target, &sessions);
+        }
+        if let Some(clean) = dispatch.channel.strip_suffix("/main") {
+            dispatch.channel = clean.to_string();
         }
         if let Some(key) = dispatch_key {
             payload[key] = serde_json::to_value(dispatch).unwrap();
@@ -1726,9 +1757,11 @@ async fn handle_upstream_command(
                         .as_str()
                         .filter(|s| !s.is_empty())
                         .map(str::to_string)
-                        .unwrap_or(default_chat);
+                        .unwrap_or_else(|| default_chat.clone());
                     ("idle", Some(ext_id), json!({
-                        "creation_status": "ready", "creation_error": null,
+                        "creation_status": "ready",
+                        "creation_error": null,
+                        "default_chat_uri": default_chat,
                     }))
                 }
                 Err(error) => {
@@ -1796,7 +1829,10 @@ async fn handle_upstream_command(
 
             if let Some(disp_val) = payload.get("ahp_dispatch") {
                 match serde_json::from_value::<DispatchActionParams>(disp_val.clone()) {
-                    Ok(dispatch_params) => {
+                    Ok(mut dispatch_params) => {
+                        if let Some(clean) = dispatch_params.channel.strip_suffix("/main") {
+                            dispatch_params.channel = clean.to_string();
+                        }
                         ensure_resource_subscribed(
                             ahp_client,
                             mirror,
@@ -2180,6 +2216,17 @@ mod tests {
             route_dispatch(&mut dispatch, target, std::slice::from_ref(&summary));
             assert_eq!(dispatch.channel, "ahp-session:/parent");
         }
+
+        // Test fallback to first chat when defaultChat is None
+        let mut no_default_fixture = identity_fixture();
+        no_default_fixture["defaultChat"] = serde_json::Value::Null;
+        let no_default_summary: SessionSummary = serde_json::from_value(no_default_fixture).unwrap();
+        let mut dispatch_no_default: DispatchActionParams = serde_json::from_value(json!({
+            "channel": "ahp-chat:/parent/main", "clientSeq": 2,
+            "action": {"type": "chat/turnStarted", "turnId": "t", "startedAt": "2026-11-05T00:00:00Z", "message": {"text": "hi", "origin": {"kind": "user"}}}
+        })).unwrap();
+        route_dispatch(&mut dispatch_no_default, "parent", std::slice::from_ref(&no_default_summary));
+        assert_eq!(dispatch_no_default.channel, "ahp-chat:/default-chat");
     }
 
     #[test]

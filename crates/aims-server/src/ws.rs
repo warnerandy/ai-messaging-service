@@ -1638,9 +1638,13 @@ pub async fn notify_bot_user_message(
         }),
     );
 
-    let ext_id = conv
-        .external_session_id
-        .as_deref()
+    let default_chat_uri = conv
+        .metadata
+        .get("default_chat_uri")
+        .or_else(|| conv.metadata.get("chat_uri"))
+        .and_then(|v| v.as_str());
+    let ext_id = default_chat_uri
+        .or(conv.external_session_id.as_deref())
         .unwrap_or("default-session");
     let seq = state.hub.next_bot_seq(conv.bot_token_id).await;
     let turn_id = format!("turn-{}", msg.id);
@@ -1661,6 +1665,7 @@ pub async fn notify_bot_user_message(
             "conversation_id": conv.id,
             "session_id": conv.external_session_id,
             "external_session_id": conv.external_session_id,
+            "default_chat_uri": default_chat_uri,
             "content_type": msg.content_type,
             "body": msg.body,
             "metadata": msg.metadata,
