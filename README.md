@@ -186,16 +186,24 @@ delivery acknowledgements. A blocked catalog query cannot stop those control
 messages. Queue overflow is logged and closes the connection rather than
 silently dropping synchronization frames.
 
-The proxy acknowledges a prompt only after writing its dispatch to the local
-AHP transport. This confirms transport delivery, not host acceptance or turn
-completion. Missing, invalid, or failed dispatches remain unacknowledged and
-show a delivery error in the chat; a later successful acknowledgement clears
-that message's error. Replay preserves the turn ID and original start time,
-and the CLI retains successful dispatch receipts across upstream reconnects.
+The proxy validates the target with a fresh host snapshot and acknowledges a
+prompt only after an authoritative action echo matches its channel, client ID,
+and dispatch sequence. A matching rejection is an error, never a successful
+delivery or a state update. Acceptance does not mean turn completion. Existing
+turn IDs in the snapshot are acknowledged without starting another turn.
+Missing, invalid, or failed dispatches remain unacknowledged and show a delivery
+error in the chat. Deleted resources block further sends; create a new session
+rather than silently redirecting a prompt or recreating a deleted conversation.
+Sessions still being created cannot accept prompts until the host confirms readiness.
+Replay preserves the turn ID and original start time,
+and the CLI retains delivery outcomes across upstream reconnects.
 Replayed message IDs are acknowledged again without dispatching another turn.
-Receipts live in memory: restarting the proxy process after dispatch but before
-server acknowledgement can still replay a turn, so exactly-once host execution
-across process restarts is not guaranteed. Previously acknowledged
+Acceptance timeouts and disconnects after sending have an unknown outcome and
+are not automatically replayed. Rejected and unknown outcomes are persisted on
+the message by the server to exclude them from reconnect recovery.
+Receipts live in memory: a process crash before the outcome reaches the server
+can still leave an ambiguous turn, so exactly-once host execution across process
+restarts is not guaranteed. Previously acknowledged
 prompts are not automatically retried. Deploy both server and proxy updates.
 
 Startup and periodic status reconciliation do not import unopened history:
@@ -203,6 +211,15 @@ Startup and periodic status reconciliation do not import unopened history:
 explicitly opened/resynced sessions use the normal import path. Deploy both
 the proxy and server to enable update-only reconciliation; older servers
 ignore reconciliation frames rather than creating historical rows.
+
+The CLI also retains subscriptions for sessions it creates across reconnects,
+including empty drafts that the host would otherwise garbage-collect. On channel
+join the server supplies known draft resources so a restarted proxy can restore
+their subscriptions too. Already deleted drafts cannot be revived; they are
+reported as unavailable instead.
+Incremental conversation reads do not request full host history; repeated full
+reads are coalesced to at most one refresh per conversation every 30 seconds.
+Explicit resync commands remain available.
 
 The proxy serves a local dashboard at **http://127.0.0.1:4035**. It shows
 connection health, session resources, completion evidence, and search/filter

@@ -96,11 +96,38 @@ describe("ChatView", () => {
 			expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled()
 			expect(screen.getByRole("alert")).toHaveTextContent(error)
 		} else {
-			expect(screen.getByRole("button", { name: "Send message" })).not.toBeDisabled()
+			expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled()
 			expect(document.getElementById("session-creation-pending")).toHaveTextContent(
 				"Creating the session on your local host",
 			)
 		}
+	})
+
+	it("blocks sending to a deleted host session while retaining its history", () => {
+		render(
+			<ChatView
+				token={null}
+				bot={{ name: "CodeBot", bot_type: "ahp", is_connected: true }}
+				conversations={[
+					{
+						id: 1,
+						status: "error",
+						external_session_id: "deleted-chat",
+						metadata: {
+							host_session_unavailable: true,
+							delivery_error: "Session was explicitly deleted. Create a new session.",
+						},
+					},
+				]}
+				selectedConversationId={1}
+				models={[]}
+			/>,
+		)
+		fireEvent.change(screen.getByRole("textbox"), {
+			target: { value: "Do not send this" },
+		})
+		expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled()
+		expect(screen.getByRole("alert")).toHaveTextContent("Session was explicitly deleted")
 	})
 
 	it("shows REST session creation failures", () => {

@@ -1687,6 +1687,7 @@ pub async fn get_pending_messages_for_bot(
         FROM messages m
         INNER JOIN conversations c ON c.id = m.conversation_id
         WHERE c.bot_token_id = $1 AND m.role = 'user' AND NOT m.acknowledged
+          AND COALESCE(m.metadata->>'delivery_state', '') NOT IN ('rejected', 'unknown')
         ORDER BY m.inserted_at ASC
         "#,
     )

@@ -392,7 +392,9 @@ export default function ChatView({
 		...(sessionMetadata || {}),
 	}
 	const sessionCreationBlocked =
-		bot?.bot_type === "ahp" && effectiveMetadata.creation_status === "failed"
+		bot?.bot_type === "ahp" &&
+		(["failed", "pending"].includes(effectiveMetadata.creation_status) ||
+			effectiveMetadata.host_session_unavailable === true)
 
 	const hasActiveWork = Boolean(
 		isLiveRunning &&
@@ -1948,13 +1950,6 @@ export default function ChatView({
 	async function sendMessage(body, opts = {}) {
 		if (!body || !selectedConversationId || sessionCreationBlocked) return
 
-		if (effectiveMetadata.creation_status === "pending") {
-			setSessionMetadata((prev) => ({
-				...prev,
-				creation_status: "ready",
-			}))
-		}
-
 		const model = selectedModel || models[0]?.name || null
 		const contextSize = selectedContextSize ? Number(selectedContextSize) : null
 		const optimisticId = `optimistic-${Date.now()}`
@@ -2045,7 +2040,7 @@ export default function ChatView({
 	}
 
 	async function sendAttachmentsAndBody(body, currentAttachments, opts = {}) {
-		if (!selectedConversationId) return
+		if (!selectedConversationId || sessionCreationBlocked) return
 		const model = selectedModel || models[0]?.name || null
 		const contextSize = selectedContextSize ? Number(selectedContextSize) : null
 		const optimisticId = `optimistic-${Date.now()}`

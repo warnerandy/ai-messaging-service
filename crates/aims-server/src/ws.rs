@@ -42,6 +42,7 @@ pub struct PubSubHub {
     /// Accumulates streaming markdown text per `(bot_token_id, turn_id)` so when `ChatTurnComplete` fires,
     /// the full assistant message is persisted to PostgreSQL.
     pub streaming_turns: RwLock<HashMap<(i64, String), String>>,
+    history_refreshes: RwLock<HashMap<i64, tokio::time::Instant>>,
 }
 
 impl PubSubHub {
@@ -51,11 +52,24 @@ impl PubSubHub {
             tx,
             mirrors: RwLock::new(HashMap::new()),
             streaming_turns: RwLock::new(HashMap::new()),
+            history_refreshes: RwLock::new(HashMap::new()),
         }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<HubEvent> {
         self.tx.subscribe()
+    }
+
+    pub async fn should_refresh_history(&self, conversation_id: i64) -> bool {
+        let now = tokio::time::Instant::now();
+        let interval = std::time::Duration::from_secs(30);
+        let mut refreshes = self.history_refreshes.write().await;
+        refreshes.retain(|_, refreshed| now.duration_since(*refreshed) < interval);
+        if refreshes.contains_key(&conversation_id) {
+            return false;
+        }
+        refreshes.insert(conversation_id, now);
+        true
     }
 
     pub fn broadcast(&self, topic: impl Into<String>, event: impl Into<String>, payload: Value) {
@@ -874,8 +888,15 @@ async fn handle_bot_socket(
                 if frame.event == "phx_join" {
                     active_channel_topic = frame.topic.clone();
                     active_join_ref = frame.join_ref.clone();
-                    let archived_sessions: Vec<Value> = db::list_conversations_for_bot(&state.db, bot.id, true)
-                        .await.unwrap_or_default().into_iter()
+                    let sessions = match db::list_conversations_for_bot(&state.db, bot.id, true).await {
+                        Ok(sessions) => sessions,
+                        Err(error) => {
+                            error!("Could not load bot {} session subscriptions on join: {error}", bot.id);
+                            break 'connection;
+                        }
+                    };
+                    let retained_drafts = retained_draft_resources(&sessions);
+                    let archived_sessions: Vec<Value> = sessions.into_iter()
                         .filter(|session| session.metadata["explicitly_archived"] == true)
                         .map(|session| json!({
                             "external_session_id": session.external_session_id,
@@ -897,6 +918,7 @@ async fn handle_bot_socket(
                                 "protocol_version": ahp_types::PROTOCOL_VERSION,
                                 "archive_sessions_supported": true,
                                 "archived_sessions": archived_sessions,
+                                "retained_drafts": retained_drafts,
                             }
                         }),
                     );
@@ -998,11 +1020,41 @@ async fn handle_bot_socket(
     }
 }
 
+fn retained_draft_resources(sessions: &[db::ConversationRecord]) -> Vec<Value> {
+    let mut drafts = Vec::new();
+    for session in sessions {
+        if !matches!(session.status.as_str(), "idle" | "creating")
+            || session.last_user_input_time.is_some()
+            || !matches!(session.metadata["creation_status"].as_str(), Some("ready" | "pending"))
+            || session.metadata["host_session_unavailable"] == true
+        {
+            continue;
+        }
+        for uri in [
+            session.metadata["host_session_uri"].as_str(),
+            session.metadata["session_uri"].as_str(),
+            session.metadata["default_chat_uri"].as_str(),
+        ].into_iter().flatten() {
+            if uri.starts_with("ahp-session:/") || uri.starts_with("ahp-chat:/") {
+                let entry = json!({"conversation_id": session.id, "resource": uri});
+                if !drafts.contains(&entry) {
+                    drafts.push(entry);
+                }
+            }
+        }
+    }
+    drafts
+}
+
 async fn handle_incoming_ahp_envelope(
     state: &Arc<AppState>,
     bot: &db::BotTokenRecord,
     envelope: ActionEnvelope,
 ) {
+    if let Some(reason) = &envelope.rejection_reason {
+        warn!("Ignoring rejected host action on {}: {reason}", envelope.channel);
+        return;
+    }
     let caps_patch = {
         let mut mirrors = state.hub.mirrors.write().await;
         let mirror = mirrors
@@ -1540,9 +1592,42 @@ async fn handle_bot_channel_event(
             }
         }
         "session_status" => {
-            if let Ok(Some(conv)) =
+            let conversation = if frame.payload["metadata"]["host_session_unavailable"] == true {
+                if let Some(id) = frame.payload["conversation_id"].as_i64() {
+                    db::get_conversation(&state.db, id, None, Some(bot.id)).await
+                } else if let Some(external) = frame.payload["external_session_id"].as_str() {
+                    db::get_conversation_by_external_session(&state.db, bot.id, external).await
+                } else {
+                    Ok(None)
+                }
+            } else {
                 db::resolve_bot_conversation(&state.db, bot, &frame.payload).await
-            {
+            };
+            if let Ok(Some(conv)) = conversation {
+                if let (Some(message_id), Some(delivery_state)) = (
+                    frame.payload["metadata"]["failed_message_id"].as_i64(),
+                    frame.payload["metadata"]["delivery_state"].as_str(),
+                ) {
+                    if matches!(delivery_state, "rejected" | "unknown") {
+                        if let Err(error) = sqlx::query(
+                            "UPDATE messages SET metadata = metadata || $1 WHERE id = $2 AND conversation_id = $3 AND role = 'user' AND NOT acknowledged"
+                        )
+                        .bind(json!({
+                            "delivery_state": delivery_state,
+                            "delivery_error": frame.payload["metadata"]["delivery_error"],
+                        }))
+                        .bind(message_id)
+                        .bind(conv.id)
+                        .execute(&state.db).await {
+                            error!("Failed to persist delivery failure for message {message_id}: {error}");
+                            return frame.msg_ref.as_ref().map(|_| encode_frame(
+                                &frame.format, frame.join_ref.clone(), frame.msg_ref.clone(),
+                                &frame.topic, "phx_reply",
+                                json!({ "status": "error", "response": { "error": "Could not persist delivery failure" } }),
+                            ));
+                        }
+                    }
+                }
                 let status = frame
                     .payload
                     .get("status")
@@ -1827,6 +1912,99 @@ async fn pending_user_message_payloads(
 mod delivery_tests {
     use super::*;
     use ahp::{Transport, TransportMessage};
+
+    #[tokio::test]
+    async fn history_refreshes_are_coalesced_per_conversation_and_expire() {
+        let hub = PubSubHub::new();
+        let (first, duplicate) = tokio::join!(
+            hub.should_refresh_history(1), hub.should_refresh_history(1),
+        );
+        assert_ne!(first, duplicate);
+        assert!(hub.should_refresh_history(2).await);
+        hub.history_refreshes.write().await.insert(
+            1, tokio::time::Instant::now() - std::time::Duration::from_secs(31),
+        );
+        assert!(hub.should_refresh_history(1).await);
+        assert!(!hub.should_refresh_history(2).await);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires AIMS_TEST_DATABASE_URL pointing to an isolated test database"]
+    async fn rejected_and_unknown_messages_remain_unacknowledged_but_are_not_replayed() {
+        let pool = sqlx::PgPool::connect(&std::env::var("AIMS_TEST_DATABASE_URL").unwrap()).await.unwrap();
+        db::init_db(&pool).await.unwrap();
+        let user_id = sqlx::query_scalar::<_, i64>("INSERT INTO users (email) VALUES ($1::citext) RETURNING id")
+            .bind(format!("{}@example.test", Uuid::new_v4())).fetch_one(&pool).await.unwrap();
+        let (bot, _) = db::create_bot_token(&pool, user_id, "Failure test", Some("ahp"), None).await.unwrap();
+        let conversation = db::create_conversation(
+            &pool, user_id, bot.id, "Failure test", Some("chat"), Some("idle"), json!({}),
+        ).await.unwrap();
+        let mut draft = conversation.clone();
+        draft.metadata = json!({
+            "creation_status": "ready", "host_session_uri": "ahp-session:/parent",
+            "default_chat_uri": "ahp-chat:/draft",
+        });
+        assert_eq!(retained_draft_resources(&[draft.clone()]), vec![
+            json!({"conversation_id": draft.id, "resource": "ahp-session:/parent"}),
+            json!({"conversation_id": draft.id, "resource": "ahp-chat:/draft"}),
+        ]);
+        draft.last_user_input_time = Some("2026-11-06T16:33:40Z".into());
+        assert!(retained_draft_resources(&[draft.clone()]).is_empty());
+        draft.last_user_input_time = None;
+        draft.metadata["host_session_unavailable"] = json!(true);
+        assert!(retained_draft_resources(&[draft.clone()]).is_empty());
+        draft.metadata["host_session_unavailable"] = json!(false);
+        draft.status = "archived".into();
+        assert!(retained_draft_resources(&[draft]).is_empty());
+        let state = Arc::new(AppState {
+            db: pool.clone(), hub: PubSubHub::new(),
+            static_dir: std::path::PathBuf::new(), secret_key_base: "test".into(),
+        });
+        for delivery_state in ["rejected", "unknown", "retryable"] {
+            let message = db::create_message(
+                &pool, conversation.id, "user", "text", Some("Test"), json!({}), None, None, false,
+            ).await.unwrap();
+            let frame = parse_frame(&json!({
+                "topic": "bot:proxy", "event": "session_status", "ref": "failure",
+                "payload": {
+                    "conversation_id": conversation.id, "status": "error",
+                    "metadata": {
+                        "failed_message_id": message.id, "delivery_state": delivery_state,
+                        "delivery_error": "Host could not confirm acceptance",
+                    },
+                },
+            }).to_string()).unwrap();
+            let reply = handle_bot_channel_event(&state, &bot, &frame).await.unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&reply).unwrap()["payload"]["status"], "ok");
+            let pending = db::get_pending_messages_for_bot(&pool, bot.id).await.unwrap();
+            assert_eq!(pending.iter().any(|pending| pending.id == message.id), delivery_state == "retryable");
+            let acknowledged = sqlx::query_scalar::<_, bool>("SELECT acknowledged FROM messages WHERE id = $1")
+                .bind(message.id).fetch_one(&pool).await.unwrap();
+            assert!(!acknowledged);
+        }
+        let removed = parse_frame(&json!({
+            "topic": "bot:proxy", "event": "session_status",
+            "payload": {
+                "external_session_id": "unopened-removed-session", "status": "error",
+                "metadata": {"host_session_unavailable": true},
+            },
+        }).to_string()).unwrap();
+        handle_bot_channel_event(&state, &bot, &removed).await;
+        assert!(db::get_conversation_by_external_session(
+            &pool, bot.id, "unopened-removed-session",
+        ).await.unwrap().is_none(), "Removal notifications must not import phantom conversations");
+        handle_incoming_ahp_envelope(&state, &bot, serde_json::from_value(json!({
+            "channel": "ahp-chat:/chat", "serverSeq": 1,
+            "action": {
+                "type": "chat/turnStarted", "turnId": "rejected-turn",
+                "startedAt": "2026-11-06T16:33:40Z",
+                "message": {"text": "Test", "origin": {"kind": "user"}},
+            },
+            "rejectionReason": "No execution sponsor",
+        })).unwrap()).await;
+        assert!(state.hub.mirrors.read().await.is_empty(), "Rejected turns must not be reduced as accepted work");
+        pool.close().await;
+    }
 
     async fn next_user_message(socket: &mut ahp_ws::WebSocketTransport) -> Value {
         tokio::time::timeout(std::time::Duration::from_secs(8), async {

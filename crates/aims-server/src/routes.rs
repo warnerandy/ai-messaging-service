@@ -534,9 +534,11 @@ async fn get_conversation_handler(
         ));
     };
 
-    // Trigger session sync from connected bot proxy so latest history is loaded
+    // Incremental reads use streamed updates; coalesce repeated full-history reads.
     if let Ok(Some(bot)) = db::get_bot_token(&state.db, conv.bot_token_id, None).await {
-        if bot.is_connected {
+        if bot.is_connected && query.after_id.is_none()
+            && state.hub.should_refresh_history(conv.id).await
+        {
             state.hub.broadcast(
                 format!("bot:{}", bot.id),
                 "request_session_sync",
@@ -685,6 +687,12 @@ async fn create_user_message_handler(
     };
 
     if conv.bot_type.as_deref() == Some("ahp") {
+        if conv.metadata["host_session_unavailable"].as_bool() == Some(true) {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "The host session is unavailable or deleted. Create a new session." })),
+            ));
+        }
         if matches!(conv.metadata["creation_status"].as_str(), Some("failed")) {
             return Err((
                 StatusCode::CONFLICT,
@@ -695,23 +703,10 @@ async fn create_user_message_handler(
         if conv.metadata.get("creation_status").and_then(|v| v.as_str()) == Some("pending")
             || conv.status == "creating"
         {
-            let _ = sqlx::query(
-                "UPDATE conversations SET status = 'idle', metadata = metadata || '{\"creation_status\": \"ready\"}'::jsonb WHERE id = $1"
-            )
-            .bind(conv.id)
-            .execute(&state.db)
-            .await;
-            state.hub.broadcast(
-                format!("conversation:{}", conv.id),
-                "session_status_changed",
-                json!({
-                    "conversation_id": conv.id,
-                    "status": "idle",
-                    "metadata": {
-                        "creation_status": "ready"
-                    }
-                }),
-            );
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "The host session is still being created. Wait for host confirmation." })),
+            ));
         }
     }
 
@@ -1389,6 +1384,23 @@ mod tests {
         assert_eq!(dispatch.event, "user_message");
         assert_eq!(dispatch.payload["external_session_id"], "host-default");
 
+        let _ = get_conversation_handler(
+            State(state.clone()), headers.clone(), Path(id),
+            Query(ShowConversationQuery { after_id: Some(0), limit: Some(50) }),
+        ).await.unwrap();
+        assert!(events.try_recv().is_err(), "Incremental reads must not refresh host history");
+        for expected_refresh in [true, false] {
+            let _ = get_conversation_handler(
+                State(state.clone()), headers.clone(), Path(id),
+                Query(ShowConversationQuery { after_id: None, limit: None }),
+            ).await.unwrap();
+            if expected_refresh {
+                assert_eq!(events.try_recv().unwrap().event, "request_session_sync");
+            } else {
+                assert!(events.try_recv().is_err(), "Repeated reads must coalesce history refreshes");
+            }
+        }
+
         db::update_conversation(
             &pool,
             id,
@@ -1410,6 +1422,20 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.0, StatusCode::CONFLICT);
         assert_eq!(error.1 .0["error"], "Host rejected creation");
+
+        db::update_conversation(
+            &pool, id, None, Some("error"),
+            Some(json!({
+                "creation_status": "ready", "host_session_unavailable": true,
+                "delivery_error": "Session was explicitly deleted",
+            })),
+        ).await.unwrap();
+        let error = create_user_message_handler(
+            State(state.clone()), headers.clone(), Path(id),
+            Json(json!({"body": "Must not reach the deleted host"})),
+        ).await.unwrap_err();
+        assert_eq!(error.0, StatusCode::CONFLICT);
+        assert!(error.1 .0["error"].as_str().unwrap().contains("unavailable or deleted"));
 
         let existing = db::create_conversation(
             &pool,

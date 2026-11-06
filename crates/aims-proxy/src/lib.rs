@@ -108,11 +108,41 @@ pub async fn run_proxy(config: ProxyConfig) -> Result<(), Box<dyn std::error::Er
     run_proxy_with_admin(config, None, &mut commands).await
 }
 
-#[derive(Default)]
 pub struct DeliveryReceipts {
-    dispatched: Mutex<HashMap<(i64, i64), Arc<Mutex<bool>>>>,
+    dispatched: Mutex<HashMap<(i64, i64), Arc<Mutex<DeliveryOutcome>>>>,
+    owned_resources: Mutex<HashSet<String>>,
+    client_id: String,
 }
 
+impl Default for DeliveryReceipts {
+    fn default() -> Self {
+        Self {
+            dispatched: Mutex::default(),
+            owned_resources: Mutex::default(),
+            client_id: format!("aims-proxy-{}", uuid::Uuid::new_v4()),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+enum DeliveryOutcome {
+    #[default]
+    Pending,
+    Accepted,
+    Rejected(String),
+    Retryable(String),
+    Unknown(String),
+}
+
+impl DeliveryOutcome {
+    fn error_state(&self) -> &'static str {
+        match self {
+            Self::Unknown(_) => "unknown",
+            Self::Retryable(_) => "retryable",
+            _ => "rejected",
+        }
+    }
+}
 pub async fn run_proxy_with_admin(
     config: ProxyConfig,
     admin: Option<admin::AdminState>,
@@ -177,7 +207,7 @@ pub async fn run_proxy_with_admin_and_receipts(
 
     let init = ahp_client
         .initialize(
-            format!("aims-proxy-{}", uuid::Uuid::new_v4()),
+            receipts.client_id.clone(),
             vec![ahp_types::PROTOCOL_VERSION.to_string()],
             vec![ahp_types::ROOT_RESOURCE_URI.to_string()],
         )
@@ -285,6 +315,12 @@ pub async fn run_proxy_with_admin_and_receipts(
     // Poll discovery alongside the upstream socket so large history imports
     // don't delay joining the bot channel or forwarding live updates.
     let discovery = async {
+        let owned: Vec<_> = receipts.owned_resources.lock().await.iter().cloned().collect();
+        for uri in owned {
+            ensure_resource_subscribed(
+                &ahp_client, &mirror, &subscribed_uris, &uri, &outbound_tx, true,
+            ).await;
+        }
         let sessions = list_all_sessions(&ahp_client).await;
         if !sessions.is_empty() {
             info!(
@@ -560,6 +596,28 @@ pub async fn run_proxy_with_admin_and_receipts(
                         break "AIMS rejected the bot channel join".to_string();
                     }
                     upstream_joined = true;
+                    if let Some(drafts) = payload["response"]["retained_drafts"].as_array() {
+                        for draft in drafts {
+                            let Some(uri) = draft["resource"].as_str() else { continue };
+                            let uri = uri.to_string();
+                            receipts.owned_resources.lock().await.insert(uri.clone());
+                            let client = Arc::clone(&ahp_client);
+                            let mirror = Arc::clone(&mirror);
+                            let subscribed = Arc::clone(&subscribed_uris);
+                            let outbound = outbound_tx.clone();
+                            let conversation_id = draft["conversation_id"].as_i64();
+                            tokio::spawn(async move {
+                                if let Err(error) = subscribe_created_resource(
+                                    &client, &mirror, &subscribed, &outbound, &uri,
+                                ).await {
+                                    error!("Could not restore draft subscription {uri}: {error}");
+                                    report_message_delivery_error(
+                                        &outbound, None, conversation_id, &error, "retryable",
+                                    );
+                                }
+                            });
+                        }
+                    }
                     if let Some(admin) = &admin {
                         let mut data = admin.data.write().await;
                         data.connected = true;
@@ -625,6 +683,10 @@ fn spawn_resource_listener(
         while let Some(ev) = rx.recv().await {
             match ev {
                 SubscriptionEvent::Action(envelope) => {
+                    if let Some(reason) = &envelope.rejection_reason {
+                        warn!("Host rejected action on {}: {reason}", envelope.channel);
+                        continue;
+                    }
                     {
                         let mut m = mirror.lock().await;
                         m.apply_envelope(&host_id, &envelope);
@@ -718,6 +780,27 @@ fn spawn_resource_listener(
                                 true,
                             )
                             .await;
+                        }
+                    }
+                }
+                SubscriptionEvent::SessionRemoved(notif) => {
+                    let entries = mirror.lock().await.sessions().iter()
+                        .find(|(key, _)| key.uri == notif.session)
+                        .map(|(_, session)| session_chat_entries(&notif.session, session))
+                        .unwrap_or_default();
+                    for entry in entries {
+                        if let Err(error) = outbound_tx.send(json!({
+                            "topic": "bot:proxy", "event": "session_status",
+                            "payload": {
+                                "external_session_id": entry["session_id"],
+                                "status": "error",
+                                "metadata": {
+                                    "host_session_unavailable": true,
+                                    "delivery_error": "The host session was removed. Create a new session.",
+                                },
+                            },
+                        })) {
+                            error!("Could not report removed host session {}: {error}", notif.session);
                         }
                     }
                 }
@@ -1375,6 +1458,10 @@ async fn force_resync_session(
         Ok((res, _handle)) => res.snapshot,
         Err(e) => {
             warn!("Force resync of session {} failed: {}", session_uri, e);
+            let error = e.to_string();
+            if error.contains("explicitly deleted") || error.contains("Resource not found") {
+                report_message_delivery_error(outbound_tx, None, conversation_id, &error, "rejected");
+            }
             return;
         }
     };
@@ -1465,7 +1552,13 @@ async fn force_resync_orphan(
                 }
             }
         }
-        Err(e) => warn!("Force resync of {} failed: {}", uri, e),
+        Err(e) => {
+            warn!("Force resync of {} failed: {}", uri, e);
+            let error = e.to_string();
+            if error.contains("explicitly deleted") || error.contains("Resource not found") {
+                report_message_delivery_error(outbound_tx, None, conversation_id, &error, "rejected");
+            }
+        }
     }
 }
 
@@ -1787,6 +1880,7 @@ fn report_message_delivery_error(
     message_id: Option<i64>,
     conversation_id: Option<i64>,
     error: &str,
+    delivery_state: &str,
 ) {
     if let Some(conversation_id) = conversation_id {
         if let Err(send_error) = outbound.send(json!({
@@ -1795,12 +1889,84 @@ fn report_message_delivery_error(
             "payload": {
                 "conversation_id": conversation_id,
                 "status": "error",
-                "metadata": { "delivery_error": error, "failed_message_id": message_id },
+                "metadata": {
+                    "delivery_error": error,
+                    "failed_message_id": message_id,
+                    "delivery_state": delivery_state,
+                    "host_session_unavailable": error.contains("explicitly deleted")
+                        || error.contains("Resource not found"),
+                },
             },
         })) {
             error!("Failed to report delivery error for message {message_id:?}: {send_error}");
         }
     }
+}
+
+async fn dispatch_confirmed(
+    ahp_client: &Arc<Client>,
+    mirror: &Arc<Mutex<MultiHostStateMirror>>,
+    subscribed_uris: &Arc<Mutex<HashSet<String>>>,
+    outbound_tx: &mpsc::UnboundedSender<Value>,
+    dispatch: DispatchActionParams,
+    client_id: &str,
+    timeout: std::time::Duration,
+) -> DeliveryOutcome {
+    let snapshot = tokio::time::timeout(timeout, subscribe_created_resource(
+        ahp_client, mirror, subscribed_uris, outbound_tx, &dispatch.channel,
+    )).await;
+    match snapshot {
+        Ok(Ok(SnapshotState::Chat(chat))) => {
+            if let StateAction::ChatTurnStarted(turn) = &dispatch.action {
+                if chat.turns.iter().any(|existing| existing.id == turn.turn_id)
+                    || chat.active_turn.as_ref().is_some_and(|existing| existing.id == turn.turn_id)
+                {
+                    return DeliveryOutcome::Accepted;
+                }
+            }
+        }
+        Ok(Ok(_)) if !matches!(dispatch.action, StateAction::ChatTurnStarted(_)) => {}
+        Ok(Ok(_)) => return DeliveryOutcome::Rejected("The host target is not a chat.".into()),
+        Ok(Err(error)) if error.contains("explicitly deleted") || error.contains("Resource not found") =>
+            return DeliveryOutcome::Rejected(error),
+        Ok(Err(error)) => return DeliveryOutcome::Retryable(error),
+        Err(_) => return DeliveryOutcome::Retryable("Timed out validating the host resource; no prompt was sent.".into()),
+    }
+
+    // Attach before sending: the authoritative echo may arrive before dispatch returns.
+    let mut events = ahp_client.events();
+    let handle = match tokio::time::timeout(
+        timeout, ahp_client.dispatch(dispatch.channel.clone(), dispatch.action),
+    ).await {
+        Ok(Ok(handle)) => handle,
+        Ok(Err(error)) => return DeliveryOutcome::Unknown(format!(
+            "Host delivery outcome is unknown: {error}. Automatic replay is disabled."
+        )),
+        Err(_) => return DeliveryOutcome::Unknown(
+            "Host transport timed out; delivery outcome is unknown. Automatic replay is disabled.".into(),
+        ),
+    };
+    let confirmation = async {
+        while let Some(event) = events.recv().await {
+            if event.channel != dispatch.channel {
+                continue;
+            }
+            if let SubscriptionEvent::Action(envelope) = event.event {
+                if envelope.origin.as_ref().is_some_and(|origin|
+                    origin.client_seq == handle.client_seq && origin.client_id == client_id
+                ) {
+                    return match envelope.rejection_reason {
+                        Some(reason) => DeliveryOutcome::Rejected(reason),
+                        None => DeliveryOutcome::Accepted,
+                    };
+                }
+            }
+        }
+        DeliveryOutcome::Unknown("Host disconnected before acceptance; delivery outcome is unknown. Automatic replay is disabled.".into())
+    };
+    tokio::time::timeout(timeout, confirmation).await.unwrap_or_else(|_| {
+        DeliveryOutcome::Unknown("Host acceptance timed out; delivery outcome is unknown. Automatic replay is disabled.".into())
+    })
 }
 
 async fn handle_upstream_command(
@@ -1868,6 +2034,11 @@ async fn handle_upstream_command(
             ).await;
             let (status, external_session_id, metadata) = match result {
                 Ok(default_chat) => {
+                    let mut owned = receipts.owned_resources.lock().await;
+                    if let Some(parent) = payload["ahp_create_session"]["channel"].as_str() {
+                        owned.insert(parent.to_string());
+                    }
+                    owned.insert(default_chat.clone());
                     let ext_id = payload["external_session_id"]
                         .as_str()
                         .filter(|s| !s.is_empty())
@@ -1877,6 +2048,7 @@ async fn handle_upstream_command(
                         "creation_status": "ready",
                         "creation_error": null,
                         "default_chat_uri": default_chat,
+                        "host_session_uri": payload["ahp_create_session"]["channel"],
                     }))
                 }
                 Err(error) => {
@@ -1916,13 +2088,13 @@ async fn handle_upstream_command(
             let cid = payload.get("conversation_id").and_then(|v| v.as_i64());
             let (Some(message_id), Some(conversation_id)) = (mid, cid) else {
                 error!("Refusing user message without numeric message and conversation IDs");
-                report_message_delivery_error(outbound_tx, mid, cid, "Message is missing its delivery identity");
+                report_message_delivery_error(outbound_tx, mid, cid, "Message is missing its delivery identity", "rejected");
                 return;
             };
             let receipt = receipts.dispatched.lock().await
                 .entry((conversation_id, message_id)).or_default().clone();
             let mut dispatched = receipt.lock().await;
-            if *dispatched {
+            if matches!(*dispatched, DeliveryOutcome::Accepted) {
                 if let Err(error) = outbound_tx.send(json!({
                     "topic": "bot:proxy", "event": "acknowledge",
                     "payload": { "message_id": message_id, "conversation_id": conversation_id },
@@ -1930,6 +2102,10 @@ async fn handle_upstream_command(
                     error!("Failed to re-acknowledge previously dispatched message {message_id}: {error}");
                 }
                 info!("Suppressed replay of already dispatched message {message_id}");
+                return;
+            }
+            if let DeliveryOutcome::Unknown(error) | DeliveryOutcome::Rejected(error) = &*dispatched {
+                report_message_delivery_error(outbound_tx, mid, cid, error, dispatched.error_state());
                 return;
             }
             let ext_id = payload.get("external_session_id").or_else(|| payload.get("session_id")).and_then(|v| v.as_str()).map(str::to_string);
@@ -1956,20 +2132,16 @@ async fn handle_upstream_command(
                         if let Some(clean) = dispatch_params.channel.strip_suffix("/main") {
                             dispatch_params.channel = clean.to_string();
                         }
-                        ensure_resource_subscribed(
-                            ahp_client,
-                            mirror,
-                            subscribed_uris,
-                            &dispatch_params.channel,
-                            outbound_tx,
-                            true,
-                        )
-                        .await;
-
                         info!("[AUDIT:USER_MESSAGE] Dispatching turn to local host channel '{}'...", dispatch_params.channel);
-                        match ahp_client.dispatch(dispatch_params.channel.clone(), dispatch_params.action).await {
-                            Ok(_) => {
-                                *dispatched = true;
+                        let channel = dispatch_params.channel.clone();
+                        let outcome = dispatch_confirmed(
+                            ahp_client, mirror, subscribed_uris, outbound_tx, dispatch_params,
+                            &receipts.client_id, std::time::Duration::from_secs(20),
+                        ).await;
+                        *dispatched = outcome.clone();
+                        let error_state = outcome.error_state();
+                        match outcome {
+                            DeliveryOutcome::Accepted => {
                                 if let (Some(message_id), Some(conversation_id)) = (mid, cid) {
                                     if let Err(error) = outbound_tx.send(json!({
                                         "topic": "bot:proxy",
@@ -1979,21 +2151,21 @@ async fn handle_upstream_command(
                                         error!("Failed to queue acknowledgement for message {message_id}: {error}");
                                     }
                                 }
-                                info!("[AUDIT:USER_MESSAGE][SUCCESS] Message #{:?} dispatched to local host channel '{}'", mid, dispatch_params.channel);
+                                info!("[AUDIT:USER_MESSAGE][SUCCESS] Message #{:?} accepted by local host channel '{}'", mid, channel);
                                 if let Some(adm) = admin {
                                     adm.log_audit(
                                         "user_message",
                                         "proxy_to_host",
                                         "success",
                                         cid,
-                                        Some(dispatch_params.channel.clone()),
-                                        format!("Message #{:?} dispatched to local host channel '{}'", mid.unwrap_or(0), dispatch_params.channel),
+                                        Some(channel.clone()),
+                                        format!("Message #{:?} accepted by local host channel '{}'", mid.unwrap_or(0), channel),
                                         None,
                                     ).await;
                                 }
                             }
-                            Err(e) => {
-                                report_message_delivery_error(outbound_tx, mid, cid, &e.to_string());
+                            DeliveryOutcome::Rejected(ref e) | DeliveryOutcome::Unknown(ref e) | DeliveryOutcome::Retryable(ref e) => {
+                                report_message_delivery_error(outbound_tx, mid, cid, e, error_state);
                                 error!("[AUDIT:USER_MESSAGE][ERROR] Failed to dispatch user turn to local host: {}", e);
                                 if let Some(adm) = admin {
                                     adm.log_audit(
@@ -2001,16 +2173,17 @@ async fn handle_upstream_command(
                                         "proxy_to_host",
                                         "error",
                                         cid,
-                                        Some(dispatch_params.channel.clone()),
+                                        Some(channel.clone()),
                                         format!("Failed to dispatch message #{:?} to local host: {e}", mid.unwrap_or(0)),
-                                        Some(json!({ "error": e.to_string(), "channel": dispatch_params.channel })),
+                                        Some(json!({ "error": e.to_string(), "channel": channel })),
                                     ).await;
                                 }
                             }
+                            DeliveryOutcome::Pending => unreachable!(),
                         }
                     }
                     Err(err) => {
-                        report_message_delivery_error(outbound_tx, mid, cid, &format!("Invalid AHP dispatch: {err}"));
+                        report_message_delivery_error(outbound_tx, mid, cid, &format!("Invalid AHP dispatch: {err}"), "rejected");
                         error!("[AUDIT:USER_MESSAGE][ERROR] Failed to parse ahp_dispatch for message #{:?}: {}", mid, err);
                         if let Some(adm) = admin {
                             adm.log_audit(
@@ -2026,7 +2199,7 @@ async fn handle_upstream_command(
                     }
                 }
             } else {
-                report_message_delivery_error(outbound_tx, mid, cid, "Message is missing its AHP dispatch payload");
+                report_message_delivery_error(outbound_tx, mid, cid, "Message is missing its AHP dispatch payload", "rejected");
                 warn!("[AUDIT:USER_MESSAGE][WARN] User message #{:?} has no 'ahp_dispatch' field", mid);
                 if let Some(adm) = admin {
                     adm.log_audit(
@@ -2061,25 +2234,32 @@ async fn handle_upstream_command(
                 if let Ok(dispatch_params) =
                     serde_json::from_value::<DispatchActionParams>(disp_val.clone())
                 {
-                    match ahp_client
-                        .dispatch(dispatch_params.channel.clone(), dispatch_params.action)
-                        .await
-                    {
-                        Ok(_) => {
-                            info!("[AUDIT:{}][SUCCESS] Dispatched to local host channel '{}'", event.to_uppercase(), dispatch_params.channel);
+                    let channel = dispatch_params.channel.clone();
+                    match dispatch_confirmed(
+                        ahp_client, mirror, subscribed_uris, outbound_tx, dispatch_params,
+                        &receipts.client_id, std::time::Duration::from_secs(20),
+                    ).await {
+                        DeliveryOutcome::Accepted => {
+                            info!("[AUDIT:{}][SUCCESS] Accepted by local host channel '{}'", event.to_uppercase(), channel);
                             if let Some(adm) = admin {
                                 adm.log_audit(
                                     event,
                                     "proxy_to_host",
                                     "success",
                                     cid,
-                                    Some(dispatch_params.channel.clone()),
-                                    format!("Dispatched '{event}' action to host channel '{}'", dispatch_params.channel),
+                                    Some(channel.clone()),
+                                    format!("Host accepted '{event}' action on channel '{}'", channel),
                                     None,
                                 ).await;
                             }
                         }
-                        Err(e) => {
+                        outcome => {
+                            let state = outcome.error_state();
+                            let e = match outcome {
+                                DeliveryOutcome::Rejected(error) | DeliveryOutcome::Unknown(error) | DeliveryOutcome::Retryable(error) => error,
+                                _ => unreachable!(),
+                            };
+                            report_message_delivery_error(outbound_tx, None, cid, &e, state);
                             warn!("[AUDIT:{}][ERROR] Failed to dispatch to local host: {}", event.to_uppercase(), e);
                             if let Some(adm) = admin {
                                 adm.log_audit(
@@ -2087,23 +2267,37 @@ async fn handle_upstream_command(
                                     "proxy_to_host",
                                     "error",
                                     cid,
-                                    Some(dispatch_params.channel.clone()),
+                                    Some(channel.clone()),
                                     format!("Failed to dispatch '{event}' to host: {e}"),
                                     Some(json!({ "error": e.to_string() })),
                                 ).await;
                             }
                         }
                     }
+                } else {
+                    error!("Invalid AHP dispatch for '{event}'");
+                    report_message_delivery_error(outbound_tx, None, cid, "Invalid AHP control dispatch payload", "rejected");
                 }
+            } else {
+                error!("Missing AHP dispatch for '{event}'");
+                report_message_delivery_error(outbound_tx, None, cid, "Missing AHP control dispatch payload", "rejected");
             }
         }
         "ahp_dispatch" => {
             if let Ok(dispatch_params) =
                 serde_json::from_value::<DispatchActionParams>(payload.clone())
             {
-                let _ = ahp_client
-                    .dispatch(dispatch_params.channel, dispatch_params.action)
-                    .await;
+                let outcome = dispatch_confirmed(
+                    ahp_client, mirror, subscribed_uris, outbound_tx, dispatch_params,
+                    &receipts.client_id, std::time::Duration::from_secs(20),
+                ).await;
+                let state = outcome.error_state();
+                if let DeliveryOutcome::Rejected(error) | DeliveryOutcome::Unknown(error) | DeliveryOutcome::Retryable(error) = outcome {
+                    error!("Host control action failed: {error}");
+                    report_message_delivery_error(outbound_tx, None, payload["conversation_id"].as_i64(), &error, state);
+                }
+            } else {
+                error!("Invalid raw AHP dispatch payload");
             }
         }
         "request_session_sync" => {
@@ -2610,6 +2804,13 @@ mod tests {
                         }
                         "dispatchAction" => {
                             assert_eq!(request["params"]["channel"], "ahp-chat:/host-default");
+                            socket.send(WsMessage::Text(json!({
+                                "jsonrpc": "2.0", "method": "action", "params": {
+                                    "channel": request["params"]["channel"], "serverSeq": 1,
+                                    "origin": {"clientId": "test", "clientSeq": request["params"]["clientSeq"]},
+                                    "action": request["params"]["action"],
+                                }
+                            }).to_string().into())).await.unwrap();
                             continue;
                         }
                         _ => panic!("Unexpected host command: {method}"),
@@ -2659,6 +2860,7 @@ mod tests {
                     "channel": "ahp-session:/new-session", "chat": "ahp-chat:/new-session/main",
                 },
             });
+            let receipts = DeliveryReceipts { client_id: "test".into(), ..Default::default() };
             tokio::time::timeout(
                 std::time::Duration::from_secs(2),
                 handle_upstream_command(
@@ -2670,7 +2872,7 @@ mod tests {
                     "create_session",
                     &payload,
                     None,
-                    &DeliveryReceipts::default(),
+                    &receipts,
                 ),
             )
             .await
@@ -2697,10 +2899,13 @@ mod tests {
                 }
             } else {
                 assert_eq!(status["payload"]["metadata"]["creation_status"], "ready");
+                assert_eq!(
+                    *receipts.owned_resources.lock().await,
+                    HashSet::from(["ahp-session:/new-session".into(), "ahp-chat:/host-default".into()]),
+                );
                 assert!(frames
                     .iter()
                     .any(|frame| frame["payload"]["sessions"][0]["session_id"] == "host-default"));
-                let receipts = DeliveryReceipts::default();
                 handle_upstream_command(
                     &client,
                     &mirror,
@@ -2723,7 +2928,8 @@ mod tests {
                     &receipts,
                 )
                 .await;
-                assert_eq!(rx.try_recv().unwrap()["event"], "acknowledge");
+                let frames: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+                assert!(frames.iter().any(|frame| frame["event"] == "acknowledge"));
                 loop {
                     let request =
                         tokio::time::timeout(std::time::Duration::from_secs(2), requests_rx.recv())
@@ -2749,6 +2955,223 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn created_idle_drafts_recover_after_reconnect_and_process_restart() {
+        let receipts = Arc::new(DeliveryReceipts::default());
+        receipts.owned_resources.lock().await.extend([
+            "ahp-session:/parent".into(), "ahp-chat:/default-chat".into(),
+        ]);
+        for connection in 0..3 {
+            let receipts = if connection == 2 { Arc::new(DeliveryReceipts::default()) } else { Arc::clone(&receipts) };
+            let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let config = ProxyConfig {
+                local_ahp_url: Some(format!("ws://{}", local.local_addr().unwrap())),
+                local_ahp_socket: None, local_ahp_token: None,
+                upstream_ws_url: format!("ws://{}/", upstream.local_addr().unwrap()),
+                bot_token: "test".into(), default_working_directory: None,
+            };
+            let client_id = receipts.client_id.clone();
+            let (subscribed_tx, subscribed_rx) = tokio::sync::oneshot::channel();
+            let host = async move {
+                let (stream, _) = local.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let mut resources = HashSet::new();
+                let mut subscribed_tx = Some(subscribed_tx);
+                while let Some(Ok(WsMessage::Text(text))) = socket.next().await {
+                    let request: Value = serde_json::from_str(&text).unwrap();
+                    let result = match request["method"].as_str() {
+                        Some("initialize") => {
+                            assert_eq!(request["params"]["clientId"], client_id);
+                            json!({"protocolVersion": ahp_types::PROTOCOL_VERSION, "serverSeq": 0, "snapshots": []})
+                        }
+                        Some("listSessions") => json!({"items": []}),
+                        Some("subscribe") => {
+                            let uri = request["params"]["channel"].as_str().unwrap();
+                            let state = match uri {
+                                "ahp-session:/parent" => {
+                                    let mut fixture = identity_fixture();
+                                    fixture["status"] = json!(0);
+                                    fixture["chats"] = json!([]);
+                                    Some(SnapshotState::Session(Box::new(serde_json::from_value(fixture).unwrap())))
+                                }
+                                "ahp-chat:/default-chat" => Some(SnapshotState::Chat(Box::new(serde_json::from_value(json!({
+                                    "resource": uri, "title": "Draft", "status": 0, "turns": [],
+                                    "modifiedAt": "2026-11-06T16:33:40Z",
+                                })).unwrap()))),
+                                _ => None,
+                            };
+                            if state.is_some() {
+                                resources.insert(uri.to_string());
+                            }
+                            match state {
+                                Some(state) => json!({"snapshot": ahp_types::state::Snapshot {
+                                    resource: uri.to_string(), state, from_seq: 0,
+                                }}),
+                                None => json!({}),
+                            }
+                        }
+                        Some("dispatchAction") => panic!("Recovery must never replay a prompt"),
+                        _ => continue,
+                    };
+                    socket.send(WsMessage::Text(json!({
+                        "jsonrpc": "2.0", "id": request["id"], "result": result,
+                    }).to_string().into())).await.unwrap();
+                    if resources.len() == 2 {
+                        if let Some(tx) = subscribed_tx.take() {
+                            tx.send(()).unwrap();
+                        }
+                    }
+                }
+            };
+            let server = async move {
+                let (stream, _) = upstream.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                socket.next().await.unwrap().unwrap();
+                socket.send(WsMessage::Text(json!({
+                    "topic": "bot:proxy", "event": "phx_reply", "ref": "1",
+                    "payload": {"status": "ok", "response": {
+                        "retained_drafts": [
+                            {"conversation_id": 1, "resource": "ahp-session:/parent"},
+                            {"conversation_id": 1, "resource": "ahp-chat:/default-chat"},
+                        ],
+                    }},
+                }).to_string().into())).await.unwrap();
+                subscribed_rx.await.unwrap();
+                socket.close(None).await.unwrap();
+            };
+            let (_tx, mut commands) = mpsc::channel(1);
+            let (result, (), ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::join!(
+                    run_proxy_with_admin_and_receipts(config, None, &mut commands, Arc::clone(&receipts)),
+                    host, server,
+                )
+            }).await.expect("Idle draft subscriptions must be restored promptly");
+            assert!(result.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn delivery_requires_authoritative_acceptance_and_never_replays_failures() {
+        for mode in ["accepted", "rejected", "deleted", "unknown", "existing", "unavailable"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}", listener.local_addr().unwrap());
+            let (requests_tx, mut requests_rx) = mpsc::unbounded_channel();
+            let host = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(Ok(WsMessage::Text(text))) = socket.next().await {
+                    let request: Value = serde_json::from_str(&text).unwrap();
+                    requests_tx.send(request.clone()).unwrap();
+                    match request["method"].as_str() {
+                        Some("listSessions") => {
+                            socket.send(WsMessage::Text(json!({
+                                "jsonrpc": "2.0", "id": request["id"], "result": {"items": []},
+                            }).to_string().into())).await.unwrap();
+                        }
+                        Some("subscribe") => {
+                            let response = if matches!(mode, "deleted" | "unavailable") {
+                                json!({"error": {"code": -32603, "message": if mode == "deleted" {
+                                    "Session was explicitly deleted"
+                                } else { "Provider is not ready" }}})
+                            } else {
+                                json!({"result": {"snapshot": {
+                                    "resource": "ahp-chat:/test", "fromSeq": 0,
+                                    "state": {
+                                        "resource": "ahp-chat:/test", "title": "Test", "status": 0,
+                                        "modifiedAt": "2026-11-06T16:33:40Z",
+                                        "turns": if mode == "existing" { json!([{
+                                            "id": "turn-42", "state": "complete",
+                                            "message": {"text": "Test", "origin": {"kind": "user"}},
+                                            "responseParts": [],
+                                        }]) } else { json!([]) },
+                                    },
+                                }}})
+                            };
+                            let mut response = response;
+                            response["jsonrpc"] = json!("2.0");
+                            response["id"] = request["id"].clone();
+                            socket.send(WsMessage::Text(response.to_string().into())).await.unwrap();
+                        }
+                        Some("dispatchAction") => {
+                            // An unrelated client's matching sequence is not our acceptance.
+                            for client_id in ["another-client", "test"] {
+                                if mode == "unknown" && client_id == "test" {
+                                    continue;
+                                }
+                                socket.send(WsMessage::Text(json!({
+                                    "jsonrpc": "2.0", "method": "action", "params": {
+                                        "channel": "ahp-chat:/test", "serverSeq": 1,
+                                        "origin": {"clientId": client_id, "clientSeq": request["params"]["clientSeq"]},
+                                        "action": request["params"]["action"],
+                                        "rejectionReason": if mode == "rejected" && client_id == "test" {
+                                            Some("The calling chat has no live execution sponsor")
+                                        } else { None },
+                                    }
+                                }).to_string().into())).await.unwrap();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            });
+            let client = Arc::new(Client::connect(
+                ahp_ws::WebSocketTransport::connect(&url).await.unwrap(),
+                ClientConfig::default(),
+            ).await.unwrap());
+            let mirror = Arc::new(Mutex::new(MultiHostStateMirror::new()));
+            let subscribed = Arc::new(Mutex::new(HashSet::new()));
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let payload = json!({
+                "id": 42, "conversation_id": 1,
+                "ahp_dispatch": {
+                    "channel": "ahp-chat:/test", "clientSeq": 1,
+                    "action": {
+                        "type": "chat/turnStarted", "turnId": "turn-42",
+                        "startedAt": "2026-11-06T16:33:40Z",
+                        "message": {"text": "Test", "origin": {"kind": "user"}},
+                    },
+                },
+            });
+            let receipts = DeliveryReceipts { client_id: "test".into(), ..Default::default() };
+            if mode == "unknown" {
+                let outcome = dispatch_confirmed(
+                    &client, &mirror, &subscribed, &tx,
+                    serde_json::from_value(payload["ahp_dispatch"].clone()).unwrap(),
+                    "test", std::time::Duration::from_millis(100),
+                ).await;
+                assert!(matches!(outcome, DeliveryOutcome::Unknown(_)));
+                receipts.dispatched.lock().await.insert((1, 42), Arc::new(Mutex::new(outcome)));
+            }
+            let config = ProxyConfig {
+                local_ahp_url: None, local_ahp_socket: None, local_ahp_token: None,
+                upstream_ws_url: "ws://unused".into(), bot_token: "test".into(),
+                default_working_directory: None,
+            };
+            for _ in 0..2 {
+                handle_upstream_command(
+                    &client, &mirror, &subscribed, &tx, &config, "user_message",
+                    &payload, None, &receipts,
+                ).await;
+                let frames: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+                let accepted = matches!(mode, "accepted" | "existing");
+                assert_eq!(frames.iter().any(|frame| frame["event"] == "acknowledge"), accepted, "{mode}");
+                if !accepted {
+                    let status = frames.iter().find(|frame| frame["event"] == "session_status").unwrap();
+                    assert_eq!(status["payload"]["metadata"]["host_session_unavailable"], mode == "deleted");
+                    if mode == "unavailable" {
+                        assert_eq!(status["payload"]["metadata"]["delivery_state"], "retryable");
+                    }
+                }
+            }
+            let requests: Vec<_> = std::iter::from_fn(|| requests_rx.try_recv().ok()).collect();
+            assert_eq!(requests.iter().filter(|request| request["method"] == "dispatchAction").count(),
+                usize::from(!matches!(mode, "deleted" | "existing" | "unavailable")), "{mode}");
+            client.shutdown().await;
+            host.await.unwrap();
         }
     }
 
@@ -2786,7 +3209,7 @@ mod tests {
             let receipts = DeliveryReceipts::default();
             handle_upstream_command(&client, &mirror, &subscribed, &tx, &config, "user_message", &payload, None, &receipts).await;
             let receipt = receipts.dispatched.lock().await.get(&(1, 42)).unwrap().clone();
-            assert!(!*receipt.lock().await);
+            assert!(!matches!(*receipt.lock().await, DeliveryOutcome::Accepted));
             let frames: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
             assert!(!frames.iter().any(|frame| frame["event"] == "acknowledge"));
             assert!(frames.iter().any(|frame| frame["event"] == "session_status"
@@ -2819,12 +3242,16 @@ mod tests {
         let host = async move {
             let (stream, _) = local.accept().await.unwrap();
             let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut client_id = String::new();
             while let Some(Ok(WsMessage::Text(text))) = socket.next().await {
                 let request: Value = serde_json::from_str(&text).unwrap();
                 let result = match request["method"].as_str() {
-                    Some("initialize") => json!({
-                        "protocolVersion": ahp_types::PROTOCOL_VERSION, "serverSeq": 0, "snapshots": []
-                    }),
+                    Some("initialize") => {
+                        client_id = request["params"]["clientId"].as_str().unwrap().to_string();
+                        json!({
+                            "protocolVersion": ahp_types::PROTOCOL_VERSION, "serverSeq": 0, "snapshots": []
+                        })
+                    }
                     Some("listSessions") => json!({"items": [fixture]}),
                     Some("subscribe") => {
                         let uri = request["params"]["channel"].as_str().unwrap();
@@ -2845,6 +3272,7 @@ mod tests {
                         socket.send(WsMessage::Text(json!({
                             "jsonrpc": "2.0", "method": "action", "params": {
                                 "channel": "ahp-chat:/default-chat", "serverSeq": 1,
+                                "origin": {"clientId": client_id, "clientSeq": request["params"]["clientSeq"]},
                                 "action": request["params"]["action"]
                             }
                         }).to_string().into())).await.unwrap();
