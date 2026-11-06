@@ -114,15 +114,21 @@ impl AdminState {
     }
 
     pub async fn disconnected(&self) {
+        self.disconnected_with_reason("Proxy disconnected; reconnecting.").await;
+    }
+
+    pub async fn disconnected_with_reason(&self, reason: &str) {
         let mut data = self.data.write().await;
         data.connected = false;
         data.archive_supported = false;
         data.syncing = false;
-        data.error = Some("Proxy disconnected; reconnecting.".to_string());
+        data.error = Some(reason.to_string());
     }
 
     pub async fn reconnecting(&self) {
         let mut data = self.data.write().await;
+        data.connected = false;
+        data.archive_supported = false;
         data.sessions
             .retain(|_, session| session.status == "archived");
         data.syncing = true;
@@ -401,6 +407,31 @@ mod tests {
             commands,
             origin: "http://127.0.0.1:4035".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn connection_health_clears_on_host_disconnect_and_reconnect() {
+        let state = state();
+        {
+            let mut data = state.data.write().await;
+            data.connected = true;
+            data.archive_supported = true;
+            data.syncing = true;
+        }
+        state.disconnected_with_reason("Local AHP host disconnected").await;
+        {
+            let data = state.data.read().await;
+            assert!(!data.connected);
+            assert!(!data.archive_supported);
+            assert!(!data.syncing);
+            assert_eq!(data.error.as_deref(), Some("Local AHP host disconnected"));
+        }
+        state.data.write().await.connected = true;
+        state.reconnecting().await;
+        let data = state.data.read().await;
+        assert!(!data.connected);
+        assert!(!data.archive_supported);
+        assert!(data.syncing);
     }
 
     #[tokio::test]

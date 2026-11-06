@@ -51,6 +51,25 @@ vi.mock("../thinkingTimer.mjs", () => ({
 }))
 
 describe("ChatView", () => {
+	it("shows dispatch failures explicitly instead of reporting successful delivery", () => {
+		render(
+			<ChatView
+				token={null}
+				bot={{ name: "CodeBot", bot_type: "ahp", is_connected: true }}
+				conversations={[
+					{
+						id: 1,
+						status: "error",
+						metadata: { delivery_error: "Local AHP connection closed", failed_message_id: 42 },
+					},
+				]}
+				selectedConversationId={1}
+				models={[]}
+			/>,
+		)
+		expect(screen.getByRole("alert")).toHaveTextContent("Message delivery failed.")
+		expect(screen.getByRole("alert")).toHaveTextContent("Local AHP connection closed")
+	})
 	it.each([
 		["pending", null],
 		["failed", "The local host rejected session creation: provider unavailable"],

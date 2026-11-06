@@ -159,6 +159,7 @@ pub async fn run_proxy_with_admin(
     };
 
     let ahp_client = Arc::new(Client::connect(ahp_transport, ClientConfig::default()).await?);
+    let mut local_events = ahp_client.events();
 
     let init = ahp_client
         .initialize(
@@ -331,6 +332,11 @@ pub async fn run_proxy_with_admin(
 
     let disconnect_reason = loop {
         tokio::select! {
+            event = local_events.recv() => {
+                if event.is_none() {
+                    break "Local AHP host disconnected; reconnecting.".to_string();
+                }
+            }
             () = &mut discovery, if !discovery_complete => {
                 discovery_complete = true;
                 if let Some(admin) = &admin {
@@ -420,11 +426,54 @@ pub async fn run_proxy_with_admin(
                     continue;
                 };
 
-                let Ok(val) = serde_json::from_str::<Value>(&text) else {
-                    continue;
+                let val = match serde_json::from_str::<Value>(&text) {
+                    Ok(val) => val,
+                    Err(error) => {
+                        let snippet: String = text.chars().take(500).collect();
+                        warn!("[AUDIT:INGRESS][ERROR] Failed to parse inbound AIMS frame: {error}");
+                        if let Some(admin) = &admin {
+                            admin.log_audit(
+                                "ingress_parse_error",
+                                "app_to_proxy",
+                                "error",
+                                None,
+                                None,
+                                format!("Failed to parse inbound AIMS frame: {error}"),
+                                Some(json!({ "error": error.to_string(), "raw": snippet })),
+                            ).await;
+                        }
+                        continue;
+                    }
                 };
                 let event = val.get("event").and_then(|v| v.as_str()).unwrap_or("");
                 let payload = val.get("payload").cloned().unwrap_or_else(|| json!({}));
+
+                // Record every inbound command frame at the ingress boundary so a
+                // dropped or unrouted message is never invisible. phx_reply frames are
+                // replies to our own sends (handled below) and are pure noise.
+                if event != "phx_reply" {
+                    if let Some(admin) = &admin {
+                        let conv_id = payload.get("conversation_id").and_then(Value::as_i64);
+                        let session_id = payload
+                            .get("external_session_id")
+                            .or_else(|| payload.get("session_id"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        admin.log_audit(
+                            "inbound_frame",
+                            "app_to_proxy",
+                            "info",
+                            conv_id,
+                            session_id,
+                            format!("Received '{event}' frame from AIMS"),
+                            Some(json!({
+                                "event": event,
+                                "ref": val.get("ref"),
+                                "topic": val.get("topic"),
+                            })),
+                        ).await;
+                    }
+                }
 
                 if event == "phx_reply" {
                     if let Some(ids) = val.get("ref").and_then(Value::as_str)
@@ -514,6 +563,9 @@ pub async fn run_proxy_with_admin(
 
     reconciliation.abort();
     upstream_reader.abort();
+    if let Some(admin) = &admin {
+        admin.disconnected_with_reason(&disconnect_reason).await;
+    }
     ahp_client.shutdown().await;
     Err(disconnect_reason.into())
 }
@@ -1689,6 +1741,27 @@ async fn create_host_session(
     Ok(default_chat.to_string())
 }
 
+fn report_message_delivery_error(
+    outbound: &mpsc::UnboundedSender<Value>,
+    message_id: Option<i64>,
+    conversation_id: Option<i64>,
+    error: &str,
+) {
+    if let Some(conversation_id) = conversation_id {
+        if let Err(send_error) = outbound.send(json!({
+            "topic": "bot:proxy",
+            "event": "session_status",
+            "payload": {
+                "conversation_id": conversation_id,
+                "status": "error",
+                "metadata": { "delivery_error": error, "failed_message_id": message_id },
+            },
+        })) {
+            error!("Failed to report delivery error for message {message_id:?}: {send_error}");
+        }
+    }
+}
+
 async fn handle_upstream_command(
     ahp_client: &Arc<Client>,
     mirror: &Arc<Mutex<MultiHostStateMirror>>,
@@ -1817,16 +1890,6 @@ async fn handle_upstream_command(
                 ).await;
             }
 
-            // Acknowledge receipt immediately
-            if let (Some(m), Some(c)) = (mid, cid) {
-                let _ = outbound_tx.send(json!({
-                    "topic": "bot:proxy",
-                    "event": "acknowledge",
-                    "payload": { "message_id": m, "conversation_id": c },
-                }));
-                info!("[AUDIT:USER_MESSAGE] Sent acknowledge for message #{}", m);
-            }
-
             if let Some(disp_val) = payload.get("ahp_dispatch") {
                 match serde_json::from_value::<DispatchActionParams>(disp_val.clone()) {
                     Ok(mut dispatch_params) => {
@@ -1846,6 +1909,15 @@ async fn handle_upstream_command(
                         info!("[AUDIT:USER_MESSAGE] Dispatching turn to local host channel '{}'...", dispatch_params.channel);
                         match ahp_client.dispatch(dispatch_params.channel.clone(), dispatch_params.action).await {
                             Ok(_) => {
+                                if let (Some(message_id), Some(conversation_id)) = (mid, cid) {
+                                    if let Err(error) = outbound_tx.send(json!({
+                                        "topic": "bot:proxy",
+                                        "event": "acknowledge",
+                                        "payload": { "message_id": message_id, "conversation_id": conversation_id },
+                                    })) {
+                                        error!("Failed to queue acknowledgement for message {message_id}: {error}");
+                                    }
+                                }
                                 info!("[AUDIT:USER_MESSAGE][SUCCESS] Message #{:?} dispatched to local host channel '{}'", mid, dispatch_params.channel);
                                 if let Some(adm) = admin {
                                     adm.log_audit(
@@ -1860,6 +1932,7 @@ async fn handle_upstream_command(
                                 }
                             }
                             Err(e) => {
+                                report_message_delivery_error(outbound_tx, mid, cid, &e.to_string());
                                 error!("[AUDIT:USER_MESSAGE][ERROR] Failed to dispatch user turn to local host: {}", e);
                                 if let Some(adm) = admin {
                                     adm.log_audit(
@@ -1876,6 +1949,7 @@ async fn handle_upstream_command(
                         }
                     }
                     Err(err) => {
+                        report_message_delivery_error(outbound_tx, mid, cid, &format!("Invalid AHP dispatch: {err}"));
                         error!("[AUDIT:USER_MESSAGE][ERROR] Failed to parse ahp_dispatch for message #{:?}: {}", mid, err);
                         if let Some(adm) = admin {
                             adm.log_audit(
@@ -1891,6 +1965,7 @@ async fn handle_upstream_command(
                     }
                 }
             } else {
+                report_message_delivery_error(outbound_tx, mid, cid, "Message is missing its AHP dispatch payload");
                 warn!("[AUDIT:USER_MESSAGE][WARN] User message #{:?} has no 'ahp_dispatch' field", mid);
                 if let Some(adm) = admin {
                     adm.log_audit(
@@ -1903,6 +1978,7 @@ async fn handle_upstream_command(
                         Some(payload.clone()),
                     ).await;
                 }
+
             }
         }
         "steer" | "answer_question" | "session_config_changed" => {
@@ -2053,7 +2129,32 @@ async fn handle_upstream_command(
                 force_resync_orphan(ahp_client, mirror, &direct, conv_id, outbound_tx).await;
             }
         }
-        _ => {}
+        other => {
+            // phx_reply frames are channel acks consumed in the ingress loop; they
+            // intentionally have no command handler here and must not be logged as
+            // unhandled (they would flood the audit log).
+            if other == "phx_reply" {
+                return;
+            }
+            let cid = payload.get("conversation_id").and_then(|v| v.as_i64());
+            let ext_id = payload
+                .get("external_session_id")
+                .or_else(|| payload.get("session_id"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            warn!("[AUDIT:UNHANDLED] No handler for event '{other}' from AIMS (conv={cid:?}, ext_id={ext_id:?})");
+            if let Some(adm) = admin {
+                adm.log_audit(
+                    "unhandled_event",
+                    "internal",
+                    "warn",
+                    cid,
+                    ext_id,
+                    format!("Unhandled event '{other}' received from AIMS"),
+                    Some(payload.clone()),
+                ).await;
+            }
+        }
     }
 }
 
@@ -2558,6 +2659,7 @@ mod tests {
                     None,
                 )
                 .await;
+                assert_eq!(rx.try_recv().unwrap()["event"], "acknowledge");
                 loop {
                     let request =
                         tokio::time::timeout(std::time::Duration::from_secs(2), requests_rx.recv())
@@ -2576,6 +2678,46 @@ mod tests {
                 .unwrap()
                 .unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn invalid_or_disconnected_message_dispatch_is_not_acknowledged() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let host = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while socket.next().await.is_some() {}
+        });
+        let transport = ahp_ws::WebSocketTransport::connect(&format!("ws://{address}")).await.unwrap();
+        let client = Arc::new(Client::connect(transport, ClientConfig::default()).await.unwrap());
+        client.shutdown().await;
+        let mirror = Arc::new(Mutex::new(MultiHostStateMirror::new()));
+        let subscribed = Arc::new(Mutex::new(HashSet::new()));
+        let config = ProxyConfig {
+            local_ahp_url: None, local_ahp_socket: None, local_ahp_token: None,
+            upstream_ws_url: "ws://unused".into(), bot_token: "test".into(), default_working_directory: None,
+        };
+        for dispatch in [None, Some(json!({})), Some(json!({
+            "channel": "ahp-chat:/test", "clientSeq": 1,
+            "action": {
+                "type": "chat/turnStarted", "turnId": "turn-42",
+                "startedAt": "2026-11-06T15:00:00Z",
+                "message": {"text": "Hello", "origin": {"kind": "user"}},
+            },
+        }))] {
+            let mut payload = json!({"id": 42, "conversation_id": 1});
+            if let Some(dispatch) = dispatch {
+                payload["ahp_dispatch"] = dispatch;
+            }
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            handle_upstream_command(&client, &mirror, &subscribed, &tx, &config, "user_message", &payload, None).await;
+            let frames: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+            assert!(!frames.iter().any(|frame| frame["event"] == "acknowledge"));
+            assert!(frames.iter().any(|frame| frame["event"] == "session_status"
+                && frame["payload"]["metadata"]["failed_message_id"] == 42));
+        }
+        host.await.unwrap();
     }
 
     #[tokio::test]
@@ -2696,6 +2838,56 @@ mod tests {
             tokio::join!(run_proxy(config), host, server)
         }).await.expect("identity synchronization must complete without blocking");
         assert!(outcome.0.is_err(), "upstream disconnect should end this proxy run");
+    }
+
+    #[tokio::test]
+    async fn local_host_disconnect_ends_proxy_even_when_upstream_stays_open() {
+        let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = ProxyConfig {
+            local_ahp_url: Some(format!("ws://{}", local.local_addr().unwrap())),
+            local_ahp_socket: None, local_ahp_token: None,
+            upstream_ws_url: format!("ws://{}/", upstream.local_addr().unwrap()),
+            bot_token: "test-token".into(), default_working_directory: None,
+        };
+        let (joined_tx, joined_rx) = tokio::sync::oneshot::channel();
+        let host = async move {
+            let (stream, _) = local.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(WsMessage::Text(text))) = socket.next().await {
+                let request: Value = serde_json::from_str(&text).unwrap();
+                let result = match request["method"].as_str() {
+                    Some("initialize") => json!({
+                        "protocolVersion": ahp_types::PROTOCOL_VERSION, "serverSeq": 0, "snapshots": []
+                    }),
+                    Some("subscribe") => json!({}),
+                    Some("listSessions") => {
+                        joined_rx.await.unwrap();
+                        socket.close(None).await.unwrap();
+                        return;
+                    }
+                    _ => continue,
+                };
+                socket.send(WsMessage::Text(json!({
+                    "jsonrpc": "2.0", "id": request["id"], "result": result,
+                }).to_string().into())).await.unwrap();
+            }
+        };
+        let server = async move {
+            let (stream, _) = upstream.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            socket.next().await.unwrap().unwrap();
+            socket.send(WsMessage::Text(json!({
+                "topic": "bot:proxy", "event": "phx_reply", "ref": "1",
+                "payload": {"status": "ok", "response": {}}
+            }).to_string().into())).await.unwrap();
+            joined_tx.send(()).unwrap();
+            while socket.next().await.is_some() {}
+        };
+        let (result, (), ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(run_proxy(config), host, server)
+        }).await.expect("local disconnect must not wait for upstream or reconciliation");
+        assert!(result.unwrap_err().to_string().contains("Local AHP host disconnected"));
     }
 
     #[tokio::test]

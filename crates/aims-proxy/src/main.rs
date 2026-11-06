@@ -169,7 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(e) =
             run_proxy_with_admin(config.clone(), Some(dashboard.clone()), &mut commands).await
         {
-            dashboard.disconnected().await;
+            dashboard.disconnected_with_reason(&format!("Proxy disconnected ({e}); reconnecting.")).await;
             error!("AHP proxy disconnected ({}). Reconnecting in 3s...", e);
             tokio::time::sleep(Duration::from_secs(3)).await;
         } else {

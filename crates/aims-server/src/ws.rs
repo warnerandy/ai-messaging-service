@@ -16,7 +16,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, RwLock};
-use tracing::info;
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::{
@@ -777,10 +777,41 @@ async fn handle_bot_socket(
             .unwrap_or_else(|| bot.id.to_string())
     );
     let mut active_join_ref: Option<Value> = None;
+    let mut sent_message_ids = HashSet::new();
+    let mut joined = false;
+    let mut pending_interval = tokio::time::interval(std::time::Duration::from_secs(5));
 
-    loop {
+    'connection: loop {
         tokio::select! {
-            Some(Ok(msg)) = ws_rx.next() => {
+            _ = pending_interval.tick(), if joined => {
+                match pending_user_message_payloads(&state, bot.id, &sent_message_ids).await {
+                    Ok(payloads) => {
+                        for payload in payloads {
+                            let out = encode_frame(
+                                &active_format, active_join_ref.clone(), None,
+                                &active_channel_topic, "user_message", payload.clone(),
+                            );
+                            if let Err(error) = ws_tx.send(WsMessage::Text(out.into())).await {
+                                warn!("Pending message recovery send failed for bot {}: {error}", bot.id);
+                                break 'connection;
+                            }
+                            if let Some(id) = payload["id"].as_i64() {
+                                sent_message_ids.insert(id);
+                            }
+                        }
+                    }
+                    Err(error) => tracing::warn!("Pending message recovery failed for bot {}: {error}", bot.id),
+                }
+            }
+            socket_result = ws_rx.next() => {
+                let msg = match socket_result {
+                    Some(Ok(message)) => message,
+                    Some(Err(error)) => {
+                        warn!("Bot {} socket failed: {error}", bot.id);
+                        break;
+                    }
+                    None => break,
+                };
                 let WsMessage::Text(text) = msg else {
                     if matches!(msg, WsMessage::Close(_)) {
                         break;
@@ -845,27 +876,26 @@ async fn handle_bot_socket(
                     let _ = ws_tx.send(WsMessage::Text(reply.into())).await;
 
                     // Send any pending unacknowledged messages
-                    if let Ok(pending) = db::get_pending_messages_for_bot(&state.db, bot.id).await {
-                        for m in pending {
+                    joined = true;
+                    match pending_user_message_payloads(&state, bot.id, &sent_message_ids).await {
+                        Ok(pending) => for payload in pending {
                             let push = encode_frame(
                                 &frame.format,
                                 active_join_ref.clone(),
                                 None,
                                 &active_channel_topic,
                                 "user_message",
-                                json!({
-                                    "id": m.id,
-                                    "conversation_id": m.conversation_id,
-                                    "content_type": m.content_type,
-                                    "body": m.body,
-                                    "metadata": m.metadata,
-                                    "model": m.model,
-                                    "context_size": m.context_size,
-                                    "inserted_at": m.inserted_at,
-                                }),
+                                payload.clone(),
                             );
-                            let _ = ws_tx.send(WsMessage::Text(push.into())).await;
-                        }
+                            if let Err(error) = ws_tx.send(WsMessage::Text(push.into())).await {
+                                warn!("Pending message replay send failed for bot {}: {error}", bot.id);
+                                break 'connection;
+                            }
+                            if let Some(id) = payload["id"].as_i64() {
+                                sent_message_ids.insert(id);
+                            }
+                        },
+                        Err(error) => tracing::warn!("Pending message replay failed for bot {}: {error}", bot.id),
                     }
 
                     // Request models & capabilities on join
@@ -883,8 +913,24 @@ async fn handle_bot_socket(
 
                 handle_bot_channel_event(&state, &mut ws_tx, &bot, &frame).await;
             }
-            Ok(hub_ev) = hub_rx.recv() => {
+            hub_result = hub_rx.recv() => {
+                let hub_ev = match hub_result {
+                    Ok(event) => event,
+                    Err(broadcast::error::RecvError::Lagged(count)) => {
+                        tracing::warn!("Bot {} missed {count} live events; pending messages will be recovered", bot.id);
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
                 if hub_ev.topic == bot_topic {
+                    let message_id = if hub_ev.event == "user_message" {
+                        hub_ev.payload["id"].as_i64()
+                    } else {
+                        None
+                    };
+                    if message_id.is_some_and(|id| sent_message_ids.contains(&id)) {
+                        continue;
+                    }
                     let out = encode_frame(
                         &active_format,
                         active_join_ref.clone(),
@@ -893,8 +939,12 @@ async fn handle_bot_socket(
                         &hub_ev.event,
                         hub_ev.payload,
                     );
-                    if ws_tx.send(WsMessage::Text(out.into())).await.is_err() {
+                    if let Err(error) = ws_tx.send(WsMessage::Text(out.into())).await {
+                        warn!("Live command send failed for bot {}: {error}", bot.id);
                         break;
+                    }
+                    if let Some(id) = message_id {
+                        sent_message_ids.insert(id);
                     }
                 }
             }
@@ -1261,17 +1311,39 @@ async fn handle_bot_channel_event(
                 msg_id,
                 db::resolve_bot_conversation(&state.db, bot, &frame.payload).await,
             ) {
-                if db::acknowledge_message(&state.db, mid, conv.id)
-                    .await
-                    .unwrap_or(false)
-                {
-                    state.hub.broadcast(
-                        format!("conversation:{}", conv.id),
-                        "message_acknowledged",
-                        json!({ "message_id": mid }),
-                    );
+                match db::acknowledge_message(&state.db, mid, conv.id).await {
+                    Ok(acknowledged) => {
+                        reply_response = json!({ "acknowledged": acknowledged, "message_id": mid });
+                        if acknowledged {
+                            state.hub.broadcast(
+                                format!("conversation:{}", conv.id),
+                                "message_acknowledged",
+                                json!({ "message_id": mid }),
+                            );
+                            if conv.metadata["failed_message_id"].as_i64() == Some(mid) {
+                                let metadata = json!({ "delivery_error": null, "failed_message_id": null });
+                                match db::update_conversation(&state.db, conv.id, None, None, Some(metadata)).await {
+                                    Ok(Some(updated)) => {
+                                        let payload = json!({
+                                            "conversation_id": updated.id,
+                                            "status": updated.status,
+                                            "metadata": updated.metadata,
+                                        });
+                                        state.hub.broadcast(format!("conversation:{}", conv.id), "session_status_changed", payload.clone());
+                                        state.hub.broadcast(format!("bot_sessions:{}", bot.id), "session_status_changed", payload);
+                                    }
+                                    Ok(None) => warn!("Conversation {} disappeared while clearing delivery error", conv.id),
+                                    Err(error) => error!("Failed to clear delivery error for message {mid}: {error}"),
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        error!("Failed to acknowledge message {mid}: {error}");
+                        reply_status = "error";
+                        reply_response = json!({ "error": "Could not persist message acknowledgement", "message_id": mid });
+                    }
                 }
-                reply_response = json!({ "acknowledged": true, "message_id": mid });
             }
         }
         "status" | "working_status" | "update_status" => {
@@ -1638,6 +1710,19 @@ pub async fn notify_bot_user_message(
         }),
     );
 
+    let seq = state.hub.next_bot_seq(conv.bot_token_id).await;
+    state.hub.broadcast(
+        format!("bot:{}", conv.bot_token_id),
+        "user_message",
+        user_message_dispatch_payload(conv, msg, seq),
+    );
+}
+
+fn user_message_dispatch_payload(
+    conv: &db::ConversationRecord,
+    msg: &db::MessageRecord,
+    seq: u64,
+) -> Value {
     let default_chat_uri = conv
         .metadata
         .get("default_chat_uri")
@@ -1646,9 +1731,8 @@ pub async fn notify_bot_user_message(
     let ext_id = default_chat_uri
         .or(conv.external_session_id.as_deref())
         .unwrap_or("default-session");
-    let seq = state.hub.next_bot_seq(conv.bot_token_id).await;
     let turn_id = format!("turn-{}", msg.id);
-    let ahp_dispatch = build_ahp_user_turn_dispatch(
+    let mut ahp_dispatch = build_ahp_user_turn_dispatch(
         ext_id,
         &turn_id,
         msg.body.as_deref().unwrap_or(""),
@@ -1656,24 +1740,171 @@ pub async fn notify_bot_user_message(
         &msg.metadata,
         seq,
     );
+    if let ahp_types::actions::StateAction::ChatTurnStarted(action) = &mut ahp_dispatch.action {
+        action.started_at = msg.inserted_at.clone();
+    }
 
-    state.hub.broadcast(
-        format!("bot:{}", conv.bot_token_id),
-        "user_message",
-        json!({
-            "id": msg.id,
-            "conversation_id": conv.id,
-            "session_id": conv.external_session_id,
-            "external_session_id": conv.external_session_id,
-            "default_chat_uri": default_chat_uri,
-            "content_type": msg.content_type,
-            "body": msg.body,
-            "metadata": msg.metadata,
-            "model": msg.model,
-            "context_size": msg.context_size,
-            "is_suggestion": msg.is_suggestion,
-            "inserted_at": msg.inserted_at,
-            "ahp_dispatch": ahp_dispatch,
-        }),
-    );
+    json!({
+        "id": msg.id,
+        "conversation_id": conv.id,
+        "session_id": conv.external_session_id,
+        "external_session_id": conv.external_session_id,
+        "default_chat_uri": default_chat_uri,
+        "content_type": msg.content_type,
+        "body": msg.body,
+        "metadata": msg.metadata,
+        "model": msg.model,
+        "context_size": msg.context_size,
+        "is_suggestion": msg.is_suggestion,
+        "inserted_at": msg.inserted_at,
+        "ahp_dispatch": ahp_dispatch,
+    })
+}
+
+async fn pending_user_message_payloads(
+    state: &Arc<AppState>,
+    bot_id: i64,
+    sent_ids: &HashSet<i64>,
+) -> Result<Vec<Value>, sqlx::Error> {
+    let pending = db::get_pending_messages_for_bot(&state.db, bot_id).await?;
+    let mut payloads = Vec::new();
+    for message in pending {
+        if sent_ids.contains(&message.id) {
+            continue;
+        }
+        let Some(conversation) = db::get_conversation(&state.db, message.conversation_id, None, Some(bot_id)).await? else {
+            tracing::warn!("Pending message {} has no conversation", message.id);
+            continue;
+        };
+        if conversation.status == "archived" || conversation.metadata["creation_status"] == "pending" {
+            continue;
+        }
+        let seq = state.hub.next_bot_seq(bot_id).await;
+        payloads.push(user_message_dispatch_payload(&conversation, &message, seq));
+    }
+    Ok(payloads)
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+    use ahp::{Transport, TransportMessage};
+
+    async fn next_user_message(socket: &mut ahp_ws::WebSocketTransport) -> Value {
+        tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            loop {
+                let Some(TransportMessage::Text(text)) = socket.recv().await.unwrap() else {
+                    panic!("bot socket closed before delivery");
+                };
+                let frame = parse_frame(&text).unwrap();
+                if frame.event == "user_message" {
+                    return frame.payload;
+                }
+            }
+        }).await.expect("missed notification must recover promptly on the existing socket")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires AIMS_TEST_DATABASE_URL pointing to an isolated test database"]
+    async fn replay_and_missed_live_messages_use_canonical_dispatch_without_duplicates() {
+        let pool = sqlx::PgPool::connect(&std::env::var("AIMS_TEST_DATABASE_URL").unwrap()).await.unwrap();
+        db::init_db(&pool).await.unwrap();
+        let user_id = sqlx::query_scalar::<_, i64>("INSERT INTO users (email) VALUES ($1::citext) RETURNING id")
+            .bind(format!("{}@example.test", Uuid::new_v4())).fetch_one(&pool).await.unwrap();
+        let (bot, token) = db::create_bot_token(&pool, user_id, "Delivery test", Some("ahp"), None).await.unwrap();
+        let conversation = db::create_conversation(
+            &pool, user_id, bot.id, "Delivery test", Some("parent"), Some("idle"),
+            json!({"default_chat_uri": "ahp-chat:/real-chat", "creation_status": "ready"}),
+        ).await.unwrap();
+        let message = db::create_message(
+            &pool, conversation.id, "user", "text", Some("Hello"), json!({}), None, None, false,
+        ).await.unwrap();
+        let state = Arc::new(AppState {
+            db: pool.clone(), hub: PubSubHub::new(),
+            static_dir: std::path::PathBuf::new(), secret_key_base: "test".into(),
+        });
+        let replay = pending_user_message_payloads(&state, bot.id, &HashSet::new()).await.unwrap();
+        assert_eq!(replay.len(), 1);
+        let mut events = state.hub.subscribe();
+        notify_bot_user_message(&state, &conversation, &message).await;
+        events.try_recv().unwrap();
+        events.try_recv().unwrap();
+        let live = events.try_recv().unwrap().payload;
+        let mut replay = replay[0].clone();
+        replay["ahp_dispatch"]["clientSeq"] = live["ahp_dispatch"]["clientSeq"].clone();
+        assert_eq!(replay, live);
+        assert_eq!(replay["ahp_dispatch"]["action"]["turnId"], format!("turn-{}", message.id));
+        assert!(!replay["ahp_dispatch"]["channel"].as_str().unwrap().contains("parent"));
+        assert!(pending_user_message_payloads(&state, bot.id, &HashSet::from([message.id])).await.unwrap().is_empty());
+        db::acknowledge_message(&pool, message.id, conversation.id).await.unwrap();
+        assert!(pending_user_message_payloads(&state, bot.id, &HashSet::new()).await.unwrap().is_empty());
+
+        // Persist a prompt without emitting any hub notification: the durable
+        // recovery path still discovers it on this same connection.
+        let missed = db::create_message(
+            &pool, conversation.id, "user", "text", Some("Missed notification"), json!({}), None, None, false,
+        ).await.unwrap();
+        let recovered = pending_user_message_payloads(&state, bot.id, &HashSet::from([message.id])).await.unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0]["id"], missed.id);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = axum::Router::new().route("/bot/websocket", axum::routing::get(bot_ws_handler)).with_state(state.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let mut socket = ahp_ws::WebSocketTransport::connect(&format!("ws://{address}/bot/websocket?token={token}&vsn=1.0.0")).await.unwrap();
+        socket.send(TransportMessage::Text(json!({
+            "topic": "bot:proxy", "event": "phx_join", "payload": {}, "ref": "1",
+        }).to_string())).await.unwrap();
+        let replayed = next_user_message(&mut socket).await;
+        assert_eq!(replayed["id"], missed.id);
+        assert!(!replayed["ahp_dispatch"].is_null());
+        // A late broadcast for an already replayed message must not duplicate it.
+        notify_bot_user_message(&state, &conversation, &missed).await;
+        let second_missed = db::create_message(
+            &pool, conversation.id, "user", "text", Some("Second missed notification"), json!({}), None, None, false,
+        ).await.unwrap();
+        let delivered = next_user_message(&mut socket).await;
+        assert_eq!(delivered["id"], second_missed.id);
+        assert_eq!(delivered["ahp_dispatch"]["action"]["turnId"], format!("turn-{}", second_missed.id));
+        db::update_conversation(&pool, conversation.id, None, None, Some(json!({
+            "delivery_error": "Previous transport failure",
+            "failed_message_id": second_missed.id,
+        }))).await.unwrap();
+        socket.send(TransportMessage::Text(json!({
+            "topic": "bot:proxy", "event": "acknowledge",
+            "payload": {"conversation_id": conversation.id, "message_id": second_missed.id},
+            "ref": "2",
+        }).to_string())).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let Some(TransportMessage::Text(text)) = socket.recv().await.unwrap() else {
+                    panic!("bot socket closed before acknowledgement");
+                };
+                let frame = parse_frame(&text).unwrap();
+                if frame.event == "phx_reply" && frame.msg_ref.as_ref().and_then(Value::as_str) == Some("2") {
+                    assert_eq!(frame.payload["response"]["acknowledged"], true);
+                    break;
+                }
+            }
+        }).await.unwrap();
+        let updated = db::get_conversation(&pool, conversation.id, None, Some(bot.id)).await.unwrap().unwrap();
+        assert!(updated.metadata["delivery_error"].is_null());
+        assert!(updated.metadata["failed_message_id"].is_null());
+        assert!(pending_user_message_payloads(&state, bot.id, &HashSet::from([missed.id])).await.unwrap().is_empty());
+        let mut disconnect_events = state.hub.subscribe();
+        socket.close().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let event = disconnect_events.recv().await.unwrap();
+                if event.event == "bot_status_changed" && event.payload["is_connected"] == false {
+                    break;
+                }
+            }
+        }).await.expect("closing the bot socket must clear connection health");
+        server.abort();
+        db::update_conversation(&pool, conversation.id, None, Some("archived"), None).await.unwrap();
+        assert!(pending_user_message_payloads(&state, bot.id, &HashSet::new()).await.unwrap().is_empty());
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(user_id).execute(&pool).await.unwrap();
+    }
 }

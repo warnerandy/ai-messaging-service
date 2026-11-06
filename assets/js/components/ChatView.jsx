@@ -392,8 +392,7 @@ export default function ChatView({
 		...(sessionMetadata || {}),
 	}
 	const sessionCreationBlocked =
-		bot?.bot_type === "ahp" &&
-		effectiveMetadata.creation_status === "failed"
+		bot?.bot_type === "ahp" && effectiveMetadata.creation_status === "failed"
 
 	const hasActiveWork = Boolean(
 		isLiveRunning &&
@@ -2517,6 +2516,16 @@ export default function ChatView({
 						Creating the session on your local host...
 					</div>
 				)}
+				{effectiveMetadata.delivery_error && (
+					<div
+						id="message-delivery-error"
+						role="alert"
+						className="border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-300"
+					>
+						<strong>Message delivery failed. </strong>
+						{effectiveMetadata.delivery_error}
+					</div>
+				)}
 				{alarmBanner && (
 					<div
 						className="session-alarm-toast"
@@ -2880,30 +2889,34 @@ export default function ChatView({
 									<span className="chat-project-name">
 										{projectInfo.name || projectInfo.branch || "Project"}
 									</span>
-									{projectInfo.branch && projectInfo.name && projectInfo.branch !== projectInfo.name && (
-										<>
-											<span className="chat-project-sep" aria-hidden="true">/</span>
-											<span className="chat-project-branch">
-												<svg
-													width="10"
-													height="10"
-													viewBox="0 0 24 24"
-													fill="none"
-													stroke="currentColor"
-													strokeWidth="2.2"
-													strokeLinecap="round"
-													strokeLinejoin="round"
-													className="chat-project-branch-icon"
-												>
-													<line x1="6" y1="3" x2="6" y2="15" />
-													<circle cx="18" cy="6" r="3" />
-													<circle cx="6" cy="18" r="3" />
-													<path d="M18 9a9 9 0 0 1-9 9" />
-												</svg>
-												<span>{projectInfo.branch}</span>
-											</span>
-										</>
-									)}
+									{projectInfo.branch &&
+										projectInfo.name &&
+										projectInfo.branch !== projectInfo.name && (
+											<>
+												<span className="chat-project-sep" aria-hidden="true">
+													/
+												</span>
+												<span className="chat-project-branch">
+													<svg
+														width="10"
+														height="10"
+														viewBox="0 0 24 24"
+														fill="none"
+														stroke="currentColor"
+														strokeWidth="2.2"
+														strokeLinecap="round"
+														strokeLinejoin="round"
+														className="chat-project-branch-icon"
+													>
+														<line x1="6" y1="3" x2="6" y2="15" />
+														<circle cx="18" cy="6" r="3" />
+														<circle cx="6" cy="18" r="3" />
+														<path d="M18 9a9 9 0 0 1-9 9" />
+													</svg>
+													<span>{projectInfo.branch}</span>
+												</span>
+											</>
+										)}
 									<svg
 										className="chat-project-chevron"
 										width="11"
@@ -2955,9 +2968,7 @@ export default function ChatView({
 									</svg>
 								</button>
 							) : null}
-							{isArchived && (
-								<span className="chat-subtitle-archived-tag">(Archived)</span>
-							)}
+							{isArchived && <span className="chat-subtitle-archived-tag">(Archived)</span>}
 						</div>
 					)}
 				</div>
@@ -3063,9 +3074,7 @@ export default function ChatView({
 											className="chat-empty-existing-session"
 											data-testid="chat-empty-existing-session"
 										>
-											{(isLoadingMessages || isSyncing) && (
-												<div className="chat-history-spinner" />
-											)}
+											{(isLoadingMessages || isSyncing) && <div className="chat-history-spinner" />}
 											<div className="chat-empty-existing-session-title">
 												{activeConv?.title || "Active Session"}
 											</div>

@@ -173,6 +173,22 @@ changes resolve the latest catalog entry without loading chat history, and
 sessions becoming active are subscribed for streaming events. The 60-second
 reconciliation remains a recovery mechanism for missed notifications.
 
+User prompts use the same canonical AHP dispatch payload for live delivery
+and reconnect replay. While a bot channel is joined, the server checks for
+unacknowledged prompts every five seconds as a backstop for missed live
+notifications. Prompts already sent on that connection are not dispatched
+again until reconnect; archived and creation-pending sessions are excluded.
+The interval is a recovery check, not a guaranteed end-to-end latency.
+
+The proxy acknowledges a prompt only after writing its dispatch to the local
+AHP transport. This confirms transport delivery, not host acceptance or turn
+completion. Missing, invalid, or failed dispatches remain unacknowledged and
+show a delivery error in the chat; a later successful acknowledgement clears
+that message's error. Replay preserves the turn ID and original start time,
+but disconnecting after dispatch and before acknowledgement can still replay
+a turn: exactly-once host execution is not guaranteed. Previously acknowledged
+prompts are not automatically retried. Deploy both server and proxy updates.
+
 Startup and periodic status reconciliation do not import unopened history:
 `reconcile_sessions` only updates existing AIMS records. Active resources and
 explicitly opened/resynced sessions use the normal import path. Deploy both
@@ -183,6 +199,11 @@ The proxy serves a local dashboard at **http://127.0.0.1:4035**. It shows
 connection health, session resources, completion evidence, and search/filter
 controls. Select resources to resync their history into AIMS, or review and
 confirm a batch of up to 100 completed resources to archive.
+
+The connected indicator requires a joined AIMS channel and a live local AHP
+transport. A local-host disconnect clears the indicator and restarts discovery
+even if the AIMS socket remains open. Connection health does not guarantee that
+a prompt was accepted or completed; consult the command audit log for those errors.
 
 Archiving affects **AIMS only**, not VS Code, worktrees, or files. An idle
 resource is not eligible unless its latest turn explicitly completed and no
