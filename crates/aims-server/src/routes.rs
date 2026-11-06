@@ -225,14 +225,15 @@ async fn login_handler(
 async fn ping_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let user = require_user(&state, &headers).await?;
-    Ok(Json(json!({
+) -> Json<Value> {
+    let user = require_user(&state, &headers).await.ok();
+    Json(json!({
         "status": "ok",
         "protocol": "ahp",
         "protocol_version": ahp_types::PROTOCOL_VERSION,
-        "user": { "id": user.id, "email": user.email }
-    })))
+        "authenticated": user.is_some(),
+        "user": user.map(|u| json!({ "id": u.id, "email": u.email }))
+    }))
 }
 
 // --- Bot Token Handlers ---
