@@ -1202,6 +1202,7 @@ async fn resync_chat_messages(
     ahp_client: &Arc<Client>,
     mirror: &Arc<Mutex<MultiHostStateMirror>>,
     uri: &str,
+    conversation_id: Option<i64>,
     outbound_tx: &mpsc::UnboundedSender<Value>,
 ) {
     match ahp_client.subscribe(uri.to_string()).await {
@@ -1218,14 +1219,18 @@ async fn resync_chat_messages(
                     let messages = build_chat_messages(chat_state);
                     if !messages.is_empty() {
                         info!("Resync sending {} messages for chat {}", messages.len(), uri);
+                        let mut msg_payload = json!({
+                            "chat_uri": uri,
+                            "external_session_id": uri,
+                            "messages": messages,
+                        });
+                        if let Some(cid) = conversation_id {
+                            msg_payload["conversation_id"] = json!(cid);
+                        }
                         let _ = outbound_tx.send(json!({
                             "topic": "bot:proxy",
                             "event": "sync_messages",
-                            "payload": {
-                                "chat_uri": uri,
-                                "external_session_id": uri,
-                                "messages": messages,
-                            }
+                            "payload": msg_payload,
                         }));
                     }
                 }
@@ -1245,6 +1250,7 @@ async fn force_resync_session(
     mirror: &Arc<Mutex<MultiHostStateMirror>>,
     session_uri: &str,
     target: Option<&str>,
+    conversation_id: Option<i64>,
     outbound_tx: &mpsc::UnboundedSender<Value>,
 ) {
     let snap = match ahp_client.subscribe(session_uri.to_string()).await {
@@ -1285,11 +1291,11 @@ async fn force_resync_session(
     // every chat so a session-level sync still pulls all history.
     if matching.is_empty() {
         for chat in &session_state.chats {
-            resync_chat_messages(ahp_client, mirror, &chat.resource, outbound_tx).await;
+            resync_chat_messages(ahp_client, mirror, &chat.resource, conversation_id, outbound_tx).await;
         }
     } else {
         for chat_uri in matching {
-            resync_chat_messages(ahp_client, mirror, chat_uri, outbound_tx).await;
+            resync_chat_messages(ahp_client, mirror, chat_uri, conversation_id, outbound_tx).await;
         }
     }
 }
@@ -1301,6 +1307,7 @@ async fn force_resync_orphan(
     ahp_client: &Arc<Client>,
     mirror: &Arc<Mutex<MultiHostStateMirror>>,
     uri: &str,
+    conversation_id: Option<i64>,
     outbound_tx: &mpsc::UnboundedSender<Value>,
 ) {
     match ahp_client.subscribe(uri.to_string()).await {
@@ -1318,19 +1325,23 @@ async fn force_resync_orphan(
                         let messages = build_chat_messages(chat_state);
                         if !messages.is_empty() {
                             info!("Resync sending {} messages for chat {}", messages.len(), uri);
+                            let mut msg_payload = json!({
+                                "chat_uri": uri,
+                                "external_session_id": uri,
+                                "messages": messages,
+                            });
+                            if let Some(cid) = conversation_id {
+                                msg_payload["conversation_id"] = json!(cid);
+                            }
                             let _ = outbound_tx.send(json!({
                                 "topic": "bot:proxy",
                                 "event": "sync_messages",
-                                "payload": {
-                                    "chat_uri": uri,
-                                    "external_session_id": uri,
-                                    "messages": messages,
-                                }
+                                "payload": msg_payload,
                             }));
                         }
                     }
                     SnapshotState::Session(_) => {
-                        force_resync_session(ahp_client, mirror, uri, None, outbound_tx).await;
+                        force_resync_session(ahp_client, mirror, uri, None, conversation_id, outbound_tx).await;
                     }
                     _ => {}
                 }
@@ -1923,11 +1934,25 @@ async fn handle_upstream_command(
             }
         }
         "request_session_sync" => {
-            let ext_id = payload
+            let conv_id = payload.get("conversation_id").and_then(|v| v.as_i64());
+            let mut ext_id = payload
                 .get("external_session_id")
                 .or_else(|| payload.get("session_id"))
                 .and_then(|v| v.as_str())
-                .unwrap_or("");
+                .unwrap_or("")
+                .to_string();
+
+            if ext_id.is_empty() {
+                if let Some(meta) = payload.get("metadata") {
+                    if let Some(uri) = meta.get("default_chat_uri")
+                        .or_else(|| meta.get("chat_uri"))
+                        .or_else(|| meta.get("session_uri"))
+                        .and_then(|v| v.as_str())
+                    {
+                        ext_id = uri.to_string();
+                    }
+                }
+            }
             info!(
                 "[AUDIT:SYNC] Received request_session_sync for external_session_id={}",
                 ext_id
@@ -1973,6 +1998,7 @@ async fn handle_upstream_command(
                     mirror,
                     &parent.resource,
                     Some(needle.as_str()),
+                    conv_id,
                     outbound_tx,
                 )
                 .await;
@@ -1981,14 +2007,14 @@ async fn handle_upstream_command(
                 // thread). Resync the specific resource directly.
                 let direct = if ext_id.contains("ahp-chat:") {
                     let start = ext_id.find("ahp-chat:").unwrap_or(0);
-                    ext_id[start..].split('&').next().unwrap_or(ext_id).to_string()
+                    ext_id[start..].split('&').next().unwrap_or(&ext_id).to_string()
                 } else if ext_id.contains("ahp-session:") || ext_id.contains("copilotcli:") {
                     ext_id.to_string()
                 } else {
                     // Bare UUID: these have been observed to be chat IDs.
                     format!("ahp-chat:/{needle}")
                 };
-                force_resync_orphan(ahp_client, mirror, &direct, outbound_tx).await;
+                force_resync_orphan(ahp_client, mirror, &direct, conv_id, outbound_tx).await;
             }
         }
         _ => {}

@@ -1141,7 +1141,14 @@ export default function ChatView({
 						)
 						const state = deriveConversationState(next)
 						setBotIsTyping(state.botIsTyping)
+						messagesCacheRef.current.set(selectedConversationId, state.messages)
 						return state.messages
+					})
+					setIsSyncing(false)
+					requestAnimationFrame(() => {
+						if (messagesContainerRef.current) {
+							messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight
+						}
 					})
 				})
 
@@ -1635,9 +1642,17 @@ export default function ChatView({
 						if (cancelled) return
 						channelRef.current = ch
 
+						// Request session sync from bot proxy immediately upon joining
+						try {
+							ch.push("sync_session", { conversation_id: selectedConversationId })
+						} catch {
+							// ignore
+						}
+
 						// Catch up on any missed messages immediately on channel join
 						refetchMissedMessages()
 						setTimeout(() => refetchMissedMessages(), 350)
+						setTimeout(() => refetchMissedMessages(), 900)
 
 						const currentConv =
 							conversationsRef.current?.find((c) => c.id === selectedConversationId) || activeConv
@@ -1732,6 +1747,7 @@ export default function ChatView({
 			messagesRef.current = []
 			setIsLoadingMessages(true)
 		}
+		setIsSyncing(true)
 
 		setSessionMetadata(activeConv?.metadata || {})
 		const initialCfg = getAgentPromptConfig(activeConv?.metadata, activeConv, projectInfo, bot)
@@ -1862,6 +1878,16 @@ export default function ChatView({
 				console.error("Load messages failed:", err)
 			} finally {
 				setIsLoadingMessages(false)
+				if (channelRef.current) {
+					try {
+						channelRef.current.push("sync_session", { conversation_id: selectedConversationId })
+					} catch {
+						// ignore
+					}
+				}
+				setTimeout(() => {
+					setIsSyncing(false)
+				}, 650)
 			}
 		}
 		loadMessages()
@@ -2938,7 +2964,13 @@ export default function ChatView({
 
 				{/* VS Code Indeterminate Running Bar */}
 				<VSCodeProgressBar
-					active={effectiveStatus === "running" || effectiveStatus === "thinking" || isAgentBusy}
+					active={
+						effectiveStatus === "running" ||
+						effectiveStatus === "thinking" ||
+						isAgentBusy ||
+						isSyncing ||
+						isLoadingMessages
+					}
 					variant={effectiveStatus === "thinking" ? "thinking" : "running"}
 				/>
 
@@ -3014,8 +3046,14 @@ export default function ChatView({
 										disabled={sending || uploading}
 									/>
 								)}
-								{!isLoadingMessages &&
-									!isNewSession &&
+								{/* History Syncing Pill when messages already exist */}
+								{messages.length > 0 && (isSyncing || isLoadingMessages) && (
+									<div className="chat-history-sync-pill" data-testid="chat-history-sync-pill">
+										<span className="chat-history-sync-spinner" />
+										<span>Syncing chat history...</span>
+									</div>
+								)}
+								{!isNewSession &&
 									messages.length === 0 &&
 									!isAgentBusy &&
 									effectiveStatus !== "running" &&
@@ -3025,13 +3063,18 @@ export default function ChatView({
 											className="chat-empty-existing-session"
 											data-testid="chat-empty-existing-session"
 										>
+											{(isLoadingMessages || isSyncing) && (
+												<div className="chat-history-spinner" />
+											)}
 											<div className="chat-empty-existing-session-title">
 												{activeConv?.title || "Active Session"}
 											</div>
 											<div className="chat-empty-existing-session-subtitle">
-												{isArchived
-													? "This session has been archived."
-													: "No messages recorded in this session yet."}
+												{isLoadingMessages || isSyncing
+													? "Loading conversation history..."
+													: isArchived
+														? "This session has been archived."
+														: "No messages recorded in this session yet."}
 											</div>
 										</div>
 									)}

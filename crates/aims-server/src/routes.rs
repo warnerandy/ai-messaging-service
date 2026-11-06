@@ -533,6 +533,24 @@ async fn get_conversation_handler(
         ));
     };
 
+    // Trigger session sync from connected bot proxy so latest history is loaded
+    if let Ok(Some(bot)) = db::get_bot_token(&state.db, conv.bot_token_id, None).await {
+        if bot.is_connected {
+            state.hub.broadcast(
+                format!("bot:{}", bot.id),
+                "request_session_sync",
+                json!({
+                    "conversation_id": conv.id,
+                    "session_id": conv.external_session_id,
+                    "external_session_id": conv.external_session_id,
+                    "metadata": conv.metadata,
+                    "title": conv.title,
+                    "requested_at": chrono::Utc::now().to_rfc3339(),
+                }),
+            );
+        }
+    }
+
     let messages = db::list_messages(&state.db, conv.id, query.after_id, query.limit)
         .await
         .unwrap_or_default();
