@@ -1344,6 +1344,8 @@ async fn handle_bot_channel_event(
                         .unwrap_or_else(|| json!({}));
                     if let Some(obj) = meta.as_object_mut() {
                         obj.insert("synced_by_bot".to_string(), json!(true));
+                        obj.insert("creation_status".to_string(), json!("ready"));
+                        obj.insert("creation_error".to_string(), serde_json::Value::Null);
                         for k in [
                             "project",
                             "working_directory",
@@ -1437,11 +1439,17 @@ async fn handle_bot_channel_event(
                     .get("status")
                     .and_then(|v| v.as_str())
                     .unwrap_or("idle");
-                let meta = frame
+                let mut meta = frame
                     .payload
                     .get("metadata")
                     .cloned()
                     .unwrap_or_else(|| frame.payload.clone());
+                if status != "error" && meta.get("creation_status").is_none() {
+                    if let Some(obj) = meta.as_object_mut() {
+                        obj.insert("creation_status".to_string(), json!("ready"));
+                        obj.insert("creation_error".to_string(), serde_json::Value::Null);
+                    }
+                }
                 if let Some(ext) = frame.payload.get("external_session_id").and_then(|v| v.as_str()) {
                     if conv.external_session_id.is_none() && !ext.is_empty() {
                         let _ = sqlx::query("UPDATE conversations SET external_session_id = $1 WHERE id = $2")

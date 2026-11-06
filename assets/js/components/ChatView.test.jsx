@@ -73,10 +73,11 @@ describe("ChatView", () => {
 		fireEvent.change(screen.getByPlaceholderText("What do you want to know?"), {
 			target: { value: "Inspect this project" },
 		})
-		expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled()
 		if (error) {
+			expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled()
 			expect(screen.getByRole("alert")).toHaveTextContent(error)
 		} else {
+			expect(screen.getByRole("button", { name: "Send message" })).not.toBeDisabled()
 			expect(document.getElementById("session-creation-pending")).toHaveTextContent(
 				"Creating the session on your local host",
 			)

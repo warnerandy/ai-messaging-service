@@ -393,8 +393,7 @@ export default function ChatView({
 	}
 	const sessionCreationBlocked =
 		bot?.bot_type === "ahp" &&
-		(effectiveMetadata.creation_status === "pending" ||
-			effectiveMetadata.creation_status === "failed")
+		effectiveMetadata.creation_status === "failed"
 
 	const hasActiveWork = Boolean(
 		isLiveRunning &&
@@ -1923,6 +1922,13 @@ export default function ChatView({
 
 	async function sendMessage(body, opts = {}) {
 		if (!body || !selectedConversationId || sessionCreationBlocked) return
+
+		if (effectiveMetadata.creation_status === "pending") {
+			setSessionMetadata((prev) => ({
+				...prev,
+				creation_status: "ready",
+			}))
+		}
 
 		const model = selectedModel || models[0]?.name || null
 		const contextSize = selectedContextSize ? Number(selectedContextSize) : null

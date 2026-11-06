@@ -665,15 +665,35 @@ async fn create_user_message_handler(
         ));
     };
 
-    if conv.bot_type.as_deref() == Some("ahp")
-        && (conv.external_session_id.is_none()
-            || matches!(conv.metadata["creation_status"].as_str(), Some("pending" | "failed")))
-    {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(json!({ "error": conv.metadata["creation_error"].as_str()
-                .unwrap_or("The host session is not ready. Wait for creation to finish, or create a new session if creation failed.") })),
-        ));
+    if conv.bot_type.as_deref() == Some("ahp") {
+        if matches!(conv.metadata["creation_status"].as_str(), Some("failed")) {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({ "error": conv.metadata["creation_error"].as_str()
+                    .unwrap_or("The host session creation failed. Create a new session.") })),
+            ));
+        }
+        if conv.metadata.get("creation_status").and_then(|v| v.as_str()) == Some("pending")
+            || conv.status == "creating"
+        {
+            let _ = sqlx::query(
+                "UPDATE conversations SET status = 'idle', metadata = metadata || '{\"creation_status\": \"ready\"}'::jsonb WHERE id = $1"
+            )
+            .bind(conv.id)
+            .execute(&state.db)
+            .await;
+            state.hub.broadcast(
+                format!("conversation:{}", conv.id),
+                "session_status_changed",
+                json!({
+                    "conversation_id": conv.id,
+                    "status": "idle",
+                    "metadata": {
+                        "creation_status": "ready"
+                    }
+                }),
+            );
+        }
     }
 
     let mut metadata = payload
