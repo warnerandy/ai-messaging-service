@@ -36,12 +36,17 @@ pub struct HubEvent {
     pub payload: Value,
 }
 
+#[derive(Default)]
+pub struct StreamingTurn {
+    parts: Vec<(String, String)>,
+}
+
 pub struct PubSubHub {
     tx: broadcast::Sender<HubEvent>,
     pub mirrors: RwLock<HashMap<i64, BotAhpMirror>>,
-    /// Accumulates streaming markdown text per `(bot_token_id, turn_id)` so when `ChatTurnComplete` fires,
+    /// Accumulates markdown parts per `(bot_token_id, channel, turn_id)` so when `ChatTurnComplete` fires,
     /// the full assistant message is persisted to PostgreSQL.
-    pub streaming_turns: RwLock<HashMap<(i64, String), String>>,
+    pub streaming_turns: RwLock<HashMap<(i64, String, String), StreamingTurn>>,
     history_refreshes: RwLock<HashMap<i64, tokio::time::Instant>>,
 }
 
@@ -367,8 +372,8 @@ async fn handle_user_socket(
                     }
                 }
             }
-            Ok(hub_ev) = hub_rx.recv() => {
-                if hub_ev.event == "bot_sessions_updated" {
+            Ok(mut hub_ev) = hub_rx.recv() => {
+                if matches!(hub_ev.event.as_str(), "bot_sessions_updated" | "conversation_reconciled") {
                     if let Some(bot_id) = hub_ev.topic.strip_prefix("bot_sessions:")
                         .and_then(|id| id.parse::<i64>().ok())
                     {
@@ -381,6 +386,12 @@ async fn handle_user_socket(
                                 }
                             }
                         }
+                    }
+                }
+                if hub_ev.event == "conversation_reconciled" {
+                    if let Some(id) = hub_ev.payload["conversation_id"].as_i64() {
+                        hub_ev.topic = format!("conversation:{id}");
+                        hub_ev.event = "messages_removed".into();
                     }
                 }
                 let recipients: Vec<_> = joined_topics.iter().filter(|(topic, _)| {
@@ -798,9 +809,23 @@ async fn handle_bot_socket(
     let (reply_tx, mut reply_rx) = mpsc::channel::<String>(32);
     let worker_state = state.clone();
     let worker_bot = bot.clone();
+    let worker_reply_tx = reply_tx.clone();
     let worker = tokio::spawn(async move {
         while let Some(frame) = work_rx.recv().await {
             if let Some(reply) = handle_bot_channel_event(&worker_state, &worker_bot, &frame).await {
+                if worker_reply_tx.send(reply).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    // Keep ordered live turn events independent of large catalog/history imports.
+    let (live_tx, mut live_rx) = mpsc::channel::<ParsedFrame>(1024);
+    let live_state = state.clone();
+    let live_bot = bot.clone();
+    let live_worker = tokio::spawn(async move {
+        while let Some(frame) = live_rx.recv().await {
+            if let Some(reply) = handle_bot_channel_event(&live_state, &live_bot, &frame).await {
                 if reply_tx.send(reply).await.is_err() {
                     break;
                 }
@@ -859,7 +884,7 @@ async fn handle_bot_socket(
                         topic: active_channel_topic.clone(), event: "ahp_envelope".into(),
                         payload: serde_json::to_value(envelope).expect("AHP envelope serialization"),
                     };
-                    if let Err(error) = work_tx.try_send(frame) {
+                    if let Err(error) = live_tx.try_send(frame) {
                         warn!("Bot {} synchronization queue unavailable: {error}", bot.id);
                         break;
                     }
@@ -966,9 +991,12 @@ async fn handle_bot_socket(
                             break;
                         }
                     }
-                } else if let Err(error) = work_tx.try_send(frame) {
-                    warn!("Bot {} synchronization queue unavailable: {error}", bot.id);
-                    break;
+                } else {
+                    let queue = if frame.event == "ahp_envelope" { &live_tx } else { &work_tx };
+                    if let Err(error) = queue.try_send(frame) {
+                        warn!("Bot {} synchronization queue unavailable: {error}", bot.id);
+                        break;
+                    }
                 }
             }
             hub_result = hub_rx.recv() => {
@@ -1012,6 +1040,8 @@ async fn handle_bot_socket(
 
     worker.abort();
     let _ = worker.await;
+    live_worker.abort();
+    let _ = live_worker.await;
     // Mark bot disconnected
     if let Ok(Some(updated)) =
         db::update_bot_status(&state.db, bot.id, Some(false), Some(false), None).await
@@ -1136,8 +1166,19 @@ async fn handle_incoming_ahp_envelope(
             .unwrap_or("default")
             .to_string();
         let mut turns = state.hub.streaming_turns.write().await;
-        let entry = turns.entry((bot.id, turn_id)).or_default();
-        entry.push_str(delta);
+        let entry = turns
+            .entry((bot.id, envelope.channel.clone(), turn_id))
+            .or_default();
+        let part_id = translated.data["part_id"].as_str().unwrap_or("default");
+        if let Some((_, text)) = entry.parts.iter_mut().find(|(id, _)| id == part_id) {
+            if matches!(envelope.action, ahp_types::actions::StateAction::ChatResponsePart(_)) {
+                *text = delta.clone();
+            } else {
+                text.push_str(delta);
+            }
+        } else {
+            entry.parts.push((part_id.to_string(), delta.clone()));
+        }
     }
 
     if translated.event_type == "turn_completed" {
@@ -1149,27 +1190,35 @@ async fn handle_incoming_ahp_envelope(
             .to_string();
         let full_text = {
             let mut turns = state.hub.streaming_turns.write().await;
-            turns.remove(&(bot.id, turn_id))
+            turns
+                .remove(&(bot.id, envelope.channel.clone(), turn_id.clone()))
+                .map(|turn| {
+                    turn.parts
+                        .into_iter()
+                        .map(|(_, text)| text)
+                        .filter(|text| !text.trim().is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                })
         };
         if let Some(body) = full_text.filter(|s| !s.trim().is_empty()) {
-            if let Ok(msg) = db::create_message(
+            match db::import_host_message(
                 &state.db,
                 conv.id,
                 "bot",
                 "text",
-                Some(&body),
-                json!({}),
-                None,
-                None,
-                false,
+                &body,
+                json!({ "turn_id": turn_id }),
             )
             .await
             {
-                state.hub.broadcast(
+                Ok(Some(msg)) => state.hub.broadcast(
                     format!("conversation:{}", conv.id),
                     "new_message",
                     json!({ "message": msg }),
-                );
+                ),
+                Ok(None) => {}
+                Err(error) => error!("Failed to persist completed host turn {turn_id}: {error}"),
             }
         }
     }
@@ -1210,6 +1259,29 @@ async fn handle_incoming_ahp_envelope(
             "data": translated.data,
         }),
     );
+}
+
+async fn reconcile_chat_identity(
+    state: &Arc<AppState>,
+    bot: &db::BotTokenRecord,
+    chat_id: &str,
+    session_uri: &str,
+) -> Result<(), sqlx::Error> {
+    let (removed, redirected) =
+        db::reconcile_default_chat_identity(&state.db, bot.id, chat_id, session_uri).await?;
+    if !redirected && removed.is_empty() {
+        return Ok(());
+    }
+    if let Some(conversation) =
+        db::get_conversation_by_external_session(&state.db, bot.id, chat_id).await?
+    {
+        state.hub.broadcast(
+            format!("bot_sessions:{}", bot.id),
+            "conversation_reconciled",
+            json!({ "conversation_id": conversation.id, "message_ids": removed }),
+        );
+    }
+    Ok(())
 }
 
 async fn handle_bot_channel_event(
@@ -1394,7 +1466,10 @@ async fn handle_bot_channel_event(
                                 json!({ "message_id": mid }),
                             );
                             if conv.metadata["failed_message_id"].as_i64() == Some(mid) {
-                                let metadata = json!({ "delivery_error": null, "failed_message_id": null });
+                                let metadata = json!({
+                                    "delivery_error": null, "failed_message_id": null,
+                                    "delivery_state": null, "host_session_unavailable": false,
+                                });
                                 match db::update_conversation(&state.db, conv.id, None, None, Some(metadata)).await {
                                     Ok(Some(updated)) => {
                                         let payload = json!({
@@ -1517,8 +1592,8 @@ async fn handle_bot_channel_event(
                         }
                     }
                     if let Some(parent) = meta["session_uri"].as_str() {
-                        if let Err(error) = db::reconcile_default_chat_identity(
-                            &state.db, bot.id, sid, parent,
+                        if let Err(error) = reconcile_chat_identity(
+                            state, bot, sid, parent,
                         ).await {
                             tracing::warn!("Default chat identity reconciliation failed: {error}");
                             continue;
@@ -1552,8 +1627,8 @@ async fn handle_bot_channel_event(
                         )
                         .await;
                         if let Some(parent) = s["metadata"]["session_uri"].as_str() {
-                            if let Err(error) = db::reconcile_default_chat_identity(
-                                &state.db, bot.id, sid, parent,
+                            if let Err(error) = reconcile_chat_identity(
+                                state, bot, sid, parent,
                             ).await {
                                 tracing::warn!("New default chat alias reconciliation failed: {error}");
                             }
@@ -1575,7 +1650,56 @@ async fn handle_bot_channel_event(
                 reply_response = json!({ "count": synced_ids.len() });
             }
         }
+        "session_sync_status" => {
+            match db::resolve_bot_conversation(&state.db, bot, &frame.payload).await {
+                Ok(Some(conv)) => {
+                    let mut metadata = json!({ "history_sync_error": frame.payload["error"] });
+                    if frame.payload["error"].is_null() && conv.metadata["failed_message_id"].is_null() {
+                        metadata["delivery_error"] = Value::Null;
+                        metadata["delivery_state"] = Value::Null;
+                        metadata["host_session_unavailable"] = json!(false);
+                    }
+                    match db::update_conversation(&state.db, conv.id, None, None, Some(metadata)).await {
+                        Ok(Some(updated)) => {
+                            let payload = json!({
+                                "conversation_id": updated.id, "status": updated.status,
+                                "metadata": updated.metadata,
+                            });
+                            state.hub.broadcast(format!("conversation:{}", updated.id), "session_status_changed", payload.clone());
+                            state.hub.broadcast(format!("bot_sessions:{}", bot.id), "session_status_changed", payload);
+                        }
+                        Ok(None) => warn!("Conversation {} disappeared during history sync", conv.id),
+                        Err(error) => {
+                            error!("Failed to persist history sync status: {error}");
+                            reply_status = "error";
+                            reply_response = json!({ "error": "Could not persist history sync status" });
+                        }
+                    }
+                }
+                Ok(None) => warn!("History sync status has no conversation"),
+                Err(error) => {
+                    error!("Failed to resolve history sync conversation: {error}");
+                    reply_status = "error";
+                    reply_response = json!({ "error": "Could not resolve history sync conversation" });
+                }
+            }
+        }
         "session_status" => {
+            if frame.payload["metadata"]["creation_status"] == "ready" {
+                if let (Some(chat), Some(parent)) = (
+                    frame.payload["metadata"]["default_chat_uri"].as_str(),
+                    frame.payload["metadata"]["host_session_uri"].as_str(),
+                ) {
+                    if let Err(error) = reconcile_chat_identity(state, bot, chat, parent).await {
+                        error!("Could not establish new default chat identity: {error}");
+                        return frame.msg_ref.as_ref().map(|_| encode_frame(
+                            &frame.format, frame.join_ref.clone(), frame.msg_ref.clone(),
+                            &frame.topic, "phx_reply",
+                            json!({ "status": "error", "response": { "error": "Could not establish host chat identity" } }),
+                        ));
+                    }
+                }
+            }
             let conversation = if frame.payload["metadata"]["host_session_unavailable"] == true {
                 if let Some(id) = frame.payload["conversation_id"].as_i64() {
                     db::get_conversation(&state.db, id, None, Some(bot.id)).await
@@ -1899,6 +2023,163 @@ mod delivery_tests {
 
     #[tokio::test]
     #[ignore = "requires AIMS_TEST_DATABASE_URL pointing to an isolated test database"]
+    async fn live_replies_bypass_bulk_sync_and_preserve_the_open_conversation() {
+        let pool = sqlx::PgPool::connect(&std::env::var("AIMS_TEST_DATABASE_URL").unwrap()).await.unwrap();
+        db::init_db(&pool).await.unwrap();
+        let user_id = sqlx::query_scalar::<_, i64>("INSERT INTO users (email) VALUES ($1::citext) RETURNING id")
+            .bind(format!("{}@example.test", Uuid::new_v4())).fetch_one(&pool).await.unwrap();
+        let user_token = db::create_user_session(&pool, user_id).await.unwrap();
+        let (bot, token) = db::create_bot_token(&pool, user_id, "Live sync", Some("ahp"), None).await.unwrap();
+        let parent = db::create_conversation(
+            &pool, user_id, bot.id, "New draft", Some("live-parent"), Some("creating"),
+            json!({"creation_status": "pending"}),
+        ).await.unwrap();
+        let busy = db::create_conversation(
+            &pool, user_id, bot.id, "Busy catalog", Some("busy"), Some("idle"), json!({}),
+        ).await.unwrap();
+        let state = Arc::new(AppState {
+            db: pool.clone(), hub: PubSubHub::new(),
+            static_dir: std::path::PathBuf::new(), secret_key_base: "test".into(),
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = axum::Router::new()
+            .route("/bot/websocket", axum::routing::get(bot_ws_handler))
+            .route("/socket/websocket", axum::routing::get(user_ws_handler))
+            .with_state(state.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let mut browser = ahp_ws::WebSocketTransport::connect(
+            &format!("ws://{address}/socket/websocket?token={user_token}&vsn=1.0.0"),
+        ).await.unwrap();
+        browser.send(TransportMessage::Text(json!({
+            "topic": format!("conversation:{}", parent.id), "event": "phx_join", "ref": "browser", "payload": {},
+        }).to_string())).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Some(TransportMessage::Text(text)) = browser.recv().await.unwrap() {
+                    if parse_frame(&text).unwrap().msg_ref == Some(json!("browser")) { break; }
+                }
+            }
+        }).await.unwrap();
+        let canonical = db::create_conversation(
+            &pool, user_id, bot.id, "Discovered chat", Some("live-chat"), Some("idle"), json!({}),
+        ).await.unwrap();
+        let ready = parse_frame(&json!({
+            "topic": "bot:proxy", "event": "session_status",
+            "payload": {"conversation_id": parent.id, "status": "idle", "metadata": {
+                "creation_status": "ready", "default_chat_uri": "ahp-chat:/live-chat",
+                "host_session_uri": "ahp-session:/live-parent",
+            }},
+        }).to_string()).unwrap();
+        handle_bot_channel_event(&state, &bot, &ready).await;
+        for alias in ["live-parent", "ahp-session:/live-parent", "live-chat", "ahp-chat:/live-chat"] {
+            assert_eq!(db::get_conversation_by_external_session(&pool, bot.id, alias)
+                .await.unwrap().unwrap().id, canonical.id);
+        }
+        let stable = db::create_conversation(
+            &pool, user_id, bot.id, "Stable draft", Some("stable-parent"), Some("creating"), json!({}),
+        ).await.unwrap();
+        reconcile_chat_identity(&state, &bot, "stable-chat", "ahp-session:/stable-parent").await.unwrap();
+        assert_eq!(db::get_conversation_by_external_session(&pool, bot.id, "stable-chat")
+            .await.unwrap().unwrap().id, stable.id, "Readiness should retain the draft ID when no duplicate exists");
+        let prompt = db::create_message(
+            &pool, canonical.id, "user", "text", Some("One prompt"), json!({}), None, None, false,
+        ).await.unwrap();
+        db::acknowledge_message(&pool, prompt.id, canonical.id).await.unwrap();
+        let turn_id = format!("turn-{}", prompt.id);
+        let mut socket = ahp_ws::WebSocketTransport::connect(
+            &format!("ws://{address}/bot/websocket?token={token}&vsn=1.0.0"),
+        ).await.unwrap();
+        socket.send(TransportMessage::Text(json!({
+            "topic": "bot:proxy", "event": "phx_join", "payload": {}, "ref": "bot",
+        }).to_string())).await.unwrap();
+        let mut lock = pool.begin().await.unwrap();
+        sqlx::query("SELECT id FROM conversations WHERE id = $1 FOR UPDATE")
+            .bind(busy.id).fetch_one(&mut *lock).await.unwrap();
+        socket.send(TransportMessage::Text(json!({
+            "topic": "bot:proxy", "event": "reconcile_sessions", "ref": "blocked",
+            "payload": {"sessions": [{"session_id": "busy", "status": "idle", "title": "Blocked update"}]},
+        }).to_string())).await.unwrap();
+        let actions = [
+            json!({"type": "chat/turnStarted", "turnId": turn_id,
+                "startedAt": "2026-11-06T17:21:51Z",
+                "message": {"text": "One prompt", "origin": {"kind": "user"}}}),
+            json!({"type": "chat/responsePart", "turnId": turn_id,
+                "part": {"kind": "markdown", "id": "p1", "content": "Hello"}}),
+            json!({"type": "chat/delta", "turnId": turn_id, "partId": "p1", "content": " world"}),
+            json!({"type": "chat/responsePart", "turnId": turn_id,
+                "part": {"kind": "markdown", "id": "p2", "content": "Second part"}}),
+            json!({"type": "chat/turnComplete", "turnId": turn_id, "duration": 100}),
+        ];
+        for (index, action) in actions.into_iter().enumerate() {
+            socket.send(TransportMessage::Text(json!({
+                "topic": "bot:proxy", "event": "ahp_envelope",
+                "payload": {"channel": "ahp-chat:/live-chat", "serverSeq": index + 1, "action": action},
+            }).to_string())).await.unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Some(TransportMessage::Text(text)) = browser.recv().await.unwrap() {
+                    let frame = parse_frame(&text).unwrap();
+                    if frame.event == "new_message" && frame.payload["message"]["role"] == "bot" {
+                        assert_eq!(frame.topic, format!("conversation:{}", parent.id));
+                        assert_eq!(frame.payload["message"]["body"], "Hello world\n\nSecond part");
+                        assert_eq!(frame.payload["message"]["metadata"]["turn_id"], turn_id);
+                        break;
+                    }
+                }
+            }
+        }).await.expect("Live reply must reach the already-open browser without history refresh, while bulk sync is blocked");
+        lock.rollback().await.unwrap();
+        let history = parse_frame(&json!({
+            "topic": "bot:proxy", "event": "sync_messages",
+            "payload": {"conversation_id": parent.id, "messages": [
+                {"role": "user", "body": "One prompt", "metadata": {"turn_id": turn_id}},
+                {"role": "bot", "body": "Hello world\n\nSecond part", "metadata": {"turn_id": turn_id}},
+            ]},
+        }).to_string()).unwrap();
+        handle_bot_channel_event(&state, &bot, &history).await;
+        let messages = db::list_messages(&pool, canonical.id, None, None).await.unwrap();
+        assert_eq!(messages.len(), 2, "History must not duplicate live prompt or reply");
+        assert!(db::get_pending_messages_for_bot(&pool, bot.id).await.unwrap().is_empty());
+        for error in [json!("History temporarily unavailable"), Value::Null] {
+            let sync = parse_frame(&json!({
+                "topic": "bot:proxy", "event": "session_sync_status",
+                "payload": {"conversation_id": parent.id, "error": error},
+            }).to_string()).unwrap();
+            handle_bot_channel_event(&state, &bot, &sync).await;
+            let conversation = db::get_conversation(&pool, parent.id, None, None).await.unwrap().unwrap();
+            assert_eq!(conversation.status, "idle");
+            assert_eq!(conversation.metadata["history_sync_error"], error);
+            assert!(conversation.metadata["delivery_error"].is_null());
+            assert_ne!(conversation.metadata["host_session_unavailable"], true);
+        }
+        db::update_conversation(&pool, canonical.id, None, None, Some(json!({
+            "delivery_error": "Legacy sync failure", "host_session_unavailable": true,
+        }))).await.unwrap();
+        let synced = parse_frame(&json!({
+            "topic": "bot:proxy", "event": "session_sync_status",
+            "payload": {"conversation_id": parent.id, "error": null},
+        }).to_string()).unwrap();
+        handle_bot_channel_event(&state, &bot, &synced).await;
+        let recovered = db::get_conversation(&pool, parent.id, None, None).await.unwrap().unwrap();
+        assert!(recovered.metadata["delivery_error"].is_null());
+        assert_eq!(recovered.metadata["host_session_unavailable"], false);
+        db::update_conversation(&pool, canonical.id, None, None, Some(json!({
+            "delivery_error": "Genuine failed prompt", "failed_message_id": prompt.id,
+        }))).await.unwrap();
+        handle_bot_channel_event(&state, &bot, &synced).await;
+        assert_eq!(db::get_conversation(&pool, parent.id, None, None).await.unwrap().unwrap()
+            .metadata["delivery_error"], "Genuine failed prompt");
+        browser.close().await.unwrap();
+        socket.close().await.unwrap();
+        server.abort();
+        let _ = server.await;
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires AIMS_TEST_DATABASE_URL pointing to an isolated test database"]
     async fn host_history_and_turn_echoes_never_become_outbound_executions() {
         let pool = sqlx::PgPool::connect(&std::env::var("AIMS_TEST_DATABASE_URL").unwrap()).await.unwrap();
         db::init_db(&pool).await.unwrap();
@@ -1907,7 +2188,7 @@ mod delivery_tests {
         let (bot, token) = db::create_bot_token(&pool, user_id, "History import test", Some("ahp"), None).await.unwrap();
         let parent = db::create_conversation(
             &pool, user_id, bot.id, "Parent", Some("history-parent"), Some("idle"),
-            json!({"default_chat_uri": "ahp-chat:/history-chat", "creation_status": "ready"}),
+            json!({"creation_status": "ready"}),
         ).await.unwrap();
         let original = db::create_message(
             &pool, parent.id, "user", "text", Some("Same prompt"), json!({}), None, None, false,
@@ -1969,8 +2250,21 @@ mod delivery_tests {
             db::import_host_message(&pool, chat.id, "user", "text", "Concurrent import", concurrent_meta),
         );
         assert_ne!(first.unwrap().is_some(), duplicate.unwrap().is_some());
-        db::reconcile_default_chat_identity(&pool, bot.id, "history-chat", "ahp-session:/history-parent")
-            .await.unwrap();
+        let echo_id = messages[0].id;
+        reconcile_chat_identity(&state, &bot, "history-chat", "ahp-session:/history-parent").await.unwrap();
+        let reconciliation = std::iter::from_fn(|| events.try_recv().ok()).find(|event|
+            event.event == "conversation_reconciled").unwrap();
+        assert_eq!(reconciliation.payload["message_ids"], json!([echo_id]));
+        while events.try_recv().is_ok() {}
+        reconcile_chat_identity(&state, &bot, "history-chat", "ahp-session:/history-parent").await.unwrap();
+        assert!(events.try_recv().is_err(), "Unchanged catalog entries must not flood live subscriptions");
+        let merged = db::list_messages(&pool, chat.id, None, None).await.unwrap();
+        assert!(!merged.iter().any(|message| message.id == echo_id));
+        assert!(merged.iter().any(|message| message.id == original.id));
+        assert_eq!(merged.iter().filter(|message| message.body.as_deref() == Some("Same prompt")).count(), 2);
+        assert!(db::import_host_message(
+            &pool, parent.id, "user", "text", "Same prompt", json!({"turn_id": turn_id}),
+        ).await.unwrap().is_none(), "Imports resolved before a merge must follow the alias inside their transaction");
         assert!(db::get_pending_messages_for_bot(&pool, bot.id).await.unwrap().is_empty());
         assert!(!std::iter::from_fn(|| events.try_recv().ok()).any(|event| event.event == "user_message"));
 

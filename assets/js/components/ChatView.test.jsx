@@ -1,18 +1,20 @@
 import React, { act } from "react"
-import { render, screen, fireEvent } from "@testing-library/react"
+import { render, screen, fireEvent, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 import ChatView, { deriveConversationState, normalizeMessage } from "./ChatView.jsx"
+
+const channelHandlers = vi.hoisted(() => new Map())
 
 vi.mock("phoenix", () => ({
 	Socket: class Socket {
 		connect() {}
 		disconnect() {}
-		channel() {
+		channel(topic) {
 			return {
 				join: () => ({ receive: () => ({ receive: () => {} }) }),
 				leave: () => {},
-				on: () => {},
+				on: (event, handler) => channelHandlers.set(`${topic}:${event}`, handler),
 				push: () => {},
 			}
 		}
@@ -51,6 +53,64 @@ vi.mock("../thinkingTimer.mjs", () => ({
 }))
 
 describe("ChatView", () => {
+	it("shows history-sync errors without claiming prompt delivery failed or disabling sends", () => {
+		render(
+			<ChatView
+				token={null}
+				bot={{ name: "CodeBot", bot_type: "ahp", is_connected: true }}
+				conversations={[
+					{
+						id: 1,
+						status: "idle",
+						metadata: { history_sync_error: "Host history is temporarily unavailable" },
+					},
+				]}
+				selectedConversationId={1}
+				models={[]}
+			/>,
+		)
+		expect(document.getElementById("history-sync-error")).toHaveTextContent("History sync failed.")
+		expect(document.getElementById("message-delivery-error")).not.toBeInTheDocument()
+		fireEvent.change(screen.getByRole("textbox"), { target: { value: "A new prompt" } })
+		expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled()
+	})
+
+	it("removes reconciled host echoes while preserving intentional repeated prompts and live replies", async () => {
+		const { getConversation, getConversationChannel } = await import("../lib/data.js")
+		const now = new Date().toISOString()
+		getConversation.mockResolvedValue({
+			conversation: { id: 1, status: "idle", metadata: {} },
+			messages: [
+				{ id: 1, role: "user", body: "Same prompt", acknowledged: true, inserted_at: now },
+				{ id: 2, role: "user", body: "Same prompt", acknowledged: true, inserted_at: now },
+				{ id: 3, role: "user", body: "Same prompt", acknowledged: true, inserted_at: now },
+			],
+		})
+		getConversationChannel.mockResolvedValue({ topic: "conversation:1" })
+		channelHandlers.clear()
+		render(
+			<ChatView
+				token="test-token"
+				bot={{ id: 11, name: "CodeBot", bot_type: "ahp", is_connected: true }}
+				conversations={[{ id: 1, status: "idle", metadata: {} }]}
+				selectedConversationId={1}
+				models={[]}
+			/>,
+		)
+		await waitFor(() => expect(screen.getAllByText("Same prompt")).toHaveLength(3))
+		await waitFor(() => expect(channelHandlers.has("conversation:1:messages_removed")).toBe(true))
+		act(() => {
+			channelHandlers.get("conversation:1:messages_removed")({ message_ids: [2] })
+			channelHandlers.get("conversation:1:new_message")({
+				message: { id: 4, role: "bot", body: "Live response", inserted_at: now },
+			})
+		})
+		expect(screen.getAllByText("Same prompt")).toHaveLength(2)
+		expect(screen.getByText("Live response")).toBeInTheDocument()
+		getConversation.mockReset()
+		getConversationChannel.mockReset()
+	})
+
 	it("shows dispatch failures explicitly instead of reporting successful delivery", () => {
 		render(
 			<ChatView

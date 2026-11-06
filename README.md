@@ -215,6 +215,20 @@ host imports identified by `synced_from_ahp` or AHP `turn_id` metadata, even if
 an older server left them unacknowledged. This protection requires the server
 update; it does not depend on proxy receipt memory.
 
+New sessions establish their canonical default-chat identity before becoming
+ready. Host echoes reuse the original prompt by turn ID; identity reconciliation
+removes only proven duplicate host records and notifies connected chats to remove
+those bubbles. Intentional same-text prompts remain distinct.
+Live turn events use an ordered worker separate from bulk catalog/history imports,
+and subscriptions retain their buffered receiver from before the snapshot request.
+Completed assistant turns are persisted with their chat and turn identity, so
+recovery history does not add another copy.
+History sync uses declared resource URIs rather than guessing that a parent UUID
+is a chat UUID. Sync failures appear separately from prompt delivery failures
+and never mark an accepted prompt rejected or a host session deleted. Successful
+sync clears obsolete sync warnings without clearing genuine message failures.
+Deploy the server, proxy, and web assets together for these changes.
+
 Startup and periodic status reconciliation do not import unopened history:
 `reconcile_sessions` only updates existing AIMS records. Active resources and
 explicitly opened/resynced sessions use the normal import path. Deploy both

@@ -1128,6 +1128,20 @@ export default function ChatView({
 					})
 				})
 
+				ch.on("messages_removed", (payload) => {
+					if (!Array.isArray(payload?.message_ids) || payload.message_ids.length === 0) return
+					const removed = new Set(payload.message_ids)
+					setMessages((prev) => {
+						const state = deriveConversationState(
+							prev.filter((message) => !removed.has(message.id)),
+						)
+						removed.forEach((id) => renderedIdsRef.current.delete(id))
+						messagesCacheRef.current.set(selectedConversationId, state.messages)
+						setBotIsTyping(state.botIsTyping)
+						return state.messages
+					})
+				})
+
 				ch.on("messages_synced", (payload) => {
 					if (!payload?.messages || !Array.isArray(payload.messages)) return
 					setMessages((prev) => {
@@ -2519,6 +2533,16 @@ export default function ChatView({
 					>
 						<strong>Message delivery failed. </strong>
 						{effectiveMetadata.delivery_error}
+					</div>
+				)}
+				{effectiveMetadata.history_sync_error && (
+					<div
+						id="history-sync-error"
+						role="alert"
+						className="border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-300"
+					>
+						<strong>History sync failed. </strong>
+						{effectiveMetadata.history_sync_error}
 					</div>
 				)}
 				{alarmBanner && (

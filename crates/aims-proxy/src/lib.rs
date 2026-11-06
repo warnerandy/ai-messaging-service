@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use ahp::hosts::HostId;
-use ahp::{Client, ClientConfig, MultiHostStateMirror, SubscriptionEvent};
+use ahp::{Client, ClientConfig, MultiHostStateMirror, SessionSubscription, SubscriptionEvent};
 use ahp_types::actions::StateAction;
 use ahp_types::commands::{
     CreateSessionParams, DispatchActionParams, ListSessionsParams,
@@ -305,7 +305,7 @@ pub async fn run_proxy_with_admin_and_receipts(
         Arc::clone(&ahp_client),
         Arc::clone(&mirror),
         Arc::clone(&subscribed_uris),
-        ahp_types::ROOT_RESOURCE_URI.to_string(),
+        ahp_client.attach_subscription(ahp_types::ROOT_RESOURCE_URI).await,
         outbound_tx.clone(),
     );
 
@@ -673,11 +673,10 @@ fn spawn_resource_listener(
     ahp_client: Arc<Client>,
     mirror: Arc<Mutex<MultiHostStateMirror>>,
     subscribed_uris: Arc<Mutex<HashSet<String>>>,
-    resource_uri: String,
+    mut rx: SessionSubscription,
     outbound_tx: mpsc::UnboundedSender<Value>,
 ) {
     tokio::spawn(async move {
-        let mut rx = ahp_client.attach_subscription(&resource_uri).await;
         let host_id = HostId::new("local");
 
         while let Some(ev) = rx.recv().await {
@@ -1395,49 +1394,46 @@ fn route_dispatch(
     }
 }
 
-/// Re-fetch a chat's current snapshot and re-emit its history upstream, without
-/// touching `subscribed_uris` or spawning a listener. Used by the manual sync so
-/// messages reload even when the chat is already subscribed (the live path
-/// dedups and would otherwise emit nothing).
+/// Re-fetch history while retaining a live listener, including for orphaned drafts.
 async fn resync_chat_messages(
     ahp_client: &Arc<Client>,
     mirror: &Arc<Mutex<MultiHostStateMirror>>,
+    subscribed_uris: &Arc<Mutex<HashSet<String>>>,
     uri: &str,
     conversation_id: Option<i64>,
     outbound_tx: &mpsc::UnboundedSender<Value>,
 ) {
-    match ahp_client.subscribe(uri.to_string()).await {
-        Ok((res, _handle)) => {
-            if let Some(ref snap) = res.snapshot {
-                let host_id = HostId::new("local");
-                mirror.lock().await.apply_snapshot(&host_id, snap);
-                if let SnapshotState::Chat(ref chat_state) = snap.state {
-                    let _ = outbound_tx.send(json!({
-                        "topic": "bot:proxy",
-                        "event": "sync_sessions",
-                        "payload": { "sessions": [chat_state_to_sync_entry(uri, chat_state)] },
-                    }));
-                    let messages = build_chat_messages(chat_state);
-                    if !messages.is_empty() {
-                        info!("Resync sending {} messages for chat {}", messages.len(), uri);
-                        let mut msg_payload = json!({
-                            "chat_uri": uri,
-                            "external_session_id": uri,
-                            "messages": messages,
-                        });
-                        if let Some(cid) = conversation_id {
-                            msg_payload["conversation_id"] = json!(cid);
-                        }
-                        let _ = outbound_tx.send(json!({
-                            "topic": "bot:proxy",
-                            "event": "sync_messages",
-                            "payload": msg_payload,
-                        }));
-                    }
+    match subscribe_created_resource(ahp_client, mirror, subscribed_uris, outbound_tx, uri).await {
+        Ok(SnapshotState::Chat(chat_state)) => {
+            let _ = outbound_tx.send(json!({
+                "topic": "bot:proxy",
+                "event": "sync_sessions",
+                "payload": { "sessions": [chat_state_to_sync_entry(uri, &chat_state)] },
+            }));
+            let messages = build_chat_messages(&chat_state);
+            if !messages.is_empty() {
+                info!("Resync sending {} messages for chat {}", messages.len(), uri);
+                let mut msg_payload = json!({
+                    "chat_uri": uri,
+                    "external_session_id": uri,
+                    "messages": messages,
+                });
+                if let Some(cid) = conversation_id {
+                    msg_payload["conversation_id"] = json!(cid);
                 }
+                let _ = outbound_tx.send(json!({
+                    "topic": "bot:proxy",
+                    "event": "sync_messages",
+                    "payload": msg_payload,
+                }));
             }
+            report_history_sync(outbound_tx, conversation_id, None);
         }
-        Err(e) => warn!("Resync of chat {} failed: {}", uri, e),
+        Ok(_) => report_history_sync(outbound_tx, conversation_id, Some("Expected a host chat snapshot")),
+        Err(error) => {
+            warn!("Resync of chat {uri} failed: {error}");
+            report_history_sync(outbound_tx, conversation_id, Some(&error));
+        }
     }
 }
 
@@ -1449,26 +1445,23 @@ async fn resync_chat_messages(
 async fn force_resync_session(
     ahp_client: &Arc<Client>,
     mirror: &Arc<Mutex<MultiHostStateMirror>>,
+    subscribed_uris: &Arc<Mutex<HashSet<String>>>,
     session_uri: &str,
     target: Option<&str>,
     conversation_id: Option<i64>,
     outbound_tx: &mpsc::UnboundedSender<Value>,
 ) {
-    let snap = match ahp_client.subscribe(session_uri.to_string()).await {
-        Ok((res, _handle)) => res.snapshot,
+    let snap = match subscribe_created_resource(ahp_client, mirror, subscribed_uris, outbound_tx, session_uri).await {
+        Ok(state) => state,
         Err(e) => {
             warn!("Force resync of session {} failed: {}", session_uri, e);
             let error = e.to_string();
-            if error.contains("explicitly deleted") || error.contains("Resource not found") {
-                report_message_delivery_error(outbound_tx, None, conversation_id, &error, "rejected");
-            }
+            report_history_sync(outbound_tx, conversation_id, Some(&error));
             return;
         }
     };
-    let Some(snap) = snap else { return };
-    let host_id = HostId::new("local");
-    mirror.lock().await.apply_snapshot(&host_id, &snap);
-    let SnapshotState::Session(ref session_state) = snap.state else {
+    let SnapshotState::Session(ref session_state) = snap else {
+        report_history_sync(outbound_tx, conversation_id, Some("Expected a host session snapshot"));
         return;
     };
 
@@ -1492,15 +1485,23 @@ async fn force_resync_session(
             .collect(),
         None => Vec::new(),
     };
-    // When the target is the session itself (no specific chat matched), reload
-    // every chat so a session-level sync still pulls all history.
+    // A parent conversation represents only its declared default chat, never
+    // every sibling chat. Catalog-wide admin syncs have no conversation ID.
     if matching.is_empty() {
-        for chat in &session_state.chats {
-            resync_chat_messages(ahp_client, mirror, &chat.resource, conversation_id, outbound_tx).await;
+        if conversation_id.is_some() {
+            if let Some(chat) = session_state.default_chat.as_deref() {
+                resync_chat_messages(ahp_client, mirror, subscribed_uris, chat, conversation_id, outbound_tx).await;
+            } else {
+                report_history_sync(outbound_tx, conversation_id, Some("The host has not declared a default chat"));
+            }
+        } else {
+            for chat in &session_state.chats {
+                resync_chat_messages(ahp_client, mirror, subscribed_uris, &chat.resource, None, outbound_tx).await;
+            }
         }
     } else {
         for chat_uri in matching {
-            resync_chat_messages(ahp_client, mirror, chat_uri, conversation_id, outbound_tx).await;
+            resync_chat_messages(ahp_client, mirror, subscribed_uris, chat_uri, conversation_id, outbound_tx).await;
         }
     }
 }
@@ -1511,53 +1512,34 @@ async fn force_resync_session(
 async fn force_resync_orphan(
     ahp_client: &Arc<Client>,
     mirror: &Arc<Mutex<MultiHostStateMirror>>,
+    subscribed_uris: &Arc<Mutex<HashSet<String>>>,
     uri: &str,
     conversation_id: Option<i64>,
     outbound_tx: &mpsc::UnboundedSender<Value>,
 ) {
-    match ahp_client.subscribe(uri.to_string()).await {
-        Ok((res, _handle)) => {
-            if let Some(ref snap) = res.snapshot {
-                let host_id = HostId::new("local");
-                mirror.lock().await.apply_snapshot(&host_id, snap);
-                match &snap.state {
-                    SnapshotState::Chat(chat_state) => {
-                        let _ = outbound_tx.send(json!({
-                            "topic": "bot:proxy",
-                            "event": "sync_sessions",
-                            "payload": { "sessions": [chat_state_to_sync_entry(uri, chat_state)] },
-                        }));
-                        let messages = build_chat_messages(chat_state);
-                        if !messages.is_empty() {
-                            info!("Resync sending {} messages for chat {}", messages.len(), uri);
-                            let mut msg_payload = json!({
-                                "chat_uri": uri,
-                                "external_session_id": uri,
-                                "messages": messages,
-                            });
-                            if let Some(cid) = conversation_id {
-                                msg_payload["conversation_id"] = json!(cid);
-                            }
-                            let _ = outbound_tx.send(json!({
-                                "topic": "bot:proxy",
-                                "event": "sync_messages",
-                                "payload": msg_payload,
-                            }));
-                        }
-                    }
-                    SnapshotState::Session(_) => {
-                        force_resync_session(ahp_client, mirror, uri, None, conversation_id, outbound_tx).await;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Err(e) => {
-            warn!("Force resync of {} failed: {}", uri, e);
-            let error = e.to_string();
-            if error.contains("explicitly deleted") || error.contains("Resource not found") {
-                report_message_delivery_error(outbound_tx, None, conversation_id, &error, "rejected");
-            }
+    if uri.starts_with("ahp-session:") {
+        force_resync_session(
+            ahp_client, mirror, subscribed_uris, uri, None, conversation_id, outbound_tx,
+        ).await;
+        return;
+    }
+    resync_chat_messages(ahp_client, mirror, subscribed_uris, uri, conversation_id, outbound_tx).await;
+}
+
+fn report_history_sync(
+    outbound: &mpsc::UnboundedSender<Value>,
+    conversation_id: Option<i64>,
+    error: Option<&str>,
+) {
+    if let Some(conversation_id) = conversation_id {
+        if let Err(send_error) = outbound.send(json!({
+            "topic": "bot:proxy", "event": "session_sync_status",
+            "payload": {
+                "conversation_id": conversation_id,
+                "error": error,
+            },
+        })) {
+            error!("Could not report history sync for conversation {conversation_id}: {send_error}");
         }
     }
 }
@@ -1579,17 +1561,29 @@ fn ensure_resource_subscribed<'a>(
 ) -> BoxFuture<'a, ()> {
     Box::pin(async move {
     {
-        let mut set = subscribed_uris.lock().await;
-        if !set.insert(uri.to_string()) {
+        let set = subscribed_uris.lock().await;
+        if set.contains(uri) {
             return;
         }
     }
 
     match ahp_client.subscribe(uri.to_string()).await {
-        Ok((res, _sub_handle)) => {
+        Ok((res, subscription)) => {
+            if !subscribed_uris.lock().await.insert(uri.to_string()) {
+                return;
+            }
             if let Some(ref snap) = res.snapshot {
                 let host_id = HostId::new("local");
                 mirror.lock().await.apply_snapshot(&host_id, snap);
+            }
+            spawn_resource_listener(
+                Arc::clone(ahp_client),
+                Arc::clone(mirror),
+                Arc::clone(subscribed_uris),
+                subscription,
+                outbound_tx.clone(),
+            );
+            if let Some(ref snap) = res.snapshot {
                 if let SnapshotState::Session(ref session_state) = snap.state {
                     // Archived sessions are historical; don't import their chats.
                     // Still forward a lightweight entry so aims-server marks any
@@ -1627,6 +1621,13 @@ fn ensure_resource_subscribed<'a>(
                         )
                         .await;
                     }
+                    if let Some(default) = session_state.default_chat.as_deref() {
+                        if !session_state.chats.iter().any(|chat| chat.resource == default) {
+                            ensure_resource_subscribed(
+                                ahp_client, mirror, subscribed_uris, default, outbound_tx, true,
+                            ).await;
+                        }
+                    }
                 } else if let SnapshotState::Chat(ref chat_state) = snap.state {
                     let _ = outbound_tx.send(json!({
                         "topic": "bot:proxy",
@@ -1652,21 +1653,9 @@ fn ensure_resource_subscribed<'a>(
                     }
                 }
             }
-            spawn_resource_listener(
-                Arc::clone(ahp_client),
-                Arc::clone(mirror),
-                Arc::clone(subscribed_uris),
-                uri.to_string(),
-                outbound_tx.clone(),
-            );
         }
         Err(e) => {
             warn!("Failed to subscribe to AHP resource {}: {}", uri, e);
-            // Leaving a failed URI in the set would wedge it permanently: every
-            // later retry (startup races, the UI sync button, SessionAdded)
-            // short-circuits on the "already subscribed" guard. Remove it so it
-            // can be retried.
-            subscribed_uris.lock().await.remove(uri);
 
             // "Provider … is not ready … it may still be starting" is a transient
             // startup race for running sessions. Schedule a few delayed retries so
@@ -1716,9 +1705,8 @@ async fn subscribe_created_resource(
     outbound_tx: &mpsc::UnboundedSender<Value>,
     uri: &str,
 ) -> Result<SnapshotState, String> {
-    // A SessionAdded listener may already be subscribing. Fetch a confirmed
-    // snapshot rather than treating its in-flight dedup marker as readiness.
-    let (result, _subscription) = ahp_client
+    // Confirm readiness even when a listener already exists for this resource.
+    let (result, subscription) = ahp_client
         .subscribe(uri.to_string())
         .await
         .map_err(|error| format!("Could not subscribe to the new host resource {uri}: {error}"))?;
@@ -1734,7 +1722,7 @@ async fn subscribe_created_resource(
             Arc::clone(ahp_client),
             Arc::clone(mirror),
             Arc::clone(subscribed_uris),
-            uri.to_string(),
+            subscription,
             outbound_tx.clone(),
         );
     }
@@ -1835,8 +1823,7 @@ async fn create_host_session(
     let default_chat = session
         .default_chat
         .as_deref()
-        .or_else(|| session.chats.first().map(|c| c.resource.as_str()))
-        .unwrap_or(&session_uri);
+        .ok_or_else(|| "The host has not declared a default chat for the new session.".to_string())?;
     info!("[AUDIT:CREATE_SESSION][SUCCESS] Host session '{}' created. Default chat assigned: '{}'", session_uri, default_chat);
     if let Some(adm) = admin {
         adm.log_audit(
@@ -2309,10 +2296,11 @@ async fn handle_upstream_command(
                 .unwrap_or("")
                 .to_string();
 
-            if ext_id.is_empty() {
+            if !ext_id.starts_with("ahp-chat:") {
                 if let Some(meta) = payload.get("metadata") {
                     if let Some(uri) = meta.get("default_chat_uri")
                         .or_else(|| meta.get("chat_uri"))
+                        .or_else(|| meta.get("host_session_uri"))
                         .or_else(|| meta.get("session_uri"))
                         .and_then(|v| v.as_str())
                     {
@@ -2336,6 +2324,22 @@ async fn handle_upstream_command(
                 ).await;
             }
             if ext_id.is_empty() {
+                report_history_sync(outbound_tx, conv_id, Some("No host resource is known for this conversation"));
+                return;
+            }
+
+            let direct = if ext_id.starts_with("ahp-chat:") || ext_id.starts_with("ahp-session:") {
+                Some(ext_id.clone())
+            } else {
+                let mirror = mirror.lock().await;
+                mirror.sessions().keys().chain(mirror.chats().keys())
+                    .find(|key| resource_matches(&key.uri, &ext_id))
+                    .map(|key| key.uri.clone())
+            };
+            if let Some(resource) = direct {
+                force_resync_orphan(
+                    ahp_client, mirror, subscribed_uris, &resource, conv_id, outbound_tx,
+                ).await;
                 return;
             }
 
@@ -2363,6 +2367,7 @@ async fn handle_upstream_command(
                 force_resync_session(
                     ahp_client,
                     mirror,
+                    subscribed_uris,
                     &parent.resource,
                     Some(needle.as_str()),
                     conv_id,
@@ -2370,18 +2375,10 @@ async fn handle_upstream_command(
                 )
                 .await;
             } else {
-                // Orphan: not present in listSessions (e.g. a detached running
-                // thread). Resync the specific resource directly.
-                let direct = if ext_id.contains("ahp-chat:") {
-                    let start = ext_id.find("ahp-chat:").unwrap_or(0);
-                    ext_id[start..].split('&').next().unwrap_or(&ext_id).to_string()
-                } else if ext_id.contains("ahp-session:") || ext_id.contains("copilotcli:") {
-                    ext_id.to_string()
-                } else {
-                    // Bare UUID: these have been observed to be chat IDs.
-                    format!("ahp-chat:/{needle}")
-                };
-                force_resync_orphan(ahp_client, mirror, &direct, conv_id, outbound_tx).await;
+                report_history_sync(
+                    outbound_tx, conv_id,
+                    Some("The host resource could not be resolved. Refresh the session catalog before syncing."),
+                );
             }
         }
         other => {
@@ -3023,6 +3020,7 @@ mod tests {
                     if resources.len() == 2 {
                         if let Some(tx) = subscribed_tx.take() {
                             tx.send(()).unwrap();
+                            break;
                         }
                     }
                 }
@@ -3173,6 +3171,194 @@ mod tests {
             client.shutdown().await;
             host.await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn failed_discovery_cannot_remove_a_successful_concurrent_subscription() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+        let host = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let first = socket.next().await.unwrap().unwrap();
+            let first: Value = serde_json::from_str(first.to_text().unwrap()).unwrap();
+            first_tx.send(()).unwrap();
+            let second = socket.next().await.unwrap().unwrap();
+            let second: Value = serde_json::from_str(second.to_text().unwrap()).unwrap();
+            socket.send(WsMessage::Text(json!({
+                "jsonrpc": "2.0", "id": second["id"],
+                "result": {"snapshot": ahp_types::state::Snapshot {
+                    resource: "ahp-chat:/race".into(), from_seq: 0,
+                    state: SnapshotState::Chat(Box::new(serde_json::from_value(json!({
+                        "resource": "ahp-chat:/race", "title": "Race", "status": 0,
+                        "modifiedAt": "2026-11-06T17:21:51Z", "turns": [],
+                    })).unwrap())),
+                }},
+            }).to_string().into())).await.unwrap();
+            socket.send(WsMessage::Text(json!({
+                "jsonrpc": "2.0", "id": first["id"],
+                "error": {"code": -32000, "message": "Discovery snapshot failed"},
+            }).to_string().into())).await.unwrap();
+            socket.send(WsMessage::Text(json!({
+                "jsonrpc": "2.0", "method": "action", "params": {
+                    "channel": "ahp-chat:/race", "serverSeq": 1,
+                    "action": {"type": "chat/turnComplete", "turnId": "race", "duration": 1},
+                },
+            }).to_string().into())).await.unwrap();
+            while socket.next().await.is_some() {}
+        });
+        let client = Arc::new(Client::connect(
+            ahp_ws::WebSocketTransport::connect(&format!("ws://{address}")).await.unwrap(),
+            ClientConfig::default(),
+        ).await.unwrap());
+        let mirror = Arc::new(Mutex::new(MultiHostStateMirror::new()));
+        let subscribed = Arc::new(Mutex::new(HashSet::new()));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let discovery = {
+            let client = Arc::clone(&client);
+            let mirror = Arc::clone(&mirror);
+            let subscribed = Arc::clone(&subscribed);
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                ensure_resource_subscribed(&client, &mirror, &subscribed, "ahp-chat:/race", &tx, false).await;
+            })
+        };
+        first_rx.await.unwrap();
+        subscribe_created_resource(&client, &mirror, &subscribed, &tx, "ahp-chat:/race").await.unwrap();
+        discovery.await.unwrap();
+        assert!(subscribed.lock().await.contains("ahp-chat:/race"));
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+        assert_eq!(event["event"], "ahp_envelope");
+        assert_eq!(event["payload"]["action"]["type"], "chat/turnComplete");
+        client.shutdown().await;
+        host.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn history_sync_uses_declared_chat_and_keeps_immediate_live_events() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (requests_tx, mut requests_rx) = mpsc::unbounded_channel();
+        let host = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut chat_subscriptions = 0;
+            while let Some(Ok(WsMessage::Text(text))) = socket.next().await {
+                let request: Value = serde_json::from_str(&text).unwrap();
+                requests_tx.send(request.clone()).unwrap();
+                assert_eq!(request["method"], "subscribe", "Declared resources must not require catalog discovery");
+                if request["params"]["channel"] == "ahp-session:/parent-not-in-catalog" {
+                    let mut fixture = identity_fixture();
+                    fixture["defaultChat"] = json!("ahp-chat:/real-chat");
+                    fixture["chats"][0]["resource"] = json!("ahp-chat:/real-chat");
+                    let mut sibling = fixture["chats"][0].clone();
+                    sibling["resource"] = json!("ahp-chat:/sibling");
+                    fixture["chats"].as_array_mut().unwrap().push(sibling);
+                    socket.send(WsMessage::Text(json!({
+                        "jsonrpc": "2.0", "id": request["id"],
+                        "result": {"snapshot": ahp_types::state::Snapshot {
+                            resource: "ahp-session:/parent-not-in-catalog".into(), from_seq: 0,
+                            state: SnapshotState::Session(Box::new(serde_json::from_value(fixture).unwrap())),
+                        }},
+                    }).to_string().into())).await.unwrap();
+                    continue;
+                }
+                assert_eq!(request["params"]["channel"], "ahp-chat:/real-chat");
+                chat_subscriptions += 1;
+                if chat_subscriptions == 2 {
+                    socket.send(WsMessage::Text(json!({
+                        "jsonrpc": "2.0", "id": request["id"],
+                        "error": {"code": -32001, "message": "Resource not found"},
+                    }).to_string().into())).await.unwrap();
+                    continue;
+                }
+                socket.send(WsMessage::Text(json!({
+                    "jsonrpc": "2.0", "id": request["id"],
+                    "result": {"snapshot": ahp_types::state::Snapshot {
+                        resource: "ahp-chat:/real-chat".into(), from_seq: 0,
+                        state: SnapshotState::Chat(Box::new(serde_json::from_value(json!({
+                            "resource": "ahp-chat:/real-chat", "title": "New draft", "status": 0,
+                            "modifiedAt": "2026-11-06T17:21:51Z", "turns": [],
+                        })).unwrap())),
+                    }},
+                }).to_string().into())).await.unwrap();
+                // These can arrive in the same transport read as the snapshot reply.
+                for (index, action) in [
+                    json!({"type": "chat/responsePart", "turnId": "live",
+                        "part": {"kind": "markdown", "id": "p1", "content": "Immediate reply"}}),
+                    json!({"type": "chat/turnComplete", "turnId": "live", "duration": 1}),
+                ].into_iter().enumerate() {
+                    socket.send(WsMessage::Text(json!({
+                        "jsonrpc": "2.0", "method": "action", "params": {
+                            "channel": "ahp-chat:/real-chat", "serverSeq": index + 1, "action": action,
+                        },
+                    }).to_string().into())).await.unwrap();
+                }
+            }
+        });
+        let client = Arc::new(Client::connect(
+            ahp_ws::WebSocketTransport::connect(&format!("ws://{address}")).await.unwrap(),
+            ClientConfig::default(),
+        ).await.unwrap());
+        let mirror = Arc::new(Mutex::new(MultiHostStateMirror::new()));
+        let subscribed = Arc::new(Mutex::new(HashSet::new()));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let config = ProxyConfig {
+            local_ahp_url: None, local_ahp_socket: None, local_ahp_token: None,
+            upstream_ws_url: String::new(), bot_token: "test".into(), default_working_directory: None,
+        };
+        let receipts = DeliveryReceipts::default();
+        let payload = json!({
+            "conversation_id": 1, "external_session_id": "parent-not-in-catalog",
+            "metadata": {
+                "default_chat_uri": "ahp-chat:/real-chat",
+                "host_session_uri": "ahp-session:/parent-not-in-catalog",
+            },
+        });
+        handle_upstream_command(
+            &client, &mirror, &subscribed, &tx, &config, "request_session_sync",
+            &payload, None, &receipts,
+        ).await;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let mut actions = Vec::new();
+            let mut synced = false;
+            while actions.len() < 2 || !synced {
+                let frame = rx.recv().await.unwrap();
+                assert_ne!(frame["event"], "session_status", "History sync must not report delivery failure");
+                if frame["event"] == "ahp_envelope" {
+                    actions.push(frame["payload"]["action"]["type"].as_str().unwrap().to_string());
+                }
+                if frame["event"] == "session_sync_status" {
+                    assert!(frame["payload"]["error"].is_null());
+                    synced = true;
+                }
+            }
+            assert_eq!(actions, ["chat/responsePart", "chat/turnComplete"]);
+        }).await.expect("Live events received during subscribe must not be dropped");
+        handle_upstream_command(
+            &client, &mirror, &subscribed, &tx, &config, "request_session_sync",
+            &payload, None, &receipts,
+        ).await;
+        let frames: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(frames.iter().any(|frame| frame["event"] == "session_sync_status"
+            && frame["payload"]["error"].as_str().is_some_and(|error| error.contains("Resource not found"))));
+        assert!(!frames.iter().any(|frame| frame["event"] == "session_status"));
+        assert_eq!(requests_rx.try_recv().unwrap()["params"]["channel"], "ahp-chat:/real-chat");
+        assert_eq!(requests_rx.try_recv().unwrap()["params"]["channel"], "ahp-chat:/real-chat");
+        assert!(requests_rx.try_recv().is_err());
+        handle_upstream_command(
+            &client, &mirror, &subscribed, &tx, &config, "request_session_sync",
+            &json!({"conversation_id": 1, "external_session_id": "ahp-session:/parent-not-in-catalog"}),
+            None, &receipts,
+        ).await;
+        let requests: Vec<_> = std::iter::from_fn(|| requests_rx.try_recv().ok()).collect();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["params"]["channel"], "ahp-session:/parent-not-in-catalog");
+        assert_eq!(requests[1]["params"]["channel"], "ahp-chat:/real-chat",
+            "Parent history must target only its declared default chat, never a sibling");
+        client.shutdown().await;
+        host.await.unwrap();
     }
 
     #[tokio::test]

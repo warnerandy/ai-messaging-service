@@ -954,6 +954,7 @@ pub async fn get_conversation_by_external_session(
             OR c.external_session_id IN ('ahp-session:/' || $2, 'ahp-chat:/' || $2)
             OR $2 IN ('ahp-session:/' || c.external_session_id, 'ahp-chat:/' || c.external_session_id)
             OR c.metadata->>'default_chat_uri' = $2
+            OR c.metadata->>'default_chat_uri' = 'ahp-chat:/' || $2
             OR c.metadata->>'session_uri' = $2
             OR c.metadata->>'session_uri' = 'ahp-session:/' || $2
         )
@@ -970,22 +971,23 @@ pub async fn get_conversation_by_external_session(
 }
 
 /// Reconcile only a host-declared session/default-chat relationship. Keep legacy
-/// rows as archived redirects and move, rather than delete/deduplicate, history.
+/// rows as archived redirects. Only remove proven duplicate host echoes.
+/// Returns removed message IDs and whether a parent identity was redirected.
 pub async fn reconcile_default_chat_identity(
     pool: &PgPool,
     bot_token_id: i64,
     chat_id: &str,
     session_uri: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<(Vec<i64>, bool), sqlx::Error> {
     let Some(session_id) = session_uri.strip_prefix("ahp-session:/") else {
-        return Ok(());
+        return Ok((Vec::new(), false));
     };
     let session_id = session_id.trim_matches('/');
     let normalized_chat_id = crate::ahp_mirror::extract_session_id_from_uri(chat_id)
         .unwrap_or_else(|| chat_id.to_string());
     let chat_id = normalized_chat_id.as_str();
     if chat_id == session_id || chat_id == session_uri {
-        return Ok(());
+        return Ok((Vec::new(), false));
     }
     let chat_uri = if chat_id.starts_with("ahp-chat:") {
         chat_id.to_string()
@@ -1030,7 +1032,22 @@ pub async fn reconcile_default_chat_identity(
         }
         (_, canonical) => canonical,
     };
+    let mut removed = Vec::new();
     if let Some(target) = target {
+        removed = sqlx::query_scalar(
+            r#"DELETE FROM messages echo USING messages original
+               WHERE echo.conversation_id = $1 AND original.conversation_id = $1
+                 AND echo.id <> original.id AND echo.role = original.role
+                 AND echo.body = original.body
+                 AND echo.metadata @> '{"synced_from_ahp": true}'::jsonb
+                 AND (
+                   (echo.role = 'user' AND echo.metadata->>'turn_id' = 'turn-' || original.id::text
+                    AND NOT (original.metadata @> '{"synced_from_ahp": true}'::jsonb))
+                   OR (echo.metadata->>'turn_id' = original.metadata->>'turn_id'
+                       AND echo.id > original.id)
+                 )
+               RETURNING echo.id"#,
+        ).bind(target).fetch_all(&mut *tx).await?;
         sqlx::query(
             "UPDATE conversations SET metadata = metadata - 'session_uri'
              WHERE bot_token_id = $1 AND metadata->>'session_uri' = $2",
@@ -1040,7 +1057,8 @@ pub async fn reconcile_default_chat_identity(
              WHERE id = $2",
         ).bind(session_uri).bind(target).execute(&mut *tx).await?;
     }
-    tx.commit().await
+    tx.commit().await?;
+    Ok((removed, legacy.is_some()))
 }
 
 pub async fn reconcile_conversation(
@@ -1698,6 +1716,10 @@ pub async fn import_host_message(
         .bind(conversation_id)
         .execute(&mut *tx)
         .await?;
+    let conversation_id: i64 = sqlx::query_scalar(
+        "SELECT COALESCE((metadata->>'canonical_conversation_id')::bigint, id)
+         FROM conversations WHERE id = $1",
+    ).bind(conversation_id).fetch_one(&mut *tx).await?;
     let exists = sqlx::query_scalar::<_, bool>(
         r#"
         SELECT EXISTS(
