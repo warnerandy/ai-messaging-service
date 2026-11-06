@@ -4,7 +4,7 @@
 //! mirrors state with `ahp::MultiHostStateMirror`, and bridges all AHP sessions, chats, turns,
 //! tool calls, reasoning streams, and mobile image/asset attachments to `aims-server`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use ahp::hosts::HostId;
@@ -108,10 +108,24 @@ pub async fn run_proxy(config: ProxyConfig) -> Result<(), Box<dyn std::error::Er
     run_proxy_with_admin(config, None, &mut commands).await
 }
 
+#[derive(Default)]
+pub struct DeliveryReceipts {
+    dispatched: Mutex<HashMap<(i64, i64), Arc<Mutex<bool>>>>,
+}
+
 pub async fn run_proxy_with_admin(
     config: ProxyConfig,
     admin: Option<admin::AdminState>,
     commands: &mut mpsc::Receiver<admin::AdminCommand>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_proxy_with_admin_and_receipts(config, admin, commands, Arc::default()).await
+}
+
+pub async fn run_proxy_with_admin_and_receipts(
+    config: ProxyConfig,
+    admin: Option<admin::AdminState>,
+    commands: &mut mpsc::Receiver<admin::AdminCommand>,
+    receipts: Arc<DeliveryReceipts>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ahp_transport: ahp::transport::BoxedTransport = if let Some(ref socket_path) = config.local_ahp_socket {
         #[cfg(unix)]
@@ -294,8 +308,13 @@ pub async fn run_proxy_with_admin(
     };
     tokio::pin!(discovery);
     let mut discovery_complete = false;
-    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(25));
+    let response_timeout = std::time::Duration::from_secs(10);
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(10));
     heartbeat.tick().await;
+    let response_deadline = tokio::time::sleep(response_timeout);
+    tokio::pin!(response_deadline);
+    let mut pending_heartbeat: Option<String> = None;
+    let mut heartbeat_seq = 0_u64;
     let reconciliation = {
         let client = Arc::clone(&ahp_client);
         let mirror = Arc::clone(&mirror);
@@ -332,6 +351,13 @@ pub async fn run_proxy_with_admin(
 
     let disconnect_reason = loop {
         tokio::select! {
+            _ = &mut response_deadline, if !upstream_joined || pending_heartbeat.is_some() => {
+                break if upstream_joined {
+                    "AIMS heartbeat response timed out; reconnecting.".to_string()
+                } else {
+                    "AIMS channel join response timed out; reconnecting.".to_string()
+                };
+            }
             event = local_events.recv() => {
                 if event.is_none() {
                     break "Local AHP host disconnected; reconnecting.".to_string();
@@ -367,29 +393,34 @@ pub async fn run_proxy_with_admin(
                     let outbound = outbound_tx.clone();
                     let config = config.clone();
                     let admin_clone = admin.clone();
+                    let receipts = receipts.clone();
                     tokio::spawn(async move {
                         for id in &command.ids {
                             handle_upstream_command(
                                 &client, &mirror, &subscribed, &outbound, &config,
                                 "request_session_sync", &json!({ "external_session_id": id }),
-                                admin_clone.as_ref(),
+                                admin_clone.as_ref(), &receipts,
                             ).await;
                         }
                         let _ = command.reply.send(Ok(json!({ "message": "Session refresh queued for AIMS." })));
                     });
                 }
             }
-            _ = heartbeat.tick() => {
+            _ = heartbeat.tick(), if upstream_joined && pending_heartbeat.is_none() => {
                 pending_archives.retain(|_, reply| !reply.is_closed());
+                heartbeat_seq += 1;
+                let heartbeat_ref = format!("heartbeat:{heartbeat_seq}");
                 let text = json!({
                     "topic": "phoenix",
                     "event": "heartbeat",
                     "payload": {},
-                    "ref": "heartbeat",
+                    "ref": heartbeat_ref,
                 }).to_string();
                 if let Err(error) = up_tx.send(WsMessage::Text(text.into())).await {
                     break format!("Upstream heartbeat failed: {error}");
                 }
+                pending_heartbeat = Some(heartbeat_ref);
+                response_deadline.as_mut().reset(tokio::time::Instant::now() + response_timeout);
             }
             Some(frame_val) = outbound_rx.recv(), if upstream_joined => {
                 if let Some(admin) = &admin {
@@ -476,6 +507,15 @@ pub async fn run_proxy_with_admin(
                 }
 
                 if event == "phx_reply" {
+                    if pending_heartbeat.as_deref().is_some_and(|expected| {
+                        val["ref"].as_str() == Some(expected) && val["topic"] == "phoenix"
+                    }) {
+                        if payload["status"] != "ok" {
+                            break "AIMS rejected heartbeat; reconnecting.".to_string();
+                        }
+                        pending_heartbeat = None;
+                        continue;
+                    }
                     if let Some(ids) = val.get("ref").and_then(Value::as_str)
                         .and_then(|id| pending_subagent_syncs.remove(id)) {
                         if payload["status"] == "ok" && payload["response"]["count"].is_number() {
@@ -552,9 +592,10 @@ pub async fn run_proxy_with_admin(
                 let config = config.clone();
                 let event = event.to_string();
                 let admin_clone = admin.clone();
+                let receipts = receipts.clone();
                 tokio::spawn(async move {
                     handle_upstream_command(
-                        &client, &mirror, &subscribed, &outbound, &config, &event, &payload, admin_clone.as_ref(),
+                        &client, &mirror, &subscribed, &outbound, &config, &event, &payload, admin_clone.as_ref(), &receipts,
                     ).await;
                 });
             }
@@ -1771,6 +1812,7 @@ async fn handle_upstream_command(
     event: &str,
     payload: &Value,
     admin: Option<&admin::AdminState>,
+    receipts: &DeliveryReceipts,
 ) {
     let mut payload = payload.clone();
     let dispatch_key = if event == "ahp_dispatch" { None } else { Some("ahp_dispatch") };
@@ -1872,6 +1914,24 @@ async fn handle_upstream_command(
         "user_message" => {
             let mid = payload.get("id").and_then(|v| v.as_i64());
             let cid = payload.get("conversation_id").and_then(|v| v.as_i64());
+            let (Some(message_id), Some(conversation_id)) = (mid, cid) else {
+                error!("Refusing user message without numeric message and conversation IDs");
+                report_message_delivery_error(outbound_tx, mid, cid, "Message is missing its delivery identity");
+                return;
+            };
+            let receipt = receipts.dispatched.lock().await
+                .entry((conversation_id, message_id)).or_default().clone();
+            let mut dispatched = receipt.lock().await;
+            if *dispatched {
+                if let Err(error) = outbound_tx.send(json!({
+                    "topic": "bot:proxy", "event": "acknowledge",
+                    "payload": { "message_id": message_id, "conversation_id": conversation_id },
+                })) {
+                    error!("Failed to re-acknowledge previously dispatched message {message_id}: {error}");
+                }
+                info!("Suppressed replay of already dispatched message {message_id}");
+                return;
+            }
             let ext_id = payload.get("external_session_id").or_else(|| payload.get("session_id")).and_then(|v| v.as_str()).map(str::to_string);
             let body_preview = payload.get("body").and_then(|v| v.as_str()).map(|s| {
                 if s.chars().count() > 80 { format!("{}...", s.chars().take(80).collect::<String>()) } else { s.to_string() }
@@ -1909,6 +1969,7 @@ async fn handle_upstream_command(
                         info!("[AUDIT:USER_MESSAGE] Dispatching turn to local host channel '{}'...", dispatch_params.channel);
                         match ahp_client.dispatch(dispatch_params.channel.clone(), dispatch_params.action).await {
                             Ok(_) => {
+                                *dispatched = true;
                                 if let (Some(message_id), Some(conversation_id)) = (mid, cid) {
                                     if let Err(error) = outbound_tx.send(json!({
                                         "topic": "bot:proxy",
@@ -2609,6 +2670,7 @@ mod tests {
                     "create_session",
                     &payload,
                     None,
+                    &DeliveryReceipts::default(),
                 ),
             )
             .await
@@ -2638,6 +2700,7 @@ mod tests {
                 assert!(frames
                     .iter()
                     .any(|frame| frame["payload"]["sessions"][0]["session_id"] == "host-default"));
+                let receipts = DeliveryReceipts::default();
                 handle_upstream_command(
                     &client,
                     &mirror,
@@ -2657,6 +2720,7 @@ mod tests {
                         },
                     }),
                     None,
+                    &receipts,
                 )
                 .await;
                 assert_eq!(rx.try_recv().unwrap()["event"], "acknowledge");
@@ -2671,6 +2735,14 @@ mod tests {
                         break;
                     }
                 }
+                client.shutdown().await;
+                handle_upstream_command(
+                    &client, &mirror, &subscribed, &tx, &config, "user_message",
+                    &json!({"id": 2, "conversation_id": 1}),
+                    None, &receipts,
+                ).await;
+                assert_eq!(rx.try_recv().unwrap()["event"], "acknowledge");
+                assert!(rx.try_recv().is_err());
             }
             client.shutdown().await;
             tokio::time::timeout(std::time::Duration::from_secs(2), host)
@@ -2711,7 +2783,10 @@ mod tests {
                 payload["ahp_dispatch"] = dispatch;
             }
             let (tx, mut rx) = mpsc::unbounded_channel();
-            handle_upstream_command(&client, &mirror, &subscribed, &tx, &config, "user_message", &payload, None).await;
+            let receipts = DeliveryReceipts::default();
+            handle_upstream_command(&client, &mirror, &subscribed, &tx, &config, "user_message", &payload, None, &receipts).await;
+            let receipt = receipts.dispatched.lock().await.get(&(1, 42)).unwrap().clone();
+            assert!(!*receipt.lock().await);
             let frames: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
             assert!(!frames.iter().any(|frame| frame["event"] == "acknowledge"));
             assert!(frames.iter().any(|frame| frame["event"] == "session_status"
@@ -2838,6 +2913,69 @@ mod tests {
             tokio::join!(run_proxy(config), host, server)
         }).await.expect("identity synchronization must complete without blocking");
         assert!(outcome.0.is_err(), "upstream disconnect should end this proxy run");
+    }
+
+    #[tokio::test]
+    async fn silent_upstream_times_out_even_with_open_transports() {
+        for join in [false, true] {
+            let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let config = ProxyConfig {
+                local_ahp_url: Some(format!("ws://{}", local.local_addr().unwrap())),
+                local_ahp_socket: None, local_ahp_token: None,
+                upstream_ws_url: format!("ws://{}/", upstream.local_addr().unwrap()),
+                bot_token: "test-token".into(), default_working_directory: None,
+            };
+            let host = async move {
+                let (stream, _) = local.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(Ok(WsMessage::Text(text))) = socket.next().await {
+                    let request: Value = serde_json::from_str(&text).unwrap();
+                    let result = match request["method"].as_str() {
+                        Some("initialize") => json!({
+                            "protocolVersion": ahp_types::PROTOCOL_VERSION, "serverSeq": 0, "snapshots": []
+                        }),
+                        Some("subscribe") => json!({}),
+                        Some("listSessions") => json!({"items": []}),
+                        _ => continue,
+                    };
+                    socket.send(WsMessage::Text(json!({
+                        "jsonrpc": "2.0", "id": request["id"], "result": result,
+                    }).to_string().into())).await.unwrap();
+                }
+            };
+            let server = async move {
+                let (stream, _) = upstream.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                socket.next().await.unwrap().unwrap();
+                if join {
+                    socket.send(WsMessage::Text(json!({
+                        "topic": "bot:proxy", "event": "phx_reply", "ref": "1",
+                        "payload": {"status": "ok", "response": {}}
+                    }).to_string().into())).await.unwrap();
+                }
+                let mut heartbeats = 0;
+                while let Some(Ok(WsMessage::Text(text))) = socket.next().await {
+                    let request: Value = serde_json::from_str(&text).unwrap();
+                    if request["event"] == "heartbeat" {
+                        heartbeats += 1;
+                        socket.send(WsMessage::Text(json!({
+                            "topic": "phoenix", "event": "phx_reply",
+                            "ref": if heartbeats == 1 { request["ref"].clone() } else { json!("stale-heartbeat") },
+                            "payload": {"status": "ok", "response": {}}
+                        }).to_string().into())).await.unwrap();
+                    }
+                }
+                if join {
+                    assert_eq!(heartbeats, 2, "valid reply permits another heartbeat, stale reply must not keep connection healthy");
+                }
+            };
+            let (result, (), ()) = tokio::time::timeout(std::time::Duration::from_secs(40), async {
+                tokio::join!(run_proxy(config), host, server)
+            }).await.expect("unresponsive upstream must not remain connected indefinitely");
+            let reason = result.unwrap_err().to_string();
+            assert!(reason.contains(if join { "heartbeat response timed out" } else { "join response timed out" }), "{reason}");
+        }
     }
 
     #[tokio::test]

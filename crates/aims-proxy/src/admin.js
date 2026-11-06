@@ -12,6 +12,7 @@ let connected = false;
 let archiveSupported = false;
 let busy = false;
 let refreshing = false;
+let healthFeedback = null;
 const selected = new Set();
 const eligible = (session) =>
   !session.is_subagent && session.completed && ["idle", "completed", "done"].includes(session.status);
@@ -190,13 +191,18 @@ async function refresh() {
     const subagents = sessions.filter((session) => session.is_subagent);
     $("subagents").textContent = `${subagents.length} confirmed subagents · ${subagents.filter((session) => session.hidden_in_aims).length} AIMS visibility updates acknowledged. VS Code is unchanged.`;
     $("updated").textContent = data.last_update ? new Date(data.last_update).toLocaleTimeString() : "Waiting";
-    if (data.error) feedback(data.error, true);
-    else if (connected && !archiveSupported) feedback("Viewing and resync are available. Deploy the updated aims-server to enable AIMS-only archiving.", true);
+    const previousHealthFeedback = healthFeedback;
+    healthFeedback = data.error || (connected && !archiveSupported
+      ? "Viewing and resync are available. Deploy the updated aims-server to enable AIMS-only archiving."
+      : null);
+    if (healthFeedback) feedback(healthFeedback, true);
+    else if (previousHealthFeedback && $("feedback").textContent === previousHealthFeedback) feedback("");
     render();
   } catch (error) {
     connected = false;
     $("connection").textContent = "Unavailable";
-    feedback(error.message, true);
+    healthFeedback = error.message;
+    feedback(healthFeedback, true);
     updateActions();
   } finally {
     refreshing = false;

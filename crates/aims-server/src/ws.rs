@@ -15,7 +15,7 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -780,9 +780,28 @@ async fn handle_bot_socket(
     let mut sent_message_ids = HashSet::new();
     let mut joined = false;
     let mut pending_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+    let (work_tx, mut work_rx) = mpsc::channel::<ParsedFrame>(1024);
+    let (reply_tx, mut reply_rx) = mpsc::channel::<String>(32);
+    let worker_state = state.clone();
+    let worker_bot = bot.clone();
+    let worker = tokio::spawn(async move {
+        while let Some(frame) = work_rx.recv().await {
+            if let Some(reply) = handle_bot_channel_event(&worker_state, &worker_bot, &frame).await {
+                if reply_tx.send(reply).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
 
     'connection: loop {
         tokio::select! {
+            Some(reply) = reply_rx.recv() => {
+                if let Err(error) = ws_tx.send(WsMessage::Text(reply.into())).await {
+                    warn!("Bot {} reply send failed: {error}", bot.id);
+                    break;
+                }
+            }
             _ = pending_interval.tick(), if joined => {
                 match pending_user_message_payloads(&state, bot.id, &sent_message_ids).await {
                     Ok(payloads) => {
@@ -821,7 +840,15 @@ async fn handle_bot_socket(
 
                 // 1. Check if incoming text is a direct AHP `ActionEnvelope`
                 if let Ok(envelope) = serde_json::from_str::<ActionEnvelope>(&text) {
-                    handle_incoming_ahp_envelope(&state, &bot, envelope).await;
+                    let frame = ParsedFrame {
+                        format: active_format.clone(), join_ref: None, msg_ref: None,
+                        topic: active_channel_topic.clone(), event: "ahp_envelope".into(),
+                        payload: serde_json::to_value(envelope).expect("AHP envelope serialization"),
+                    };
+                    if let Err(error) = work_tx.try_send(frame) {
+                        warn!("Bot {} synchronization queue unavailable: {error}", bot.id);
+                        break;
+                    }
                     continue;
                 }
 
@@ -911,7 +938,16 @@ async fn handle_bot_socket(
                     continue;
                 }
 
-                handle_bot_channel_event(&state, &mut ws_tx, &bot, &frame).await;
+                if matches!(frame.event.as_str(), "session_status" | "acknowledge" | "ack") {
+                    if let Some(reply) = handle_bot_channel_event(&state, &bot, &frame).await {
+                        if ws_tx.send(WsMessage::Text(reply.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                } else if let Err(error) = work_tx.try_send(frame) {
+                    warn!("Bot {} synchronization queue unavailable: {error}", bot.id);
+                    break;
+                }
             }
             hub_result = hub_rx.recv() => {
                 let hub_ev = match hub_result {
@@ -952,6 +988,8 @@ async fn handle_bot_socket(
         }
     }
 
+    worker.abort();
+    let _ = worker.await;
     // Mark bot disconnected
     if let Ok(Some(updated)) =
         db::update_bot_status(&state.db, bot.id, Some(false), Some(false), None).await
@@ -1134,10 +1172,9 @@ async fn handle_incoming_ahp_envelope(
 
 async fn handle_bot_channel_event(
     state: &Arc<AppState>,
-    ws_tx: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
     bot: &db::BotTokenRecord,
     frame: &ParsedFrame,
-) {
+) -> Option<String> {
     let mut reply_status = "ok";
     let mut reply_response = json!({});
 
@@ -1625,15 +1662,16 @@ async fn handle_bot_channel_event(
     }
 
     if frame.msg_ref.is_some() {
-        let reply = encode_frame(
+        Some(encode_frame(
             &frame.format,
             frame.join_ref.clone(),
             frame.msg_ref.clone(),
             &frame.topic,
             "phx_reply",
             json!({ "status": reply_status, "response": reply_response }),
-        );
-        let _ = ws_tx.send(WsMessage::Text(reply.into())).await;
+        ))
+    } else {
+        None
     }
 }
 
@@ -1867,23 +1905,66 @@ mod delivery_tests {
         let delivered = next_user_message(&mut socket).await;
         assert_eq!(delivered["id"], second_missed.id);
         assert_eq!(delivered["ahp_dispatch"]["action"]["turnId"], format!("turn-{}", second_missed.id));
+        // A catalog reconciliation blocked on its bot lock must not block
+        // heartbeat replies, delivery acknowledgements, or creation results.
+        let mut catalog_lock = pool.begin().await.unwrap();
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(bot.id).execute(&mut *catalog_lock).await.unwrap();
+        socket.send(TransportMessage::Text(json!({
+            "topic": "bot:proxy", "event": "reconcile_sessions", "ref": "blocked-catalog",
+            "payload": {"sessions": [{
+                "session_id": "real-chat", "title": "Delivery test", "status": "idle",
+                "metadata": {"session_uri": "ahp-session:/parent"}
+            }]},
+        }).to_string())).await.unwrap();
+        socket.send(TransportMessage::Text(json!({
+            "topic": "phoenix", "event": "heartbeat", "ref": "health", "payload": {},
+        }).to_string())).await.unwrap();
+        let live_during_sync = db::create_message(
+            &pool, conversation.id, "user", "text", Some("Prompt during blocked sync"), json!({}), None, None, false,
+        ).await.unwrap();
+        notify_bot_user_message(&state, &conversation, &live_during_sync).await;
         db::update_conversation(&pool, conversation.id, None, None, Some(json!({
             "delivery_error": "Previous transport failure",
             "failed_message_id": second_missed.id,
         }))).await.unwrap();
+        socket.send(TransportMessage::Text(json!({
+            "topic": "bot:proxy", "event": "session_status", "ref": "ready",
+            "payload": {"conversation_id": conversation.id, "status": "idle",
+                "metadata": {"creation_status": "ready", "default_chat_uri": "ahp-chat:/real-chat"}},
+        }).to_string())).await.unwrap();
         socket.send(TransportMessage::Text(json!({
             "topic": "bot:proxy", "event": "acknowledge",
             "payload": {"conversation_id": conversation.id, "message_id": second_missed.id},
             "ref": "2",
         }).to_string())).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let mut heartbeat_replied = false;
+            let mut ready_replied = false;
+            let mut acknowledged = false;
+            let mut prompt_forwarded = false;
             loop {
                 let Some(TransportMessage::Text(text)) = socket.recv().await.unwrap() else {
                     panic!("bot socket closed before acknowledgement");
                 };
                 let frame = parse_frame(&text).unwrap();
+                if frame.event == "user_message" && frame.payload["id"] == live_during_sync.id {
+                    prompt_forwarded = true;
+                }
+                if frame.msg_ref == Some(json!("blocked-catalog")) {
+                    panic!("catalog reconciliation must remain blocked until the lock is released");
+                }
+                if frame.msg_ref == Some(json!("health")) {
+                    heartbeat_replied = true;
+                }
+                if frame.msg_ref == Some(json!("ready")) {
+                    ready_replied = true;
+                }
                 if frame.event == "phx_reply" && frame.msg_ref.as_ref().and_then(Value::as_str) == Some("2") {
                     assert_eq!(frame.payload["response"]["acknowledged"], true);
+                    acknowledged = true;
+                }
+                if acknowledged && heartbeat_replied && ready_replied && prompt_forwarded {
                     break;
                 }
             }
@@ -1891,7 +1972,9 @@ mod delivery_tests {
         let updated = db::get_conversation(&pool, conversation.id, None, Some(bot.id)).await.unwrap().unwrap();
         assert!(updated.metadata["delivery_error"].is_null());
         assert!(updated.metadata["failed_message_id"].is_null());
+        db::acknowledge_message(&pool, live_during_sync.id, conversation.id).await.unwrap();
         assert!(pending_user_message_payloads(&state, bot.id, &HashSet::from([missed.id])).await.unwrap().is_empty());
+        catalog_lock.rollback().await.unwrap();
         let mut disconnect_events = state.hub.subscribe();
         socket.close().await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(3), async {

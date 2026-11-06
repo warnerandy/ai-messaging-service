@@ -180,13 +180,22 @@ notifications. Prompts already sent on that connection are not dispatched
 again until reconnect; archived and creation-pending sessions are excluded.
 The interval is a recovery check, not a guaranteed end-to-end latency.
 
+Bulk session/history synchronization runs on a bounded, ordered server worker,
+separate from socket heartbeats, prompt forwarding, creation results, and
+delivery acknowledgements. A blocked catalog query cannot stop those control
+messages. Queue overflow is logged and closes the connection rather than
+silently dropping synchronization frames.
+
 The proxy acknowledges a prompt only after writing its dispatch to the local
 AHP transport. This confirms transport delivery, not host acceptance or turn
 completion. Missing, invalid, or failed dispatches remain unacknowledged and
 show a delivery error in the chat; a later successful acknowledgement clears
 that message's error. Replay preserves the turn ID and original start time,
-but disconnecting after dispatch and before acknowledgement can still replay
-a turn: exactly-once host execution is not guaranteed. Previously acknowledged
+and the CLI retains successful dispatch receipts across upstream reconnects.
+Replayed message IDs are acknowledged again without dispatching another turn.
+Receipts live in memory: restarting the proxy process after dispatch but before
+server acknowledgement can still replay a turn, so exactly-once host execution
+across process restarts is not guaranteed. Previously acknowledged
 prompts are not automatically retried. Deploy both server and proxy updates.
 
 Startup and periodic status reconciliation do not import unopened history:
@@ -204,6 +213,12 @@ The connected indicator requires a joined AIMS channel and a live local AHP
 transport. A local-host disconnect clears the indicator and restarts discovery
 even if the AIMS socket remains open. Connection health does not guarantee that
 a prompt was accepted or completed; consult the command audit log for those errors.
+The proxy sends an AIMS heartbeat every ten seconds and requires a matching
+successful reply within ten seconds. A missing channel-join reply also times
+out after ten seconds. Timeouts clear connection health and trigger reconnect;
+local activity cannot substitute for a server heartbeat response.
+Dashboard fetch failures show `Unavailable`; a successful health refresh clears
+stale fetch/server errors without erasing newer action feedback.
 
 Archiving affects **AIMS only**, not VS Code, worktrees, or files. An idle
 resource is not eligible unless its latest turn explicitly completed and no

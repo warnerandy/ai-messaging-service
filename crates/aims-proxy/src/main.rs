@@ -3,7 +3,7 @@
 use std::env;
 use std::time::Duration;
 
-use aims_proxy::{admin, run_proxy_with_admin, ProxyConfig};
+use aims_proxy::{admin, run_proxy_with_admin_and_receipts, DeliveryReceipts, ProxyConfig};
 use tracing::{error, info};
 
 #[tokio::main]
@@ -162,12 +162,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         default_working_directory,
     };
     let (dashboard, mut commands) = admin::start_with_audit_file(audit_log_file).await?;
+    let receipts = std::sync::Arc::new(DeliveryReceipts::default());
 
     loop {
         dashboard.reconnecting().await;
         info!("Starting AHP proxy loop...");
         if let Err(e) =
-            run_proxy_with_admin(config.clone(), Some(dashboard.clone()), &mut commands).await
+            run_proxy_with_admin_and_receipts(config.clone(), Some(dashboard.clone()), &mut commands, receipts.clone()).await
         {
             dashboard.disconnected_with_reason(&format!("Proxy disconnected ({e}); reconnecting.")).await;
             error!("AHP proxy disconnected ({}). Reconnecting in 3s...", e);
