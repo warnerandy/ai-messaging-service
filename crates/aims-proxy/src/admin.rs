@@ -19,6 +19,19 @@ pub struct AdminState {
     origin: String,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AuditEntry {
+    pub id: u64,
+    pub timestamp: String,
+    pub event: String,
+    pub direction: String, // "app_to_proxy" | "proxy_to_host" | "proxy_to_app" | "internal"
+    pub level: String,     // "info" | "warn" | "error" | "success"
+    pub conversation_id: Option<i64>,
+    pub session_id: Option<String>,
+    pub summary: String,
+    pub details: Option<Value>,
+}
+
 #[derive(Default, Serialize)]
 pub(crate) struct Dashboard {
     pub connected: bool,
@@ -27,6 +40,11 @@ pub(crate) struct Dashboard {
     pub last_update: Option<String>,
     pub error: Option<String>,
     pub sessions: BTreeMap<String, AdminSession>,
+    pub audit_logs: Vec<AuditEntry>,
+    #[serde(skip)]
+    pub next_audit_id: u64,
+    #[serde(skip)]
+    pub audit_log_path: Option<std::path::PathBuf>,
     #[serde(skip)]
     aliases: BTreeMap<String, String>,
 }
@@ -53,6 +71,48 @@ struct Selection {
 }
 
 impl AdminState {
+    pub async fn log_audit(
+        &self,
+        event: &str,
+        direction: &str,
+        level: &str,
+        conversation_id: Option<i64>,
+        session_id: Option<String>,
+        summary: impl Into<String>,
+        details: Option<Value>,
+    ) {
+        let summary = summary.into();
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let mut data = self.data.write().await;
+        data.next_audit_id += 1;
+        let id = data.next_audit_id;
+        let entry = AuditEntry {
+            id,
+            timestamp,
+            event: event.to_string(),
+            direction: direction.to_string(),
+            level: level.to_string(),
+            conversation_id,
+            session_id,
+            summary,
+            details,
+        };
+
+        if let Some(ref path) = data.audit_log_path {
+            if let Ok(line) = serde_json::to_string(&entry) {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                    let _ = writeln!(f, "{}", line);
+                }
+            }
+        }
+
+        if data.audit_logs.len() >= 250 {
+            data.audit_logs.remove(0);
+        }
+        data.audit_logs.push(entry);
+    }
+
     pub async fn disconnected(&self) {
         let mut data = self.data.write().await;
         data.connected = false;
@@ -161,10 +221,18 @@ impl AdminState {
 }
 
 pub async fn start() -> Result<(AdminState, mpsc::Receiver<AdminCommand>), std::io::Error> {
+    start_with_audit_file(None).await
+}
+
+pub async fn start_with_audit_file(
+    audit_log_path: Option<std::path::PathBuf>,
+) -> Result<(AdminState, mpsc::Receiver<AdminCommand>), std::io::Error> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:4035").await?;
     let (commands, receiver) = mpsc::channel(16);
+    let mut dashboard = Dashboard::default();
+    dashboard.audit_log_path = audit_log_path;
     let state = AdminState {
-        data: Arc::default(),
+        data: Arc::new(RwLock::new(dashboard)),
         commands,
         origin: "http://127.0.0.1:4035".to_string(),
     };
@@ -201,6 +269,8 @@ fn router(state: AdminState) -> Router {
             }),
         )
         .route("/api/status", get(status))
+        .route("/api/audit-logs", get(get_audit_logs))
+        .route("/api/audit-logs/clear", post(clear_audit_logs))
         .route("/api/resync", post(resync))
         .route("/api/archive", post(archive))
         .layer(DefaultBodyLimit::max(32 * 1024))
@@ -247,6 +317,17 @@ async fn local_only(
 
 async fn status(State(state): State<AdminState>) -> Json<Value> {
     Json(serde_json::to_value(&*state.data.read().await).unwrap_or_default())
+}
+
+async fn get_audit_logs(State(state): State<AdminState>) -> Json<Value> {
+    let data = state.data.read().await;
+    Json(json!({ "logs": &data.audit_logs }))
+}
+
+async fn clear_audit_logs(State(state): State<AdminState>) -> Json<Value> {
+    let mut data = state.data.write().await;
+    data.audit_logs.clear();
+    Json(json!({ "ok": true }))
 }
 
 async fn resync(State(state): State<AdminState>, Json(selection): Json<Selection>) -> Response {
@@ -495,5 +576,67 @@ mod tests {
         assert_eq!(data.sessions[id].status, "completed");
         drop(data);
         assert!(!state.eligible(&[id.into()]).await);
+    }
+
+    #[tokio::test]
+    async fn audit_logging_records_entries_and_endpoint_returns_and_clears_them() {
+        let state = state();
+        state
+            .log_audit(
+                "user_message",
+                "app_to_proxy",
+                "info",
+                Some(42),
+                Some("sess-1".into()),
+                "Received user prompt",
+                Some(json!({ "body": "Hello world" })),
+            )
+            .await;
+        state
+            .log_audit(
+                "create_session",
+                "proxy_to_host",
+                "error",
+                Some(43),
+                None,
+                "Host rejected session creation",
+                Some(json!({ "error": "not found" })),
+            )
+            .await;
+
+        let app = router(state.clone());
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/audit-logs")
+                    .header("host", "127.0.0.1:4035")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 64)
+            .await
+            .unwrap();
+        let json_val: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json_val["logs"].as_array().unwrap().len(), 2);
+        assert_eq!(json_val["logs"][0]["event"], "user_message");
+        assert_eq!(json_val["logs"][0]["conversation_id"], 42);
+        assert_eq!(json_val["logs"][1]["event"], "create_session");
+        assert_eq!(json_val["logs"][1]["level"], "error");
+
+        let clear_res = app
+            .oneshot(
+                Request::post("/api/audit-logs/clear")
+                    .header("host", "127.0.0.1:4035")
+                    .header("origin", "http://127.0.0.1:4035")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(clear_res.status(), StatusCode::OK);
+        assert_eq!(state.data.read().await.audit_logs.len(), 0);
     }
 }

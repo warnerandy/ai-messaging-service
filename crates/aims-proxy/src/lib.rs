@@ -360,11 +360,13 @@ pub async fn run_proxy_with_admin(
                     let subscribed = Arc::clone(&subscribed_uris);
                     let outbound = outbound_tx.clone();
                     let config = config.clone();
+                    let admin_clone = admin.clone();
                     tokio::spawn(async move {
                         for id in &command.ids {
                             handle_upstream_command(
                                 &client, &mirror, &subscribed, &outbound, &config,
                                 "request_session_sync", &json!({ "external_session_id": id }),
+                                admin_clone.as_ref(),
                             ).await;
                         }
                         let _ = command.reply.send(Ok(json!({ "message": "Session refresh queued for AIMS." })));
@@ -500,9 +502,10 @@ pub async fn run_proxy_with_admin(
                 let outbound = outbound_tx.clone();
                 let config = config.clone();
                 let event = event.to_string();
+                let admin_clone = admin.clone();
                 tokio::spawn(async move {
                     handle_upstream_command(
-                        &client, &mirror, &subscribed, &outbound, &config, &event, &payload,
+                        &client, &mirror, &subscribed, &outbound, &config, &event, &payload, admin_clone.as_ref(),
                     ).await;
                 });
             }
@@ -1523,6 +1526,7 @@ async fn create_host_session(
     outbound_tx: &mpsc::UnboundedSender<Value>,
     config: &ProxyConfig,
     payload: &Value,
+    admin: Option<&admin::AdminState>,
 ) -> Result<String, String> {
     let mut params: CreateSessionParams =
         serde_json::from_value(payload["ahp_create_session"].clone())
@@ -1558,10 +1562,43 @@ async fn create_host_session(
         }
     }
     let session_uri = params.channel.clone();
-    ahp_client
-        .request::<_, Value>("createSession", params)
-        .await
-        .map_err(|error| format!("The local host rejected session creation: {error}"))?;
+    let conv_id = payload.get("conversation_id").and_then(|v| v.as_i64());
+    let project_name = payload["metadata"]["project"]["name"].as_str().or_else(|| payload["metadata"]["project"].as_str()).unwrap_or("unnamed");
+    let branch = payload["metadata"]["git_branch"].as_str().or_else(|| payload["metadata"]["base_branch"].as_str()).unwrap_or("default");
+    let role = payload["metadata"]["agent_type"].as_str().unwrap_or("default");
+
+    info!(
+        "[AUDIT:CREATE_SESSION] Calling local host createSession: channel='{}', project='{}', branch='{}', role='{}', conv_id={:?}",
+        session_uri, project_name, branch, role, conv_id
+    );
+    if let Some(adm) = admin {
+        adm.log_audit(
+            "create_session",
+            "proxy_to_host",
+            "info",
+            conv_id,
+            Some(session_uri.clone()),
+            format!("Calling local host createSession: project='{project_name}', branch='{branch}', role='{role}'"),
+            Some(json!({ "channel": session_uri, "working_directories": params.working_directories })),
+        ).await;
+    }
+
+    if let Err(error) = ahp_client.request::<_, Value>("createSession", params).await {
+        let err_msg = format!("The local host rejected session creation: {error}");
+        error!("[AUDIT:CREATE_SESSION][ERROR] {}", err_msg);
+        if let Some(adm) = admin {
+            adm.log_audit(
+                "create_session",
+                "proxy_to_host",
+                "error",
+                conv_id,
+                Some(session_uri.clone()),
+                format!("Host rejected session creation: {error}"),
+                Some(json!({ "error": error.to_string(), "channel": session_uri })),
+            ).await;
+        }
+        return Err(err_msg);
+    }
     let session = subscribe_created_resource(
         ahp_client,
         mirror,
@@ -1574,7 +1611,23 @@ async fn create_host_session(
         return Err("The host did not return a session snapshot for the new session.".to_string());
     };
     let default_chat = session.default_chat.as_deref()
-        .ok_or_else(|| "The host did not publish the new session's default chat. Check the local host and create a new session.".to_string())?;
+        .ok_or_else(|| {
+            let msg = "The host did not publish the new session's default chat. Check the local host and create a new session.".to_string();
+            error!("[AUDIT:CREATE_SESSION][ERROR] {}", msg);
+            msg
+        })?;
+    info!("[AUDIT:CREATE_SESSION][SUCCESS] Host session '{}' created. Default chat assigned: '{}'", session_uri, default_chat);
+    if let Some(adm) = admin {
+        adm.log_audit(
+            "create_session",
+            "proxy_to_host",
+            "success",
+            conv_id,
+            Some(default_chat.to_string()),
+            format!("Session created on local host. Assigned default chat: '{default_chat}'"),
+            Some(json!({ "session_uri": session_uri, "default_chat": default_chat })),
+        ).await;
+    }
     outbound_tx
         .send(json!({
             "topic": "bot:proxy", "event": "sync_sessions",
@@ -1609,6 +1662,7 @@ async fn handle_upstream_command(
     config: &ProxyConfig,
     event: &str,
     payload: &Value,
+    admin: Option<&admin::AdminState>,
 ) {
     let mut payload = payload.clone();
     let dispatch_key = if event == "ahp_dispatch" { None } else { Some("ahp_dispatch") };
@@ -1634,8 +1688,26 @@ async fn handle_upstream_command(
     let payload = &payload;
     match event {
         "create_session" => {
+            let conv_id = payload.get("conversation_id").and_then(|v| v.as_i64());
+            let ext_id_req = payload.get("external_session_id").or_else(|| payload.get("session_id")).and_then(|v| v.as_str()).map(str::to_string);
+            let proj = payload["metadata"]["project"]["name"].as_str().or_else(|| payload["metadata"]["project"].as_str()).unwrap_or("unknown");
+            let branch = payload["metadata"]["git_branch"].as_str().or_else(|| payload["metadata"]["base_branch"].as_str()).unwrap_or("default");
+
+            info!("[AUDIT:CREATE_SESSION] Received create_session from app: conv_id={:?}, project='{}', branch='{}'", conv_id, proj, branch);
+            if let Some(adm) = admin {
+                adm.log_audit(
+                    "create_session",
+                    "app_to_proxy",
+                    "info",
+                    conv_id,
+                    ext_id_req.clone(),
+                    format!("Received create_session request for project '{proj}' (branch: '{branch}')"),
+                    Some(payload.clone()),
+                ).await;
+            }
+
             let result = create_host_session(
-                ahp_client, mirror, subscribed_uris, outbound_tx, config, payload,
+                ahp_client, mirror, subscribed_uris, outbound_tx, config, payload, admin,
             ).await;
             let (status, external_session_id, metadata) = match result {
                 Ok(default_chat) => {
@@ -1655,64 +1727,188 @@ async fn handle_upstream_command(
                     }))
                 }
             };
+            let status_payload = json!({
+                "conversation_id": payload.get("conversation_id"),
+                "external_session_id": external_session_id,
+                "status": status, "metadata": metadata,
+            });
+            info!("[AUDIT:SESSION_STATUS] Sending session_status='{}' to AIMS (conv_id={:?}, ext_id={:?})", status, conv_id, external_session_id);
+            if let Some(adm) = admin {
+                adm.log_audit(
+                    "session_status",
+                    "proxy_to_app",
+                    if status == "error" { "error" } else { "info" },
+                    conv_id,
+                    external_session_id.clone(),
+                    format!("Reporting session status '{status}' to AIMS"),
+                    Some(status_payload.clone()),
+                ).await;
+            }
             if let Err(error) = outbound_tx.send(json!({
                 "topic": "bot:proxy",
                 "event": "session_status",
-                "payload": {
-                    "conversation_id": payload.get("conversation_id"),
-                    "external_session_id": external_session_id,
-                    "status": status, "metadata": metadata,
-                }
+                "payload": status_payload,
             })) {
                 error!("Failed to report session creation result: {error}");
             }
         }
         "user_message" => {
+            let mid = payload.get("id").and_then(|v| v.as_i64());
+            let cid = payload.get("conversation_id").and_then(|v| v.as_i64());
+            let ext_id = payload.get("external_session_id").or_else(|| payload.get("session_id")).and_then(|v| v.as_str()).map(str::to_string);
+            let body_preview = payload.get("body").and_then(|v| v.as_str()).map(|s| {
+                if s.chars().count() > 80 { format!("{}...", s.chars().take(80).collect::<String>()) } else { s.to_string() }
+            }).unwrap_or_else(|| "(empty body)".to_string());
+
+            info!("[AUDIT:USER_MESSAGE] Received user prompt #{:?} (conv={:?}, ext_id={:?}): '{}'", mid, cid, ext_id, body_preview);
+            if let Some(adm) = admin {
+                adm.log_audit(
+                    "user_message",
+                    "app_to_proxy",
+                    "info",
+                    cid,
+                    ext_id.clone(),
+                    format!("Received user message #{:?}: '{}'", mid.unwrap_or(0), body_preview),
+                    Some(payload.clone()),
+                ).await;
+            }
+
             // Acknowledge receipt immediately
-            if let (Some(mid), Some(cid)) = (
-                payload.get("id").and_then(|v| v.as_i64()),
-                payload.get("conversation_id").and_then(|v| v.as_i64()),
-            ) {
+            if let (Some(m), Some(c)) = (mid, cid) {
                 let _ = outbound_tx.send(json!({
                     "topic": "bot:proxy",
                     "event": "acknowledge",
-                    "payload": { "message_id": mid, "conversation_id": cid },
+                    "payload": { "message_id": m, "conversation_id": c },
                 }));
+                info!("[AUDIT:USER_MESSAGE] Sent acknowledge for message #{}", m);
             }
 
             if let Some(disp_val) = payload.get("ahp_dispatch") {
-                if let Ok(dispatch_params) =
-                    serde_json::from_value::<DispatchActionParams>(disp_val.clone())
-                {
-                    ensure_resource_subscribed(
-                        ahp_client,
-                        mirror,
-                        subscribed_uris,
-                        &dispatch_params.channel,
-                        outbound_tx,
-                        true,
-                    )
-                    .await;
+                match serde_json::from_value::<DispatchActionParams>(disp_val.clone()) {
+                    Ok(dispatch_params) => {
+                        ensure_resource_subscribed(
+                            ahp_client,
+                            mirror,
+                            subscribed_uris,
+                            &dispatch_params.channel,
+                            outbound_tx,
+                            true,
+                        )
+                        .await;
 
-                    if let Err(e) = ahp_client
-                        .dispatch(dispatch_params.channel, dispatch_params.action)
-                        .await
-                    {
-                        error!("Failed to dispatch AHP user turn action: {}", e);
+                        info!("[AUDIT:USER_MESSAGE] Dispatching turn to local host channel '{}'...", dispatch_params.channel);
+                        match ahp_client.dispatch(dispatch_params.channel.clone(), dispatch_params.action).await {
+                            Ok(_) => {
+                                info!("[AUDIT:USER_MESSAGE][SUCCESS] Message #{:?} dispatched to local host channel '{}'", mid, dispatch_params.channel);
+                                if let Some(adm) = admin {
+                                    adm.log_audit(
+                                        "user_message",
+                                        "proxy_to_host",
+                                        "success",
+                                        cid,
+                                        Some(dispatch_params.channel.clone()),
+                                        format!("Message #{:?} dispatched to local host channel '{}'", mid.unwrap_or(0), dispatch_params.channel),
+                                        None,
+                                    ).await;
+                                }
+                            }
+                            Err(e) => {
+                                error!("[AUDIT:USER_MESSAGE][ERROR] Failed to dispatch user turn to local host: {}", e);
+                                if let Some(adm) = admin {
+                                    adm.log_audit(
+                                        "user_message",
+                                        "proxy_to_host",
+                                        "error",
+                                        cid,
+                                        Some(dispatch_params.channel.clone()),
+                                        format!("Failed to dispatch message #{:?} to local host: {e}", mid.unwrap_or(0)),
+                                        Some(json!({ "error": e.to_string(), "channel": dispatch_params.channel })),
+                                    ).await;
+                                }
+                            }
+                        }
                     }
+                    Err(err) => {
+                        error!("[AUDIT:USER_MESSAGE][ERROR] Failed to parse ahp_dispatch for message #{:?}: {}", mid, err);
+                        if let Some(adm) = admin {
+                            adm.log_audit(
+                                "user_message",
+                                "internal",
+                                "error",
+                                cid,
+                                ext_id.clone(),
+                                format!("Failed to parse ahp_dispatch for message #{:?}: {err}", mid.unwrap_or(0)),
+                                Some(json!({ "error": err.to_string(), "ahp_dispatch": disp_val })),
+                            ).await;
+                        }
+                    }
+                }
+            } else {
+                warn!("[AUDIT:USER_MESSAGE][WARN] User message #{:?} has no 'ahp_dispatch' field", mid);
+                if let Some(adm) = admin {
+                    adm.log_audit(
+                        "user_message",
+                        "internal",
+                        "warn",
+                        cid,
+                        ext_id.clone(),
+                        format!("User message #{:?} missing ahp_dispatch field", mid.unwrap_or(0)),
+                        Some(payload.clone()),
+                    ).await;
                 }
             }
         }
         "steer" | "answer_question" | "session_config_changed" => {
+            let cid = payload.get("conversation_id").and_then(|v| v.as_i64());
+            let ext_id = payload.get("external_session_id").or_else(|| payload.get("session_id")).and_then(|v| v.as_str()).map(str::to_string);
+            info!("[AUDIT:{}] Received from app (conv={:?}, ext_id={:?})", event.to_uppercase(), cid, ext_id);
+            if let Some(adm) = admin {
+                adm.log_audit(
+                    event,
+                    "app_to_proxy",
+                    "info",
+                    cid,
+                    ext_id.clone(),
+                    format!("Received '{event}' command from app"),
+                    Some(payload.clone()),
+                ).await;
+            }
             if let Some(disp_val) = payload.get("ahp_dispatch") {
                 if let Ok(dispatch_params) =
                     serde_json::from_value::<DispatchActionParams>(disp_val.clone())
                 {
-                    if let Err(e) = ahp_client
-                        .dispatch(dispatch_params.channel, dispatch_params.action)
+                    match ahp_client
+                        .dispatch(dispatch_params.channel.clone(), dispatch_params.action)
                         .await
                     {
-                        warn!("Failed to dispatch AHP {} action: {}", event, e);
+                        Ok(_) => {
+                            info!("[AUDIT:{}][SUCCESS] Dispatched to local host channel '{}'", event.to_uppercase(), dispatch_params.channel);
+                            if let Some(adm) = admin {
+                                adm.log_audit(
+                                    event,
+                                    "proxy_to_host",
+                                    "success",
+                                    cid,
+                                    Some(dispatch_params.channel.clone()),
+                                    format!("Dispatched '{event}' action to host channel '{}'", dispatch_params.channel),
+                                    None,
+                                ).await;
+                            }
+                        }
+                        Err(e) => {
+                            warn!("[AUDIT:{}][ERROR] Failed to dispatch to local host: {}", event.to_uppercase(), e);
+                            if let Some(adm) = admin {
+                                adm.log_audit(
+                                    event,
+                                    "proxy_to_host",
+                                    "error",
+                                    cid,
+                                    Some(dispatch_params.channel.clone()),
+                                    format!("Failed to dispatch '{event}' to host: {e}"),
+                                    Some(json!({ "error": e.to_string() })),
+                                ).await;
+                            }
+                        }
                     }
                 }
             }
@@ -1733,9 +1929,20 @@ async fn handle_upstream_command(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             info!(
-                "AHP proxy handling request_session_sync for external_session_id={}",
+                "[AUDIT:SYNC] Received request_session_sync for external_session_id={}",
                 ext_id
             );
+            if let Some(adm) = admin {
+                adm.log_audit(
+                    "request_session_sync",
+                    "app_to_proxy",
+                    "info",
+                    None,
+                    Some(ext_id.to_string()),
+                    format!("App requested resync for session '{ext_id}'"),
+                    Some(payload.clone()),
+                ).await;
+            }
             if ext_id.is_empty() {
                 return;
             }
@@ -2227,6 +2434,7 @@ mod tests {
                     &config,
                     "create_session",
                     &payload,
+                    None,
                 ),
             )
             .await
@@ -2274,6 +2482,7 @@ mod tests {
                             },
                         },
                     }),
+                    None,
                 )
                 .await;
                 loop {

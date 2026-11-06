@@ -93,6 +93,13 @@ input[type="checkbox"] { accent-color: var(--cp-accent); width: 16px; height: 16
 .active { color: var(--cp-warning); }
 #feedback { font-size: 13px; }
 #feedback.error { color: var(--cp-danger); }
+.badge.info { color: var(--cp-link); }
+.badge.success { color: var(--cp-success); border-color: var(--cp-success); }
+.badge.warn { color: var(--cp-warning); border-color: var(--cp-warning); }
+.badge.error { color: var(--cp-danger); border-color: var(--cp-danger); }
+.audit-details { font-size: 12px; margin-top: 6px; cursor: pointer; }
+.audit-details summary { color: var(--cp-link); font-weight: 600; }
+.audit-details pre { background: var(--cp-surface-soft); padding: 8px 12px; border-radius: 8px; overflow-x: auto; font-size: 11px; margin: 6px 0 0; }
 footer { font-size: 12px; text-align: center; margin-top: 24px; }
 .empty { text-align: center; padding: 36px; color: var(--cp-text-muted); }
 dialog { color: var(--cp-text); padding: 28px; max-width: 540px; width: calc(100% - 32px); }

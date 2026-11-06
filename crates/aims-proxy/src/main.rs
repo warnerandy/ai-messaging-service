@@ -27,6 +27,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "wss://aims.thebitvoid.dev/bot/websocket".to_string());
     let mut bot_token = env::var("AIMS_BOT_TOKEN").unwrap_or_default();
     let mut default_working_directory = env::var("AHP_WORKING_DIRECTORY").ok();
+    let mut audit_log_file: Option<std::path::PathBuf> = env::var("AHP_AUDIT_LOG_FILE")
+        .or_else(|_| env::var("AHP_AUDIT_LOG"))
+        .ok()
+        .map(std::path::PathBuf::from);
 
     let mut i = 1;
     let mut positional_idx = 0;
@@ -58,6 +62,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--workdir" if i + 1 < args.len() => {
                 default_working_directory = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--audit-log" if i + 1 < args.len() => {
+                audit_log_file = Some(std::path::PathBuf::from(&args[i + 1]));
                 i += 2;
             }
             arg if !arg.starts_with("--") => {
@@ -153,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bot_token,
         default_working_directory,
     };
-    let (dashboard, mut commands) = admin::start().await?;
+    let (dashboard, mut commands) = admin::start_with_audit_file(audit_log_file).await?;
 
     loop {
         dashboard.reconnecting().await;

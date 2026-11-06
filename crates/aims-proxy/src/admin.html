@@ -32,6 +32,41 @@
       <div class="table-wrap"><table><thead><tr><th><span class="sr-only">Select</span></th><th>Session / resource</th><th>Current state</th><th>AIMS visibility / archive</th></tr></thead><tbody id="sessions"></tbody></table></div>
       <p id="empty" class="empty" hidden>No matching sessions.</p>
     </section>
+    <section class="panel" style="margin-top: 24px;">
+      <div class="section-heading">
+        <div>
+          <h2>App Messages & Audit Log</h2>
+          <p class="muted">Live audit trace of messages, session requests, and commands received from the AIMS app.</p>
+        </div>
+        <div class="audit-actions">
+          <button id="clear-audit" type="button">Clear log</button>
+        </div>
+      </div>
+      <div class="toolbar" style="margin-top: 16px;">
+        <label class="search">Filter audit logs<input id="audit-search" type="search" placeholder="Filter by event, message text, or conversation ID"></label>
+        <label>Category<select id="audit-filter">
+          <option value="all">All events</option>
+          <option value="user_message">User messages</option>
+          <option value="create_session">Session creations</option>
+          <option value="error">Errors only</option>
+        </select></label>
+      </div>
+      <div class="table-wrap" style="margin-top: 16px;">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 100px;">Time</th>
+              <th style="width: 140px;">Event</th>
+              <th style="width: 120px;">Direction</th>
+              <th style="width: 140px;">Conv / Session</th>
+              <th>Summary & Details</th>
+            </tr>
+          </thead>
+          <tbody id="audit-rows"></tbody>
+        </table>
+      </div>
+      <p id="audit-empty" class="empty">No app activity recorded yet.</p>
+    </section>
     <footer>Live view refreshes every 5 seconds · No credentials are sent to the browser.</footer>
   </main>
   <dialog id="confirm">
