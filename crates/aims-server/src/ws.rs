@@ -1104,35 +1104,25 @@ async fn handle_incoming_ahp_envelope(
     if let ahp_types::actions::StateAction::ChatTurnStarted(ref turn_action) = envelope.action {
         let user_prompt = turn_action.message.text.trim();
         if !user_prompt.is_empty() {
-            let already_exists = sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id = $1 AND role = 'user' AND body = $2)",
+            match db::import_host_message(
+                &state.db,
+                conv.id,
+                "user",
+                "text",
+                user_prompt,
+                json!({ "turn_id": turn_action.turn_id }),
             )
-            .bind(conv.id)
-            .bind(user_prompt)
-            .fetch_one(&state.db)
             .await
-            .unwrap_or(false);
-
-            if !already_exists {
-                if let Ok(msg) = db::create_message(
-                    &state.db,
-                    conv.id,
-                    "user",
-                    "text",
-                    Some(user_prompt),
-                    json!({ "turn_id": turn_action.turn_id, "synced_from_ahp": true }),
-                    None,
-                    None,
-                    false,
-                )
-                .await
-                {
+            {
+                Ok(Some(msg)) => {
                     state.hub.broadcast(
                         format!("conversation:{}", conv.id),
                         "new_message",
                         json!({ "message": msg }),
                     );
                 }
+                Ok(None) => {}
+                Err(error) => error!("Failed to import host turn {}: {error}", turn_action.turn_id),
             }
         }
     }
@@ -1288,31 +1278,23 @@ async fn handle_bot_channel_event(
                             .cloned()
                             .unwrap_or_else(|| json!({}));
 
-                        let exists = sqlx::query_scalar::<_, bool>(
-                            "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id = $1 AND role = $2 AND body = $3)",
+                        match db::import_host_message(
+                            &state.db,
+                            conv.id,
+                            role,
+                            content_type,
+                            body,
+                            metadata,
                         )
-                        .bind(conv.id)
-                        .bind(role)
-                        .bind(body)
-                        .fetch_one(&state.db)
                         .await
-                        .unwrap_or(false);
-
-                        if !exists {
-                            if let Ok(msg) = db::create_message(
-                                &state.db,
-                                conv.id,
-                                role,
-                                content_type,
-                                Some(body),
-                                metadata,
-                                None,
-                                None,
-                                false,
-                            )
-                            .await
-                            {
-                                inserted.push(msg);
+                        {
+                            Ok(Some(msg)) => inserted.push(msg),
+                            Ok(None) => {}
+                            Err(error) => {
+                                error!("Failed to import host history for conversation {}: {error}", conv.id);
+                                reply_status = "error";
+                                reply_response = json!({ "error": "Could not persist host history" });
+                                break;
                             }
                         }
                     }
@@ -1333,7 +1315,9 @@ async fn handle_bot_channel_event(
                             }),
                         );
                     }
-                    reply_response = json!({ "synced_count": inserted.len() });
+                    if reply_status == "ok" {
+                        reply_response = json!({ "synced_count": inserted.len() });
+                    }
                 }
             }
         }
@@ -1912,6 +1896,135 @@ async fn pending_user_message_payloads(
 mod delivery_tests {
     use super::*;
     use ahp::{Transport, TransportMessage};
+
+    #[tokio::test]
+    #[ignore = "requires AIMS_TEST_DATABASE_URL pointing to an isolated test database"]
+    async fn host_history_and_turn_echoes_never_become_outbound_executions() {
+        let pool = sqlx::PgPool::connect(&std::env::var("AIMS_TEST_DATABASE_URL").unwrap()).await.unwrap();
+        db::init_db(&pool).await.unwrap();
+        let user_id = sqlx::query_scalar::<_, i64>("INSERT INTO users (email) VALUES ($1::citext) RETURNING id")
+            .bind(format!("{}@example.test", Uuid::new_v4())).fetch_one(&pool).await.unwrap();
+        let (bot, token) = db::create_bot_token(&pool, user_id, "History import test", Some("ahp"), None).await.unwrap();
+        let parent = db::create_conversation(
+            &pool, user_id, bot.id, "Parent", Some("history-parent"), Some("idle"),
+            json!({"default_chat_uri": "ahp-chat:/history-chat", "creation_status": "ready"}),
+        ).await.unwrap();
+        let original = db::create_message(
+            &pool, parent.id, "user", "text", Some("Same prompt"), json!({}), None, None, false,
+        ).await.unwrap();
+        db::acknowledge_message(&pool, original.id, parent.id).await.unwrap();
+        let state = Arc::new(AppState {
+            db: pool.clone(), hub: PubSubHub::new(),
+            static_dir: std::path::PathBuf::new(), secret_key_base: "test".into(),
+        });
+        let mut events = state.hub.subscribe();
+        let turn_id = format!("turn-{}", original.id);
+        let envelope = serde_json::from_value::<ActionEnvelope>(json!({
+            "channel": "ahp-chat:/history-chat", "serverSeq": 1,
+            "action": {
+                "type": "chat/turnStarted", "turnId": turn_id,
+                "startedAt": "2026-11-06T17:07:51Z",
+                "message": {"text": "Same prompt", "origin": {"kind": "user"}},
+            },
+        })).unwrap();
+        // The chat can be discovered before its parent identity is reconciled.
+        for _ in 0..2 {
+            handle_incoming_ahp_envelope(&state, &bot, envelope.clone()).await;
+        }
+        let chat = db::get_conversation_by_external_session(&pool, bot.id, "history-chat")
+            .await.unwrap().unwrap();
+        assert_ne!(parent.id, chat.id);
+        let messages = db::list_messages(&pool, chat.id, None, None).await.unwrap();
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].acknowledged);
+        assert!(messages[0].acknowledged_at.is_some());
+        assert_eq!(messages[0].metadata["synced_from_ahp"], true);
+        assert!(pending_user_message_payloads(&state, bot.id, &HashSet::new()).await.unwrap().is_empty());
+
+        for event in ["sync_messages", "session_messages"] {
+            let frame = parse_frame(&json!({
+                "topic": "bot:proxy", "event": event, "ref": "history",
+                "payload": {
+                    "conversation_id": chat.id,
+                    "messages": [
+                        {"role": "user", "body": "Same prompt", "metadata": {"turn_id": turn_id}},
+                        {"role": "user", "body": "Same prompt", "acknowledged": false,
+                            "metadata": {"turn_id": "another-host-turn", "synced_from_ahp": false}},
+                        {"role": "user", "body": "Legacy history without a turn ID"},
+                        {"role": "bot", "body": "Host response", "metadata": {"turn_id": turn_id}},
+                    ],
+                },
+            }).to_string()).unwrap();
+            let reply = handle_bot_channel_event(&state, &bot, &frame).await.unwrap();
+            assert_eq!(parse_frame(&reply).unwrap().payload["status"], "ok");
+            let messages = db::list_messages(&pool, chat.id, None, None).await.unwrap();
+            assert_eq!(messages.len(), 4, "Repeated imports must be idempotent and preserve distinct same-text turns");
+            assert!(messages.iter().filter(|m| m.role == "user").all(|m| m.acknowledged));
+            assert!(messages.iter().all(|m| m.metadata["synced_from_ahp"] == true));
+            assert!(db::get_pending_messages_for_bot(&pool, bot.id).await.unwrap().is_empty());
+        }
+        let concurrent_meta = json!({"turn_id": "concurrent-host-turn"});
+        let (first, duplicate) = tokio::join!(
+            db::import_host_message(&pool, chat.id, "user", "text", "Concurrent import", concurrent_meta.clone()),
+            db::import_host_message(&pool, chat.id, "user", "text", "Concurrent import", concurrent_meta),
+        );
+        assert_ne!(first.unwrap().is_some(), duplicate.unwrap().is_some());
+        db::reconcile_default_chat_identity(&pool, bot.id, "history-chat", "ahp-session:/history-parent")
+            .await.unwrap();
+        assert!(db::get_pending_messages_for_bot(&pool, bot.id).await.unwrap().is_empty());
+        assert!(!std::iter::from_fn(|| events.try_recv().ok()).any(|event| event.event == "user_message"));
+
+        // Older versions inserted these host records unacknowledged.
+        for metadata in [json!({"synced_from_ahp": true}), json!({"turn_id": "legacy-history"})] {
+            db::create_message(&pool, chat.id, "user", "text", Some("Legacy import"),
+                metadata, None, None, false).await.unwrap();
+        }
+        assert!(db::get_pending_messages_for_bot(&pool, bot.id).await.unwrap().is_empty());
+        // An intentional new prompt with identical text must still be delivered.
+        let intentional = db::create_message(
+            &pool, chat.id, "user", "text", Some("Same prompt"), json!({}), None, None, false,
+        ).await.unwrap();
+        let echo = db::import_host_message(
+            &pool, chat.id, "user", "text", "Same prompt",
+            json!({"turn_id": format!("turn-{}", intentional.id)}),
+        ).await.unwrap();
+        assert!(echo.is_none(), "An outbound turn echo must reuse its existing message");
+        let pending = db::get_pending_messages_for_bot(&pool, bot.id).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, intentional.id);
+        assert!(!pending[0].acknowledged, "Import deduplication must not fabricate a dispatch receipt");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = axum::Router::new().route("/bot/websocket", axum::routing::get(bot_ws_handler)).with_state(state.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        // A fresh connection has no per-connection dedup state to hide a replay.
+        for _ in 0..2 {
+            let mut socket = ahp_ws::WebSocketTransport::connect(
+                &format!("ws://{address}/bot/websocket?token={token}&vsn=1.0.0"),
+            ).await.unwrap();
+            socket.send(TransportMessage::Text(json!({
+                "topic": "bot:proxy", "event": "phx_join", "payload": {}, "ref": "join",
+            }).to_string())).await.unwrap();
+            let replayed = next_user_message(&mut socket).await;
+            assert_eq!(replayed["id"], intentional.id);
+            assert_eq!(replayed["ahp_dispatch"]["action"]["turnId"], format!("turn-{}", intentional.id));
+            let idle = tokio::time::timeout(std::time::Duration::from_secs(6), async {
+                loop {
+                    let Some(TransportMessage::Text(text)) = socket.recv().await.unwrap() else {
+                        panic!("socket closed during recovery check");
+                    };
+                    assert_ne!(parse_frame(&text).unwrap().event, "user_message",
+                        "Periodic recovery must not dispatch imported history");
+                }
+            }).await;
+            assert!(idle.is_err(), "Recovery observation should end at its deadline");
+            socket.close().await.unwrap();
+        }
+        server.abort();
+        let _ = server.await;
+        pool.close().await;
+    }
 
     #[tokio::test]
     async fn history_refreshes_are_coalesced_per_conversation_and_expire() {

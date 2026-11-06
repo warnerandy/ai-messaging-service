@@ -1676,6 +1676,82 @@ pub async fn acknowledge_message(
     Ok(res.rows_affected() > 0)
 }
 
+/// Host history is inbound data, never an outbound delivery request.
+pub async fn import_host_message(
+    pool: &PgPool,
+    conversation_id: i64,
+    role: &str,
+    content_type: &str,
+    body: &str,
+    metadata: Value,
+) -> Result<Option<MessageRecord>, sqlx::Error> {
+    let Some(mut metadata) = metadata.as_object().cloned() else {
+        return Err(sqlx::Error::Protocol("Host message metadata must be an object".into()));
+    };
+    let turn_id = metadata.get("turn_id").and_then(Value::as_str);
+    let outbound_id = turn_id
+        .and_then(|id| id.strip_prefix("turn-"))
+        .and_then(|id| id.parse::<i64>().ok());
+    let mut tx = pool.begin().await?;
+    // Share the identity-reconciliation lock so imports cannot race a history move.
+    sqlx::query("SELECT pg_advisory_xact_lock(bot_token_id) FROM conversations WHERE id = $1")
+        .bind(conversation_id)
+        .execute(&mut *tx)
+        .await?;
+    let exists = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM messages
+            WHERE conversation_id = $1 AND role = $2 AND (
+                ($3::text IS NOT NULL AND metadata->>'turn_id' = $3 AND body = $5)
+                OR ($2 = 'user' AND id = $4 AND body = $5)
+                OR (body = $5 AND ($3::text IS NULL OR ($2 <> 'user' AND NOT (metadata ? 'turn_id'))))
+            )
+        )
+        "#,
+    )
+    .bind(conversation_id)
+    .bind(role)
+    .bind(turn_id)
+    .bind(outbound_id)
+    .bind(body)
+    .fetch_one(&mut *tx)
+    .await?;
+    if exists {
+        tx.commit().await?;
+        return Ok(None);
+    }
+
+    metadata.insert("synced_from_ahp".into(), json!(true));
+    let now = now_naive();
+    let row = sqlx::query(
+        r#"
+        INSERT INTO messages
+            (conversation_id, role, content_type, body, metadata,
+             acknowledged, acknowledged_at, is_suggestion, inserted_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $2 = 'user',
+                CASE WHEN $2 = 'user' THEN $6 ELSE NULL END, FALSE, $6, $6)
+        RETURNING id, conversation_id, role, content_type, body, metadata,
+                  model, context_size, acknowledged, acknowledged_at, is_suggestion, inserted_at
+        "#,
+    )
+    .bind(conversation_id)
+    .bind(role)
+    .bind(content_type)
+    .bind(body)
+    .bind(Value::Object(metadata))
+    .bind(now)
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE conversations SET updated_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(conversation_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Some(map_message_row(&row)))
+}
+
 pub async fn get_pending_messages_for_bot(
     pool: &PgPool,
     bot_token_id: i64,
@@ -1686,8 +1762,11 @@ pub async fn get_pending_messages_for_bot(
                m.model, m.context_size, m.acknowledged, m.acknowledged_at, m.is_suggestion, m.inserted_at
         FROM messages m
         INNER JOIN conversations c ON c.id = m.conversation_id
+        INNER JOIN bot_tokens b ON b.id = c.bot_token_id
         WHERE c.bot_token_id = $1 AND m.role = 'user' AND NOT m.acknowledged
           AND COALESCE(m.metadata->>'delivery_state', '') NOT IN ('rejected', 'unknown')
+          AND NOT (m.metadata @> '{"synced_from_ahp": true}'::jsonb)
+          AND NOT (b.bot_type = 'ahp' AND m.metadata ? 'turn_id')
         ORDER BY m.inserted_at ASC
         "#,
     )

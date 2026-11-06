@@ -206,6 +206,15 @@ can still leave an ambiguous turn, so exactly-once host execution across process
 restarts is not guaranteed. Previously acknowledged
 prompts are not automatically retried. Deploy both server and proxy updates.
 
+Host history imports and live host turn echoes are inbound records, not queued
+instructions. Imported user messages are inserted as acknowledged in the same
+transaction and tagged `synced_from_ahp`; synchronization never queues them for
+execution. Repeated imports use turn identity rather than prompt text alone,
+so distinct turns can contain identical text. Recovery also excludes legacy
+host imports identified by `synced_from_ahp` or AHP `turn_id` metadata, even if
+an older server left them unacknowledged. This protection requires the server
+update; it does not depend on proxy receipt memory.
+
 Startup and periodic status reconciliation do not import unopened history:
 `reconcile_sessions` only updates existing AIMS records. Active resources and
 explicitly opened/resynced sessions use the normal import path. Deploy both
