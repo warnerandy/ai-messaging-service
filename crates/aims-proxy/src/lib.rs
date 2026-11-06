@@ -1979,7 +1979,7 @@ async fn handle_upstream_command(
             // "re-list and re-subscribe" approach did nothing useful: the live
             // subscription dedup short-circuits, and the session's child chats were
             // never force-refreshed. force_resync_* bypasses that dedup.
-            let needle = extract_session_id_from_uri(ext_id).unwrap_or_else(|| ext_id.to_string());
+            let needle = extract_session_id_from_uri(&ext_id).unwrap_or_else(|| ext_id.to_string());
             let sessions = list_all_sessions(ahp_client).await;
             if let Some(parent) = sessions.iter().find(|s| session_summary_matches(s, &needle)) {
                 for chat in parent.chats.iter().flatten().filter(|chat| {
