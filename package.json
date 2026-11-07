@@ -12,7 +12,10 @@
     "test:ui": "playwright test --ui",
     "test:debug": "playwright test --debug",
     "test:headed": "playwright test --headed",
-    "pretest": "npm run build 2>/dev/null || true"
+    "pretest": "npm run build 2>/dev/null || true",
+    "redeploy": "node scripts/redeploy_portainer.cjs ai-messaging-service",
+    "redeploy:aims": "node scripts/redeploy_portainer.cjs ai-messaging-service",
+    "redeploy:messenger": "node scripts/redeploy_portainer.cjs ai-messenger"
   },
   "devDependencies": {
     "@playwright/test": "^1.40.0",
